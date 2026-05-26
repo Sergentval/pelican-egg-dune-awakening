@@ -1,0 +1,5 @@
+# The runtime image needs nothing from this repo's tree — the install
+# script downloads everything at panel-install time. Keep the build
+# context empty so unrelated repo changes never invalidate the cache.
+*
+!Dockerfile

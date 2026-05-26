@@ -1,0 +1,266 @@
+_comment: TEST VARIANT — points at ghcr.io/sergentval/games:dune_awakening (user's fork's image, not yet on pelican-eggs registry).
+  Use for personal-panel smoke testing only. Do not submit this variant to upstream; submit egg-dune-awakening.yaml instead.
+meta:
+  version: PLCN_v3
+  update_url: null
+exported_at: '2026-05-20T07:00:00+00:00'
+name: 'Dune: Awakening (test)'
+author: valentin95150@hotmail.fr
+uuid: 6675695d-234b-40c8-b180-94cd20a67881
+description: |-
+  Dune: Awakening dedicated server (Funcom). Runs the full Linux battlegroup: Postgres, two RabbitMQ brokers, Battlegroup Director, Text Router, Gateway, mock-Kubernetes API, and on-demand UE5 instances for the always-warm hub maps (Survival_1, Overmap, DeepDesert_1) plus dungeons / Deep Desert / story missions. Installs from Steam app 4754530 (retail) or 3104830 (PTC) anonymously; both depots are open. Orchestration lives in the companion yolk (ghcr.io/pelican-eggs/games:dune_awakening) which mirrors AMP's PreStartStages chain from CubeCoders/AMPTemplates (MIT).
+tags:
+- steamcmd
+features:
+- steam_disk_space
+docker_images:
+  Dune Awakening (user fork): ghcr.io/sergentval/games:dune_awakening
+file_denylist: []
+startup_commands:
+  Default: bash scripts/console.sh /home/container
+config:
+  files: '{}'
+  startup: '{"done": "Dune Awakening server ready: success"}'
+  logs: '{}'
+  stop: ^C
+scripts:
+  installation:
+    script: |
+      #!/bin/bash
+      # Dune: Awakening — Pelican install script
+      #
+      # Runs in the standard Pelican installer container (debian) with root
+      # and writes to /mnt/server (becomes /home/container at runtime). The
+      # companion yolk image (ghcr.io/pelican-eggs/games:dune_awakening) owns
+      # all runtime orchestration; this install step just lays down files.
+      #
+      # Steps:
+      #   1. apt install build-time deps
+      #   2. SteamCMD download of the Funcom dedicated-server depot
+      #        - 4754530 = Production (retail)
+      #        - 3104830 = PTC (public test)
+      #     Both anonymous-accessible. ~5 GB compressed.
+      #   3. Fetch CubeCoders' MIT-licensed launch scripts from AMPTemplates.
+      #   4. Run scripts/install.sh to extract the 7 OCI image tarballs and
+      #      patchelf the musl-linked binaries onto each rootfs's own loader.
+
+      set -euo pipefail
+
+      SRCDS_APPID="${SRCDS_APPID:-4754530}"
+      STEAM_USER="${STEAM_USER:-anonymous}"
+      STEAM_PASS="${STEAM_PASS:-}"
+      STEAM_AUTH="${STEAM_AUTH:-}"
+
+      case "$SRCDS_APPID" in
+          4754530|3104830) ;;
+          *)
+              echo "ERROR: SRCDS_APPID must be 4754530 (retail) or 3104830 (PTC); got '$SRCDS_APPID'" >&2
+              exit 1
+              ;;
+      esac
+
+      echo "==> Installing build-time dependencies..."
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -q
+      # lib32stdc++6 + lib32gcc-s1 are BOTH required — SteamCMD's app-manifest
+      # verification uses 32-bit C++ paths that fail with "Missing configuration"
+      # if libstdc++ isn't present alongside libgcc. The community Dune guide
+      # at github.com/adainrivers/dune-dedicated-server-manager confirms.
+      apt-get install -y -q --no-install-recommends \
+          ca-certificates curl tar gzip jq file patchelf \
+          lib32gcc-s1 lib32stdc++6
+
+      # Pre-create SteamCMD state directories under $HOME with sane ownership.
+      # SteamCMD creates these on the fly otherwise, but failures inside
+      # unprivileged install containers have been traced to missing ~/.steam
+      # and ~/Steam pre-creation.
+      mkdir -p /mnt/server/steamcmd /mnt/server/server /mnt/server/steamapps \
+          /mnt/server/.steam /mnt/server/Steam
+
+      echo "==> Downloading SteamCMD..."
+      curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+          | tar -xz -C /mnt/server/steamcmd
+
+      echo "==> Downloading Funcom Dune: Awakening server depot (app $SRCDS_APPID)..."
+      echo "    Depot is ~5 GB compressed; extracts to ~12 GB. Anonymous-accessible."
+      cd /mnt/server/steamcmd
+      # Mirror conan_exiles' working pattern: chown /mnt to root, set HOME so
+      # SteamCMD's state goes to a known path. Unquoted login args so empty
+      # STEAM_PASS / STEAM_AUTH drop out (otherwise SteamCMD rejects with
+      # "Missing configuration"). +logoff before +quit per the working
+      # community guide.
+      chown -R root:root /mnt
+      export HOME=/mnt/server
+      # shellcheck disable=SC2086
+      ./steamcmd.sh \
+          +force_install_dir /mnt/server/server \
+          +login $STEAM_USER $STEAM_PASS $STEAM_AUTH \
+          +app_info_update 1 \
+          +app_update $SRCDS_APPID validate \
+          +logoff \
+          +quit
+
+      if [ ! -d /mnt/server/server/images ]; then
+          echo "ERROR: SteamCMD finished but /mnt/server/server/images/ is missing." >&2
+          echo "       Check the SteamCMD log above for errors." >&2
+          exit 1
+      fi
+
+      echo "==> Fetching CubeCoders launch scripts from AMPTemplates @ main..."
+      curl -fsSL https://raw.githubusercontent.com/CubeCoders/AMPTemplates/main/duneawakeningupdates.json \
+          | jq -r '.[0].UpdateSourceData' \
+          | base64 -d \
+          | tar -xz -C /mnt/server/
+      chmod +x /mnt/server/scripts/*.sh /mnt/server/scripts/mock-k8s-go
+
+      echo "==> Extracting Funcom OCI images and patching binary loaders..."
+      echo "    This may take several minutes with no visible output."
+      cd /mnt/server
+      ln -snfr server depot
+      bash scripts/install.sh /mnt/server
+
+      # install.sh writes a stray customstart.sh outside /mnt/server (an AMP-
+      # specific hook path that doesn't survive into the runtime container).
+      # The yolk image owns the equivalent setup (K8s ServiceAccount mount),
+      # so drop the leftover.
+      rm -f /mnt/customstart.sh
+
+      echo "==> Install complete."
+      echo "    Runtime image will start with: bash scripts/console.sh /home/container"
+    container: ghcr.io/parkervcp/installers:debian
+    entrypoint: bash
+variables:
+- name: Steam App ID
+  description: Funcom dedicated-server depot to install. 4754530 = Production (retail); 3104830 = Public Test (PTC). Both
+    are anonymous-accessible — no Steam ownership required.
+  env_variable: SRCDS_APPID
+  default_value: '4754530'
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - in:4754530,3104830
+  sort: 1
+- name: Release Version
+  description: Must match Steam App ID. Used by prestart.sh to select retail vs beta FLS environment.
+  env_variable: DUNE_RELEASE_VERSION
+  default_value: '4754530'
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - in:4754530,3104830
+  sort: 2
+- name: Self-Host Service Token (JWT)
+  description: Funcom JWT from https://account.duneawakening.com/ (retail) or https://account-pts.duneawakening.com/ (PTC).
+    TREAT AS A SECRET. Each running battlegroup needs its own unique token.
+  env_variable: DUNE_JWT
+  default_value: ''
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  sort: 3
+- name: World Title
+  description: Display name in the in-game server browser.
+  env_variable: DUNE_WORLD_TITLE
+  default_value: Pelican-hosted Sietch
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - max:64
+  sort: 4
+- name: Region
+  description: Region label, e.g. 'Europe', 'North America', 'Europe Test'.
+  env_variable: DUNE_REGION
+  default_value: Europe
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - max:32
+  sort: 5
+- name: World Name Override
+  description: Optional. Paste a previously FLS-registered WorldName to keep the same battlegroup identity after wiping state.
+    Leave blank to auto-generate on first boot.
+  env_variable: DUNE_WORLD_NAME_OVERRIDE
+  default_value: ''
+  user_viewable: true
+  user_editable: true
+  rules:
+  - nullable
+  - string
+  - max:64
+  sort: 6
+- name: Datacenter ID
+  description: Free-form label for FLS provider identification.
+  env_variable: DUNE_HOST_DC_ID
+  default_value: pelican
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - max:32
+  sort: 7
+- name: Bind IP
+  description: What internal services bind to inside the container. Almost always 0.0.0.0.
+  env_variable: DUNE_BIND_IP
+  default_value: 0.0.0.0
+  user_viewable: false
+  user_editable: false
+  rules:
+  - required
+  - string
+  - max:45
+  sort: 8
+- name: External (Public) IP
+  description: Your public WAN IP, advertised to clients via FLS. Required.
+  env_variable: DUNE_EXTERNAL_IP
+  default_value: ''
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - string
+  - max:45
+  sort: 9
+- name: Game Port Base (UDP)
+  description: Base UDP port for the UE5 instance pool. Funcom uses 7777; Wings allocates 7777-7806 (30 slots) for this server.
+  env_variable: K8S_POOL_GAME_PORT_BASE
+  default_value: '7777'
+  user_viewable: true
+  user_editable: false
+  rules:
+  - required
+  - numeric
+  - between:1024,65505
+  sort: 10
+- name: RabbitMQ Game Port (TCP/TLS)
+  description: TLS AMQP endpoint advertised to clients via FLS. Default 5673.
+  env_variable: DUNE_MQ_GAME_PORT
+  default_value: '5673'
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - numeric
+  - between:1024,65535
+  sort: 11
+- name: RabbitMQ Game Mgmt Port (TCP)
+  description: HTTP management endpoint for client token auth. Default 15673.
+  env_variable: DUNE_MQ_GAME_MGMT_PORT
+  default_value: '15673'
+  user_viewable: true
+  user_editable: true
+  rules:
+  - required
+  - numeric
+  - between:1024,65535
+  sort: 12

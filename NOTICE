@@ -1,0 +1,29 @@
+pelican-egg-dune-awakening
+==========================
+
+This project ports CubeCoders' AMP module for Dune: Awakening to Pelican / Wings.
+
+The contents of the `scripts/` directory (including `mock-k8s-go`, all
+`*.sh` files, and `templates/director.ini`) are copied verbatim from:
+
+  https://github.com/CubeCoders/AMPTemplates
+
+at commit time of the upstream `main` branch when this fork was made. They
+are MIT-licensed:
+
+  Copyright (c) 2024 CubeCoders Limited
+  See LICENSE for the full grant.
+
+Modifications, additions, and the Pelican egg JSON itself are by
+valentin95150@hotmail.fr and contributors, and are also released under MIT.
+
+Funcom owns and distributes the underlying Dune: Awakening dedicated server
+binaries. This project does not redistribute Funcom's binaries — they are
+fetched on demand from Steam via SteamCMD's anonymous public depot mode at
+egg-install time. Operators are responsible for complying with Funcom's
+end-user license agreement and self-host server terms.
+
+Trademarks: "Dune", "Dune: Awakening", and related marks belong to their
+respective owners. "AMP" and the CubeCoders name are trademarks of
+CubeCoders Limited. Use of these names here is purely descriptive — this
+project is not endorsed by or affiliated with either company.

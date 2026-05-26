@@ -1,0 +1,17 @@
+# Local test artefacts
+/.test/
+/tmp/
+*.swp
+*.swo
+.DS_Store
+
+# Local depot / state dumps (never commit Funcom binaries)
+depot/
+extracted/
+state/
+runtime/
+logs/
+
+# Editor
+.vscode/
+.idea/
