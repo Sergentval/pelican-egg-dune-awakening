@@ -37,12 +37,15 @@ if [ ! -d "$SA_DIR" ] || [ ! -w "$SA_DIR" ]; then
 fi
 
 # Generate a stable mock-k8s ServiceAccount bearer token on first boot.
-# (Any string works — mock-k8s just needs it to be consistent across
-# restarts so the Director's already-cached identity stays valid.)
+# mock-k8s-go validates the token against the regex ServerId=([A-Za-z0-9_+/=\-]+)
+# (baked into the binary). Any string matching that prefix works; the suffix
+# only needs to be stable across restarts so the Director's cached identity
+# stays valid. Without the ServerId= prefix mock-k8s-go aborts with
+# "This can only be run via AMP."
 mkdir -p "$BASE/server/state"
 SA_TOKEN_FILE="$BASE/server/state/sa-token"
 if [ ! -f "$SA_TOKEN_FILE" ]; then
-    head -c 32 /dev/urandom | base64 -w0 > "$SA_TOKEN_FILE"
+    { printf 'ServerId='; head -c 32 /dev/urandom | base64 -w0; } > "$SA_TOKEN_FILE"
 fi
 SA_TOKEN=$(cat "$SA_TOKEN_FILE")
 
