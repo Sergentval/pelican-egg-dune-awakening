@@ -2,20 +2,24 @@
 
 A [Pelican](https://pelican.dev/) (and [Pterodactyl](https://pterodactyl.io/)) egg
 that runs a **full Dune: Awakening dedicated server battlegroup on Linux Docker**
-— no Hyper-V, no Kubernetes, no Windows host required.
+— no Hyper-V, no Kubernetes, no Windows host required, no AMP runtime.
 
-This egg is a port of [CubeCoders' AMP template for Dune
-Awakening](https://github.com/CubeCoders/AMPTemplates/blob/main/duneawakening.kvp)
-([CubeCoders on X](https://x.com/CubeCoders/status/2054253569738506359)) to the
-Wings runtime model. CubeCoders did the hard reverse-engineering work; this
-egg lets you use it without buying an AMP license. Their scripts are MIT-licensed
-and are vendored under `scripts/` with attribution (see `LICENSE` / `NOTICE`).
+This project is **Pelican-native**. The architecture was originally
+reverse-engineered by [CubeCoders Limited](https://cubecoders.com/) for their
+AMP product and published as MIT-licensed scripts at
+[CubeCoders/AMPTemplates](https://github.com/CubeCoders/AMPTemplates). We
+forked their scripts, ported the model to Pelican Wings, rewrote
+`mock-k8s-go` as an open-source Go binary (their original was closed and
+refused to run outside AMP), and added a panel-driven config-applier for
+22 game-side tunables (loot multipliers, sandstorms, sandworms, PvP zones,
+building limits, on-demand pool tuning). See [`ATTRIBUTION.md`](./ATTRIBUTION.md)
+for the full credit + license discussion.
 
-## Why this exists
+## How it works
 
-Funcom's official self-host bundle is a **Hyper-V VM image** plus a
-**Kubernetes cluster** that runs game-server pods inside the VM. That setup
-only works on Windows Pro and is wildly off-model for Pelican Wings.
+Funcom's official self-host bundle is a Hyper-V VM image plus a Kubernetes
+cluster that runs game-server pods inside the VM. That setup only works on
+Windows Pro.
 
 But the binaries Funcom puts on Steam (the `4754530` Production depot and
 `3104830` PTC depot) are **native Linux ELFs** packaged as 7 OCI image
@@ -36,52 +40,62 @@ The trick is twofold:
 1. `patchelf --set-interpreter` each musl-linked binary so it uses its own
    image's bundled `ld-musl-x86_64.so.1` loader — letting them run on Debian
    glibc.
-2. Ship a small Go **mock Kubernetes API** (`scripts/mock-k8s-go`) that the
-   Battlegroup Director talks to instead of a real K8s cluster. The director
+2. A small Go **mock Kubernetes API** (`scripts/mock-k8s-go`) that the
+   Battlegroup Director talks to instead of a real K8s cluster. The Director
    thinks it's launching pods; mock-k8s spawns UE5 server processes directly.
 
-The Pelican egg wires this up against Wings instead of AMP.
+The egg wires this up against Wings.
 
 ## Status
 
-- **Phase 1 done**: project scaffolded with the upstream MIT scripts vendored.
-- **Phase 2 done**: `egg-dune-awakening.json` — Pelican PLCN_v3 egg, 209 lines,
-  12 variables, embedded install script (SteamCMD anonymous → CubeCoders'
-  scripts tarball → `install.sh` patchelf pipeline).
-- **Phase 3 done**: `docker/Dockerfile` — Debian Bookworm-slim runtime with
-  the 14 apt deps + tini PID 1 + pre-created K8s ServiceAccount mount with
-  `container` UID 988 ownership.
-- **Phase 4 done**: verification — shellcheck 0 errors on scripts + embedded
-  install script, jq parse clean, runtime image smoke test green.
-- **Phase 5 done**: image published to
+The egg has been running a production world end-to-end (real players,
+characters created, persistent save). The current code path:
+
+- `egg-dune-awakening.json` — Pelican PLCN_v3 egg, 36 panel variables
+  (FLS token + 22 game-side tunables + infrastructure ports). Install
+  script fetches our repo tarball from GitHub, no upstream race.
+- `docker/Dockerfile` — Debian Bookworm-slim runtime with required apt
+  deps, tini as PID 1, K8s ServiceAccount mount declared as VOLUME.
+  Published to
   [`ghcr.io/sergentval/pelican-dune-awakening:latest`](https://github.com/Sergentval/pelican-egg-dune-awakening/pkgs/container/pelican-dune-awakening).
-  ⚠️ Until the package is toggled public via the GHCR web UI, Wings hosts
-  pulling the image need `docker login ghcr.io`.
-- Phase 6 _(remaining)_: end-to-end smoke test with a real `DUNE_JWT` — see
-  [`TESTING.md`](./TESTING.md). Path A install step currently blocked on a
-  SteamCMD bootstrap TLS issue (2017-era binary against modern Steam CDN);
-  the egg's pipeline is correct, but a `LD_PRELOAD` of system libcurl in
-  the install script may be needed to recover.
+- `scripts/` — vendored fork of CubeCoders' launch scripts with our
+  Pelican-specific fixes (graceful shutdown grace periods, Funcom DB
+  migration regression workarounds, partition ID handling, etc.). All
+  AMP-isms stripped.
+- `mock-k8s/` — open-source Go re-implementation of CubeCoders'
+  closed mock-k8s binary, built from source at install time.
+- `scripts/apply-config.sh` + `scripts/pelican-entrypoint.sh` — our own
+  contributions for Pelican-side panel-variable substitution and
+  foreground orchestration.
 
 ## Project layout
 
 ```
 pelican-egg-dune-awakening/
 ├── README.md                    ← you are here
-├── LICENSE                      ← MIT (upstream CubeCoders + this fork's edits)
-├── NOTICE                       ← attribution
-├── egg-dune-awakening.json      ← the Pelican egg (import this into the panel)
+├── ATTRIBUTION.md               ← credit + MIT lineage
+├── LICENSE                      ← MIT (CubeCoders + this fork's edits)
+├── NOTICE                       ← attribution summary
+├── egg-dune-awakening.json      ← the Pelican egg (import into the panel)
 ├── docker/
-│   ├── Dockerfile               ← runtime image (build + push before importing)
+│   ├── Dockerfile               ← runtime image
 │   ├── README.md                ← build / push / smoke-test instructions
 │   └── .dockerignore
-└── scripts/                     ← MIT CubeCoders launch scripts (vendored)
-    ├── UPSTREAM-README.md       ← upstream readme from CubeCoders/AMPTemplates
-    ├── pelican-entrypoint.sh    ← THIS REPO's only contribution to scripts/
+├── mock-k8s/                    ← our open-source Go replacement
+│   ├── cmd/mock-k8s/main.go
+│   ├── go.mod, go.sum
+│   └── internal/...
+└── scripts/                     ← vendored from CubeCoders, modified
+    ├── UPSTREAM-README.md       ← historical CubeCoders README
+    ├── pelican-entrypoint.sh    ← our foreground orchestrator
+    ├── apply-config.sh          ← our panel-variable INI applier
     ├── install.sh, console.sh, prestart.sh, lib.sh, ...  (14 .sh files)
-    ├── mock-k8s-go              ← 6.9MB Go binary: mock Kubernetes API
     └── templates/director.ini
 ```
+
+Note: `scripts/mock-k8s-go` is not in git. It is built deterministically
+in the install container from `mock-k8s/cmd/mock-k8s/` with
+`CGO_ENABLED=0 go build -trimpath -ldflags='-s -w'`.
 
 ## Hardware requirements (per battlegroup)
 
@@ -104,25 +118,33 @@ a shared UDP port pool.
 These are advertised to clients via Funcom's FLS service using
 `DUNE_EXTERNAL_IP` (your public WAN IP).
 
-## Setup (once the egg is import-ready)
+## Setup
 
 1. Get your **Self-Host Service Token** from
    [account.duneawakening.com](https://account.duneawakening.com/) (or
    `account-pts.duneawakening.com` for the PTC branch). Sign in with the
    Steam account that owns Dune: Awakening. **Each running server needs its
    own unique token.**
-2. Build and push the runtime Docker image (see Phase 3) to your registry.
+2. Build and push the runtime Docker image (see [`docker/README.md`](./docker/README.md))
+   to a registry your Wings host can pull from, or use the published
+   `ghcr.io/sergentval/pelican-dune-awakening:latest`.
 3. In the Pelican panel: **Admin → Eggs → Import** → upload
    `egg-dune-awakening.json` → create a new server, paste the token into
    `DUNE_JWT`, set world title and region, deploy.
 
+The install fetches scripts + Go source from this repo's `main` branch by
+default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for
+reproducible installs.
+
 ## Credits
 
+See [`ATTRIBUTION.md`](./ATTRIBUTION.md) for the full credit list and MIT
+lineage. Short version:
+
 - **CubeCoders Limited** ([CubeCoders/AMPTemplates](https://github.com/CubeCoders/AMPTemplates))
-  — reverse-engineered the architecture, wrote the install/start scripts,
-  and the mock-k8s shim. Their work is licensed MIT and is what makes this
-  egg possible.
-- **Funcom** — ships the actual server binaries.
+  reverse-engineered the architecture and published the launch scripts
+  under MIT. This egg would not exist without that work.
+- **Funcom** ships the actual server binaries via Steam.
 - This Pelican port — `valentin95150@hotmail.fr`.
 
 ## References

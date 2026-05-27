@@ -1,3 +1,14 @@
+# Dune Awakening — AMP scripts (historical CubeCoders README)
+
+> **Note from this fork:** the README below is the original document from
+> CubeCoders' upstream `AMPTemplates` repo. It describes the AMP-native
+> architecture as published by CubeCoders. This Pelican fork has since
+> diverged: there is no AMP daemon, no PreStartStages (pelican-entrypoint.sh
+> runs every stage in one shell), no customstart.sh hook (Dockerfile owns
+> the SA mount), and `mock-k8s-go` is rebuilt from our open-source Go source
+> at install time rather than fetched as a closed binary. See `../README.md`
+> and `../ATTRIBUTION.md` for the Pelican-native architecture.
+
 # Dune Awakening — AMP scripts
 
 These scripts implement the Dune Awakening dedicated server for AMP.  They

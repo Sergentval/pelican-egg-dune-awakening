@@ -1,18 +1,28 @@
 pelican-egg-dune-awakening
 ==========================
 
-This project ports CubeCoders' AMP module for Dune: Awakening to Pelican / Wings.
+This project ports CubeCoders' AMP module for Dune: Awakening to
+Pelican / Wings.
 
-The contents of the `scripts/` directory (including `mock-k8s-go`, all
-`*.sh` files, and `templates/director.ini`) are copied verbatim from:
+The contents of the `scripts/` directory (all `*.sh` files and
+`templates/director.ini`) were originally copied from CubeCoders' upstream
+AMPTemplates and have since been forked with modifications for Pelican
+Wings (stripped AMP daemon assumptions, dropped customstart.sh, added
+phased shutdown grace periods, Funcom DB migration regression
+workarounds, etc.). See ATTRIBUTION.md for details.
 
-  https://github.com/CubeCoders/AMPTemplates
+Original source: https://github.com/CubeCoders/AMPTemplates
+Original license: MIT, Copyright (c) 2024 CubeCoders Limited
+See LICENSE for the full grant.
 
-at commit time of the upstream `main` branch when this fork was made. They
-are MIT-licensed:
+`mock-k8s/` is an open-source Go re-implementation of the Kubernetes API
+mock that the Battlegroup Director talks to. The original closed binary
+shipped by CubeCoders refused to run outside AMP (anti-tamper check),
+so we wrote our own from scratch and ship its source — MIT-licensed,
+built deterministically at install time. See ATTRIBUTION.md.
 
-  Copyright (c) 2024 CubeCoders Limited
-  See LICENSE for the full grant.
+`scripts/pelican-entrypoint.sh` and `scripts/apply-config.sh` are this
+fork's own contributions, also MIT-licensed.
 
 Modifications, additions, and the Pelican egg JSON itself are by
 valentin95150@hotmail.fr and contributors, and are also released under MIT.
