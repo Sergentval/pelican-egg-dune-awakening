@@ -38,16 +38,15 @@ fi
 
 # Generate a stable mock-k8s ServiceAccount bearer token on first boot.
 # mock-k8s-go validates the token against the regex ServerId=([A-Za-z0-9_+/=\-]+)
-# (baked into the binary). Any string matching that prefix works; the suffix
-# only needs to be stable across restarts so the Director's cached identity
-# stays valid. Without the ServerId= prefix mock-k8s-go aborts with
-# "This can only be run via AMP."
+# (baked into the binary as a holdover from CubeCoders' anti-tamper check).
+# Any string matching that prefix works; the suffix only needs to be stable
+# across restarts so the Director's cached identity stays valid.
 mkdir -p "$BASE/server/state"
 SA_TOKEN_FILE="$BASE/server/state/sa-token"
 if [ ! -f "$SA_TOKEN_FILE" ]; then
     { printf 'ServerId='; head -c 32 /dev/urandom | base64 -w0; } > "$SA_TOKEN_FILE"
 fi
-SA_TOKEN=$(cat "$SA_TOKEN_FILE")
+export AMP_TOKEN="$(cat "$SA_TOKEN_FILE")"
 
 echo "[entrypoint] [INFO] Dune Awakening — Pelican boot sequence starting"
 echo "[entrypoint] [INFO]   BASE=$BASE"
@@ -68,7 +67,7 @@ bash scripts/migrate-db.sh       "$BASE"
 bash scripts/start-mq-admin.sh   "$BASE"
 bash scripts/start-mq-game.sh    "$BASE"
 bash scripts/start-text-router.sh "$BASE"
-bash scripts/start-mock-k8s.sh   "$BASE" "$SA_TOKEN"
+bash scripts/start-mock-k8s.sh   "$BASE"
 bash scripts/start-director.sh   "$BASE"
 bash scripts/start-gateway.sh    "$BASE"
 

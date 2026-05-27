@@ -1,20 +1,23 @@
 #!/bin/bash
-# © 2026 CubeCoders Limited. All Rights Reserved.
+# Originally © 2026 CubeCoders Limited (MIT). Modified for Pelican Wings.
 #
 # start-mock-k8s.sh BASE_DIR
 #
 # Launches the minimal Kubernetes API mock that intercepts director's
 # on-demand ServerSetScale CR ops and turns them into start-ue5.sh
 # invocations against a pre-allocated port pool.
+#
+# Service-account token contract: pelican-entrypoint.sh exports
+# $AMP_TOKEN (format: ServerId=<base64>) before invoking this script;
+# we just validate it's set and pass it through to mock-k8s-go.
 
 BASE="${1:-${DUNE_BASE_DIR:-}}"
-# AMP supplies the startup-auth token via $AMPToken substitution,
-# only in command-line contexts (not env). We receive it as $2 and
-# export it so the env-block below can hand it to mock-k8s-go.
-AMP_TOKEN="${2:-}"
-export AMP_TOKEN
 export SOURCE="mock-k8s"
 source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
+
+if [ -z "${AMP_TOKEN:-}" ]; then
+  die "AMP_TOKEN env var unset — pelican-entrypoint.sh must export it before calling this script (see scripts/pelican-entrypoint.sh)."
+fi
 
 log "Starting mock Kubernetes API (port pool size ${K8S_POOL_SIZE:-25})..."
 

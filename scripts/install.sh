@@ -149,18 +149,16 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 2a. Ensure AMP-managed admin keys are present in Funcom's UserEngine.ini.
-# Funcom's stock template (scripts/setup/config/UserEngine.ini) doesn't
-# include Bgd.ServerDisplayName / Bgd.ServerLoginPassword at all. AMP's
-# metaconfig automap only UPDATES existing keys — it doesn't append new
-# ones — so without us inserting these lines the values never reach the
-# file. We add them under [ConsoleVariables] (that's where bg-util's
-# `-ini:engine:[ConsoleVariables]:Bgd.ServerDisplayName=...` overrides
-# expect them). Idempotent — won't double-add.
+# 2a. Ensure the panel-editable Bgd.* keys are present in Funcom's
+# UserEngine.ini template. Funcom's stock template doesn't ship them at all,
+# and scripts/apply-config.sh runs in update-only mode (it rewrites lines
+# but doesn't insert top-level [ConsoleVariables] keys from nothing). So we
+# pre-seed the lines here, on the depot template, before any state file is
+# generated from it. Idempotent: won't double-add.
 # --------------------------------------------------------------------------
 UE_TPL="$DEPOT/scripts/setup/config/UserEngine.ini"
 if [ -f "$UE_TPL" ] && ! grep -q '^Bgd\.ServerDisplayName=' "$UE_TPL"; then
-  log "Activating admin-editable config keys..."
+  log "Activating panel-editable Bgd.* keys in UserEngine.ini template..."
   # Strip legacy commented forms first (in case Funcom adds them later),
   # then insert under [ConsoleVariables].
   sed -i -E \
@@ -173,11 +171,11 @@ if [ -f "$UE_TPL" ] && ! grep -q '^Bgd\.ServerDisplayName=' "$UE_TPL"; then
 fi
 
 # --------------------------------------------------------------------------
-# 2b. Seed the state-side admin INIs so AMP's metaconfig automap has files
-# to merge into on the very first start. AMP merges config BEFORE
-# prestart.sh runs, so without this the first start would skip them
-# ("file does not exist") and only pick up admin values from start #2.
-# Idempotent: never overwrites an existing (admin-edited) state file.
+# 2b. Seed the state-side INIs so apply-config.sh has files to merge into
+# on the very first start. Without this, apply-config.sh would log "target
+# missing" warnings on first boot and panel variables would silently fail
+# to apply until restart #2. Idempotent: never overwrites an existing
+# (admin-edited) state file.
 # --------------------------------------------------------------------------
 STATE_US="$STATE/ue5-saved/UserSettings"
 mkdir -p "$STATE_US" 2>/dev/null || true
@@ -203,18 +201,10 @@ log "Setting file ownership..."
 chown -R "$(id -u):$(id -g)" "$EXTRACTED/game-server" 2>/dev/null || true
 chmod -R u+rwX "$EXTRACTED" 2>/dev/null || true
 
-# --------------------------------------------------------------------------
-# 4. Install customstart.sh at the instance root (parent of $BASE).
-# AMP runs it as root on every container start, pre-creating the
-# ServiceAccount mount dir so mock-k8s can write to it as the amp user
-# and director's IGWO can read from /var/run/secrets/... at the standard
-# path with no ABI tricks. On a fresh install the customstart hook fires
-# at the FIRST container start AFTER the user clicks Update once — there
-# is no requirement to manually restart afterwards because AMP starts the
-# container only once update has copied the file into place.
-# --------------------------------------------------------------------------
-log "Installing customstart.sh for container ServiceAccount setup..."
-cp -f "$SCRIPTS/customstart.sh" "$BASE/../customstart.sh"
-chmod 755 "$BASE/../customstart.sh"
+# Note: under Pelican Wings the K8s ServiceAccount mount at
+# /var/run/secrets/kubernetes.io/serviceaccount is pre-created by the
+# runtime Docker image (see docker/Dockerfile: VOLUME + 0777 mkdir). The
+# root-run customstart.sh hook that AMP used here is no longer needed
+# and the file has been deleted.
 
 log "Update complete: success."
