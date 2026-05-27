@@ -1,10 +1,13 @@
 #!/bin/bash
-# © 2026 CubeCoders Limited. All Rights Reserved.
+# Originally © 2026 CubeCoders Limited (MIT). Modified for Pelican Wings.
+# See ATTRIBUTION.md.
 #
-# lib.sh - Shared helpers for the AMP Dune Awakening template scripts.
+# lib.sh - Shared helpers for the Dune Awakening Pelican egg scripts.
 #
 # Sourced by every other script. Establishes layout variables, logging,
-# env loading, PID-file management, and wait-for-port helpers.
+# PID-file management, and wait-for-port helpers. Under Pelican Wings,
+# env vars are inherited naturally from the parent shell (no equivalent
+# of AMP's per-PreStartStage env-file plumbing needed).
 #
 # Layout under $BASE (passed as $1 to each script, or DUNE_BASE_DIR env):
 #   $BASE/scripts/        — these scripts
@@ -39,8 +42,8 @@ mkdir -p "$STATE" "$RUNTIME/pids" "$RUNTIME/postgresql" "$LOGS" 2>/dev/null || t
 # Logging
 # --------------------------------------------------------------------------
 # SOURCE is the structured-log [source] tag for this script.
-# Each script sets SOURCE before sourcing lib.sh; fall back to 'amp'.
-: "${SOURCE:=amp}"
+# Each script sets SOURCE before sourcing lib.sh; fall back to 'dune'.
+: "${SOURCE:=dune}"
 log()  { printf '[%s] [INFO] %s\n'  "$SOURCE" "$*"; }
 warn() { printf '[%s] [WARN] %s\n'  "$SOURCE" "$*" >&2; }
 die()  { printf '[%s] [ERROR] %s\n' "$SOURCE" "$*" >&2; exit 1; }
@@ -167,21 +170,21 @@ export DUNE_PG_PORT DUNE_MQ_ADMIN_PORT DUNE_MQ_ADMIN_MGMT_PORT \
        DUNE_TEXT_ROUTER_PORT DUNE_DIRECTOR_PORT DUNE_GATEWAY_PORT
 
 # --------------------------------------------------------------------------
-# AMP-supplied configuration — written by the "Render AMP env file"
-# PreStartStage on every container start.  AMP doesn't propagate
-# App.EnvironmentVariables to PreStartStages, so we materialise them
-# via inline {{Var}} substitution into a file and source it here.
+# Derive the Funcom Live Services environment from the chosen build:
+# the PTC Steam app id maps to Funcom's beta FLS environment, production
+# uses retail. Driven by the same panel variable that selects the Steam
+# app id, so FLS env can never desync from the installed build.
 # --------------------------------------------------------------------------
-if [ -z "${SKIP_AMPENV_SOURCE:-}" ] && [ -f "$RUNTIME/amp.env" ]; then
-  # shellcheck disable=SC1091
-  set -a; source "$RUNTIME/amp.env"; set +a
-fi
+case "${DUNE_RELEASE_VERSION:-}" in
+  3104830) DUNE_FLS_ENV=beta ;;
+  *)       DUNE_FLS_ENV=retail ;;
+esac
+export DUNE_FLS_ENV
 
 # --------------------------------------------------------------------------
-# Persisted state — each PreStartStage is a fresh bash invocation that
-# doesn't inherit env exports from a sibling stage.  Anything prestart.sh
-# derives (WorldName, RMQ secret) must be read from $STATE here so every
-# subsequent stage picks it up automatically just by sourcing lib.sh.
+# Persisted state — values prestart.sh generated on first install (WorldName,
+# RMQ secret) live in $STATE so subsequent container restarts pick them up.
+# Read them here so every stage that sources lib.sh sees them as env vars.
 # --------------------------------------------------------------------------
 if [ -f "$STATE/world-name" ]; then
   DUNE_WORLD_NAME=$(cat "$STATE/world-name")

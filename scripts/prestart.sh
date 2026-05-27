@@ -1,10 +1,11 @@
 #!/bin/bash
-# © 2026 CubeCoders Limited. All Rights Reserved.
+# Originally © 2026 CubeCoders Limited (MIT). Modified for Pelican Wings.
+# See ATTRIBUTION.md.
 #
 # prestart.sh BASE_DIR
 #
-# Run by AMP as the first PreStartStage on every container start.
-# Idempotent: safe to re-run.  Responsibilities:
+# Run by pelican-entrypoint.sh as the first boot stage on every container
+# start. Idempotent: safe to re-run. Responsibilities:
 #
 #   1. Decode the JWT, derive/persist WorldName (FLS-registered identity)
 #   2. Generate RMQ secret + self-signed TLS cert (replaces cert-manager)
@@ -13,73 +14,32 @@
 #   5. Boot postgres briefly to load the schema via ToolsDB resetdb if missing
 #   6. Seed dune.world_partition for the two stock maps
 #
-# Required env vars (set by AMP via App.EnvironmentVariables):
-#   DUNE_JWT              — Funcom IGW JWT (Required:true on the template)
+# Required env vars (set by Pelican Wings from the egg variables):
+#   DUNE_JWT              — Funcom IGW JWT (Required on the egg variable)
 #   DUNE_WORLD_TITLE      — display name in server browser
 #   DUNE_REGION           — "Europe Test" / "North America Test"
-#   DUNE_BIND_IP          — what services bind to (AMP's $ApplicationIPBinding)
-#   DUNE_EXTERNAL_IP      — advertised to FLS (AMP's $ExternalIP or override)
+#   DUNE_BIND_IP          — what services bind to
+#   DUNE_EXTERNAL_IP      — advertised to FLS
 # Optional:
 #   DUNE_WORLD_NAME_OVERRIDE — paste the Funcom-issued name to skip auto-gen
+#
+# Pelican vs AMP: AMP ran each PreStartStage as a separate bash invocation,
+# so it materialised env vars to runtime/amp.env to bridge between stages.
+# Under Pelican Wings, pelican-entrypoint.sh runs every stage in the same
+# parent shell — children inherit the env naturally, no amp.env needed.
 
 export SOURCE="prestart"
-SKIP_AMPENV_SOURCE=1 source "$(dirname "$(readlink -f "$0")")/lib.sh" "$@"
+source "$(dirname "$(readlink -f "$0")")/lib.sh" "$@"
 
-# --------------------------------------------------------------------------
-# Persist AMP-supplied env vars to runtime/amp.env so subsequent
-# PreStartStages (start-pg.sh, start-*.sh, etc.) can source them via lib.sh.
-# AMP doesn't propagate App.EnvironmentVariables to PreStartStages — the
-# template invokes us with `bash -c "VAR=... VAR2=... prestart.sh BASE"` so
-# the values arrive as our process env; we materialise them now.
-# --------------------------------------------------------------------------
 mkdir -p "$RUNTIME"
 
-# Guard: required runtime setup is provisioned on container start and only
-# takes effect from the next start. Fail fast if it is not present yet.
+# Guard: the runtime image must pre-create the K8s ServiceAccount mount
+# (see docker/Dockerfile). pelican-entrypoint.sh already enforces this,
+# but defending in depth is cheap.
 SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
 if [ ! -d "$SA_DIR" ] || [ ! -w "$SA_DIR" ]; then
-  die "AMP instance must be restarted before it can be started."
+  die "K8s ServiceAccount mount $SA_DIR missing or not writable — runtime Docker image must pre-create it."
 fi
-
-# Strip characters that would cause trouble in downstream shell contexts:
-#   `   backtick — triggers command substitution inside "..." in start-*.sh
-#       command-line args like  -ServerName="$DUNE_WORLD_TITLE"
-#   |   pipe — wouldn't expand inside "..." but harmless to drop, and avoids
-#       any future eval/heredoc path producing a pipeline
-#   '   single-quote — survives AMP's '{{Var}}' substitution only because
-#       AMP doesn't escape; drop it so we never produce a bash parse error
-#       in any future env-passthrough that uses single-quotes
-sanitise_shell_value() {
-  local v="$1"
-  v="${v//\`/}"
-  v="${v//|/}"
-  v="${v//\'/}"
-  printf '%s' "$v"
-}
-
-{
-  for v in DUNE_JWT DUNE_WORLD_TITLE DUNE_REGION DUNE_WORLD_NAME_OVERRIDE \
-           DUNE_HOST_DC_ID DUNE_RELEASE_VERSION \
-           DUNE_BIND_IP DUNE_EXTERNAL_IP \
-           DUNE_MQ_GAME_PORT DUNE_MQ_GAME_MGMT_PORT \
-           K8S_POOL_GAME_PORT_BASE K8S_POOL_IGW_PORT_BASE; do
-    raw="${!v:-}"
-    clean=$(sanitise_shell_value "$raw")
-    # %q produces shell-quoted output so values with spaces/specials round-trip
-    printf '%s=%q\n' "$v" "$clean"
-  done
-} > "$RUNTIME/amp.env"
-chmod 0600 "$RUNTIME/amp.env"
-
-# Derive the FLS environment from the selected build (ReleaseVersion):
-# the PTC app id uses Funcom's beta FLS environment, production uses
-# retail. Driven by the same setting that selects the Steam app id, so
-# the FLS environment can never desync from the installed build.
-case "${DUNE_RELEASE_VERSION:-}" in
-  3104830) DUNE_FLS_ENV=beta ;;
-  *)       DUNE_FLS_ENV=retail ;;
-esac
-printf 'DUNE_FLS_ENV=%q\n' "$DUNE_FLS_ENV" >> "$RUNTIME/amp.env"
 
 log "Running pre-start setup..."
 log "  Bind IP:      $DUNE_BIND_IP"

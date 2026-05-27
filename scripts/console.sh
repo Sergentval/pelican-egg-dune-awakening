@@ -1,22 +1,26 @@
 #!/bin/bash
-# © 2026 CubeCoders Limited. All Rights Reserved.
+# Originally © 2026 CubeCoders Limited (MIT). Modified for Pelican Wings.
+# See ATTRIBUTION.md.
 #
 # console.sh BASE_DIR
 #
-# Foreground "console" process AMP attaches to.  Multiplexes all service
-# logs into one stdout stream with [service] prefixes, and on SIGTERM
-# stops each background service in reverse dependency order.
+# Foreground process Pelican Wings monitors. Multiplexes all service logs
+# into one stdout stream with [service] prefixes, and on SIGTERM stops
+# each background service in reverse dependency order with phased grace
+# periods (UE5 25s, gateway/director 8s, mq/pg 15s).
 #
-# AMP's lifecycle:
-#   - AMP runs all PreStartStages (start-pg, start-mq-*, etc.) which leave
-#     services running in the background with PID files in $RUNTIME/pids/
-#   - AMP then runs App.ExecutableLinux which is this script
-#   - AMP attaches its console to our stdout
-#   - On stop, AMP sends SIGTERM per App.ExitMethod=SIGTERM
-#   - We trap, send SIGTERM to each service PID in reverse order, wait, exit
+# Container lifecycle:
+#   - pelican-entrypoint.sh runs every boot stage (start-pg, start-mq-*,
+#     etc.) which leave services running in the background with PID files
+#     in $RUNTIME/pids/
+#   - pelican-entrypoint.sh then execs this script as the container's
+#     main process; Wings attaches the container's stdout to its log pipe
+#   - On stop, Wings sends SIGTERM
+#   - We trap, send SIGTERM to each service PID per phase in reverse
+#     order, wait the phase's grace window, SIGKILL stragglers, exit
 
 BASE="${1:-${DUNE_BASE_DIR:-}}"
-export SOURCE="amp"
+export SOURCE="console"
 source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
 
 # Dependency order — services started in this order; stopped in reverse
