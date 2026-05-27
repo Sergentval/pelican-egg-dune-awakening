@@ -66,9 +66,18 @@ RUN useradd --uid 988 --user-group --create-home --home-dir /home/container --sh
 # K8s ServiceAccount mount — see header. The Funcom Director's IGWO
 # component reads /var/run/secrets/kubernetes.io/serviceaccount/{token,ca.crt}
 # at the standard path; mock-k8s-go writes them there as the container user.
+#
+# Pelican Wings starts containers with ReadonlyRootfs=true and only mounts
+# /home/container and /tmp as writable. Image-built directories anywhere
+# else are invisible — the runtime can't write to them. The fix is to
+# declare this path as a Docker VOLUME: at container creation Docker mounts
+# an anonymous writable volume here and copies the image's initial content
+# (this empty 0777 dir) into it. The 0777 mode is necessary because Wings
+# may resolve the runtime UID dynamically, and chown'ing in the image is
+# moot once Docker is operating on a fresh anonymous volume.
 RUN mkdir -p /var/run/secrets/kubernetes.io/serviceaccount \
- && chown -R container:container /var/run/secrets/kubernetes.io/serviceaccount \
- && chmod 0755 /var/run/secrets/kubernetes.io/serviceaccount
+ && chmod 0777 /var/run/secrets/kubernetes.io/serviceaccount
+VOLUME ["/var/run/secrets/kubernetes.io/serviceaccount"]
 
 USER container
 WORKDIR /home/container
