@@ -1,0 +1,244 @@
+// Package battlegroup loads and serves the BattleGroup CR that the Funcom
+// Battlegroup Director treats as the source of truth for world layout
+// (which maps exist, how partitions are sliced, image tags, DB creds, …).
+//
+// In a real Kubernetes deployment, the AMP module installs a BattleGroup
+// resource per world. Here we read the same template Funcom ships in the
+// depot under server/scripts/setup/templates/world-template.yaml,
+// substitute the per-server placeholders, normalize metadata to the
+// namespace/name the Director queries, and expose it via the mock-k8s
+// CRD endpoints.
+//
+// The template is verbose (~60 KB) but mostly opaque to us: we treat
+// every field as an unstructured map[string]any and let the Director's
+// internal YAML schema validate. We only touch the few fields we have
+// to: metadata.name, metadata.namespace, and any string anywhere in the
+// document containing a {PLACEHOLDER}.
+package battlegroup
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Placeholders is the set of {KEY} → value substitutions applied to
+// every string in the loaded template.
+type Placeholders map[string]string
+
+// LoadFromFile reads path, performs placeholder substitution, and
+// returns the resulting unstructured object plus its derived name and
+// namespace. namespace defaults to "default" (matching the Director's
+// query URL) regardless of what the template specifies. name is forced
+// to the canonical world-name (so the Director can GET it by that key).
+func LoadFromFile(path string, name string, p Placeholders) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read template: %w", err)
+	}
+
+	// Substitute placeholders BEFORE parsing — that way a {WORLD_NAME}
+	// inside a key, value, or map index all get replaced uniformly,
+	// without us having to walk the YAML node tree.
+	substituted := substitute(string(raw), p)
+
+	var obj map[string]any
+	if err := yaml.Unmarshal([]byte(substituted), &obj); err != nil {
+		return nil, fmt.Errorf("parse template: %w", err)
+	}
+
+	// Force metadata.name and metadata.namespace to what the Director
+	// actually queries. The template hints at funcom-seabass-<world>;
+	// the real Director uses `default`. Don't fight the client.
+	meta, ok := obj["metadata"].(map[string]any)
+	if !ok {
+		meta = map[string]any{}
+		obj["metadata"] = meta
+	}
+	meta["name"] = name
+	meta["namespace"] = "default"
+
+	// kind in the template is "BattleGroup" (Pascal-case G). Keep it as
+	// written so the Director's deserializer recognizes the type. If
+	// it's missing, set it.
+	if _, ok := obj["kind"].(string); !ok {
+		obj["kind"] = "BattleGroup"
+	}
+	if _, ok := obj["apiVersion"].(string); !ok {
+		obj["apiVersion"] = "igw.funcom.com/v1"
+	}
+
+	// The Director's BattlegroupUtils.Igwo.Battlegroup type has
+	// [Required] on the .status field. world-template.yaml ships only
+	// spec, so deserialization throws JsonException("missing required
+	// properties: status") on the first GET. Inject a minimal default
+	// status that mirrors what a real controller would publish after
+	// reconciling. Empty maps/slices satisfy the deserializer's
+	// [Required] check regardless of what nested fields its type has.
+	if _, ok := obj["status"].(map[string]any); !ok {
+		obj["status"] = defaultBattleGroupStatus()
+	}
+
+	return obj, nil
+}
+
+// defaultBattleGroupStatus is the placeholder status block we inject
+// when the template omits one. The shape mirrors a typical K8s CRD
+// status: a phase, observedGeneration, an empty conditions list, plus
+// the common Funcom-side fields we've seen in the binary's strings.
+// All values are non-null so .NET's System.Text.Json [Required]
+// validation passes.
+func defaultBattleGroupStatus() map[string]any {
+	return map[string]any{
+		"phase":              "Running",
+		"observedGeneration": int64(1),
+		"conditions":         []any{},
+		"partitions":         []any{},
+		"battlegroupRevision": int64(0),
+		"serverSetScales":    []any{},
+	}
+}
+
+// MapInfo carries the (mapName → partitionId) mapping extracted from
+// the BattleGroup spec. UE5 instances read their partitionId from the
+// -PartitionIndex command-line arg and use it to claim a row in
+// dune.farm_state — mismatched ids trigger Director's
+// "partition ID N doesn't match desired partition M" warnings and may
+// break travel routing once instances start handing players off.
+type MapInfo struct {
+	MapName     string
+	PartitionID int64
+}
+
+// ExtractMapPartitions walks the BattleGroup spec for every entry
+// under .spec...worldPartitions[*].(map, partitions[0].id) and
+// returns them as a deduplicated, stable-ordered slice. Stable
+// ordering matters because mock-k8s pre-creates ServerSetScales in
+// this order and the operator's mental model maps "first" → "main
+// world".
+//
+// Multi-partition maps (rare) collapse to their first partition id.
+// If the spec changes between versions, callers should treat the
+// returned list as authoritative: never invent partition ids.
+func ExtractMapPartitions(obj map[string]any) []MapInfo {
+	seen := make(map[string]struct{})
+	var out []MapInfo
+	walkForMapPartitions(obj, seen, &out)
+	return out
+}
+
+func walkForMapPartitions(v any, seen map[string]struct{}, out *[]MapInfo) {
+	switch t := v.(type) {
+	case map[string]any:
+		mapName, isMap := t["map"].(string)
+		if isMap && mapName != "" {
+			if _, dupe := seen[mapName]; !dupe {
+				pid := firstPartitionID(t["partitions"])
+				seen[mapName] = struct{}{}
+				*out = append(*out, MapInfo{MapName: mapName, PartitionID: pid})
+			}
+		}
+		for _, child := range t {
+			walkForMapPartitions(child, seen, out)
+		}
+	case []any:
+		for _, child := range t {
+			walkForMapPartitions(child, seen, out)
+		}
+	}
+}
+
+// firstPartitionID returns the .id field of the first element in a
+// partitions array, defaulting to 0 if absent. YAML decoders surface
+// integers as int / int64 / float64 depending on size, so we accept
+// all three.
+func firstPartitionID(v any) int64 {
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return 0
+	}
+	first, ok := arr[0].(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch id := first["id"].(type) {
+	case int:
+		return int64(id)
+	case int64:
+		return id
+	case float64:
+		return int64(id)
+	}
+	return 0
+}
+
+// ExtractMaps walks a parsed BattleGroup object looking for every
+// `map: "..."` string value anywhere in the tree. The result is a
+// deduplicated, stable-ordered list of map names referenced by the
+// BattleGroup spec (e.g. ["Survival_1", "Overmap", "DeepDesert_1",
+// "SH_Arrakeen", ...]).
+//
+// Deprecated: prefer ExtractMapPartitions, which returns the real
+// partitionId from the spec instead of forcing callers to invent one.
+// Retained because some call sites only need the name list.
+func ExtractMaps(obj map[string]any) []string {
+	seen := make(map[string]struct{})
+	var maps []string
+	walkForMaps(obj, seen, &maps)
+	return maps
+}
+
+func walkForMaps(v any, seen map[string]struct{}, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		if m, ok := t["map"].(string); ok && m != "" {
+			if _, dupe := seen[m]; !dupe {
+				seen[m] = struct{}{}
+				*out = append(*out, m)
+			}
+		}
+		for _, child := range t {
+			walkForMaps(child, seen, out)
+		}
+	case []any:
+		for _, child := range t {
+			walkForMaps(child, seen, out)
+		}
+	}
+}
+
+// ServerSetScaleName returns the canonical resource name the Director
+// uses to GET a per-map ServerSetScale: <worldname>-<mapname>, with the
+// map name lowercased and underscores rewritten to hyphens (DNS-1123).
+//
+// Example: world="sh-de0bccaa2501bf22-jrqtjf", map="SH_Arrakeen"
+//
+//	→ "sh-de0bccaa2501bf22-jrqtjf-sh-arrakeen"
+func ServerSetScaleName(worldName, mapName string) string {
+	low := []byte{}
+	for i := 0; i < len(mapName); i++ {
+		c := mapName[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			low = append(low, c+32)
+		case c == '_':
+			low = append(low, '-')
+		default:
+			low = append(low, c)
+		}
+	}
+	return worldName + "-" + string(low)
+}
+
+// substitute does a single-pass {KEY}→value replace. Doing it on the
+// raw YAML string (before parsing) means we don't have to walk a deep
+// nested tree — strings.ReplaceAll is O(n·k) where k is the placeholder
+// count (~7), which is negligible against a 60 KB file.
+func substitute(text string, p Placeholders) string {
+	for k, v := range p {
+		text = strings.ReplaceAll(text, "{"+k+"}", v)
+	}
+	return text
+}
