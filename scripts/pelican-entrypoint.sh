@@ -56,6 +56,43 @@ echo "[entrypoint] [INFO]   Region:      ${DUNE_REGION:-<unset>}"
 echo "[entrypoint] [INFO]   External IP: ${DUNE_EXTERNAL_IP:-<unset>}"
 
 bash scripts/prestart.sh         "$BASE"
+
+# Apply panel-driven overrides to UserEngine.ini after prestart.sh seeds
+# its template. UE5 reads this file once on startup, so we rewrite it
+# every boot — that way the operator can change values via Pelican
+# variables and just restart the server, no manual file edit.
+#
+# Substituted keys:
+#   DUNE_SERVER_PASSWORD       → Bgd.ServerLoginPassword (default "Sandworm" from Funcom template)
+#   DUNE_SERVER_DISPLAY_NAME   → Bgd.ServerDisplayName  (default "My Arrakis, My Dune")
+#
+# Empty/unset means "don't touch — keep whatever's already in the file"
+# so admins who hand-edit UserEngine.ini won't get clobbered.
+USERENGINE="$BASE/server/state/ue5-saved/UserSettings/UserEngine.ini"
+if [ -f "$USERENGINE" ]; then
+    if [ -n "${DUNE_SERVER_PASSWORD:-}" ]; then
+        # Escape forward slashes and ampersands so they survive the
+        # sed replacement, and reject embedded double quotes (which
+        # would terminate the INI string and break UE5's parser).
+        if printf '%s' "$DUNE_SERVER_PASSWORD" | grep -q '"'; then
+            echo "[entrypoint] [WARN] DUNE_SERVER_PASSWORD contains double quotes — UE5 won't parse this. Skipping." >&2
+        else
+            esc=$(printf '%s' "$DUNE_SERVER_PASSWORD" | sed 's/[\\/&]/\\&/g')
+            sed -i -E "s/^Bgd\.ServerLoginPassword=.*/Bgd.ServerLoginPassword=\"$esc\"/" "$USERENGINE"
+            echo "[entrypoint] [INFO]   ServerLoginPassword: applied from DUNE_SERVER_PASSWORD env"
+        fi
+    fi
+    if [ -n "${DUNE_SERVER_DISPLAY_NAME:-}" ]; then
+        if printf '%s' "$DUNE_SERVER_DISPLAY_NAME" | grep -q '"'; then
+            echo "[entrypoint] [WARN] DUNE_SERVER_DISPLAY_NAME contains double quotes — UE5 won't parse this. Skipping." >&2
+        else
+            esc=$(printf '%s' "$DUNE_SERVER_DISPLAY_NAME" | sed 's/[\\/&]/\\&/g')
+            sed -i -E "s/^Bgd\.ServerDisplayName=.*/Bgd.ServerDisplayName=\"$esc\"/" "$USERENGINE"
+            echo "[entrypoint] [INFO]   ServerDisplayName:   applied from DUNE_SERVER_DISPLAY_NAME env"
+        fi
+    fi
+fi
+
 bash scripts/start-pg.sh         "$BASE"
 bash scripts/migrate-db.sh       "$BASE"
 bash scripts/start-mq-admin.sh   "$BASE"
