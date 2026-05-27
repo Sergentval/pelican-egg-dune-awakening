@@ -45,16 +45,23 @@ The Pelican egg wires this up against Wings instead of AMP.
 ## Status
 
 - **Phase 1 done**: project scaffolded with the upstream MIT scripts vendored.
-- **Phase 2 done**: `egg-dune-awakening.json` — Pelican PLCN_v1 egg, 207 lines,
+- **Phase 2 done**: `egg-dune-awakening.json` — Pelican PLCN_v3 egg, 209 lines,
   12 variables, embedded install script (SteamCMD anonymous → CubeCoders'
   scripts tarball → `install.sh` patchelf pipeline).
 - **Phase 3 done**: `docker/Dockerfile` — Debian Bookworm-slim runtime with
   the 14 apt deps + tini PID 1 + pre-created K8s ServiceAccount mount with
   `container` UID 988 ownership.
-- Phase 4: verification (shellcheck + jq + dry-run + memory update) — _next_.
-
-This egg is **not import-ready** until you publish the runtime image. See
-[`docker/README.md`](./docker/README.md) for build + push steps.
+- **Phase 4 done**: verification — shellcheck 0 errors on scripts + embedded
+  install script, jq parse clean, runtime image smoke test green.
+- **Phase 5 done**: image published to
+  [`ghcr.io/sergentval/pelican-dune-awakening:latest`](https://github.com/Sergentval/pelican-egg-dune-awakening/pkgs/container/pelican-dune-awakening).
+  ⚠️ Until the package is toggled public via the GHCR web UI, Wings hosts
+  pulling the image need `docker login ghcr.io`.
+- Phase 6 _(remaining)_: end-to-end smoke test with a real `DUNE_JWT` — see
+  [`TESTING.md`](./TESTING.md). Path A install step currently blocked on a
+  SteamCMD bootstrap TLS issue (2017-era binary against modern Steam CDN);
+  the egg's pipeline is correct, but a `LD_PRELOAD` of system libcurl in
+  the install script may be needed to recover.
 
 ## Project layout
 
