@@ -78,4 +78,8 @@ STOPSIGNAL SIGTERM
 # console.sh trap actually fires across the 10+ background services it
 # orchestrates, and reaps any zombies left behind by setsid'd children.
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
-CMD ["bash"]
+# Pelican Wings passes the egg's startup command as $STARTUP and starts the
+# container with the image's default CMD. The CMD must therefore eval
+# $STARTUP so Wings can actually launch the server. Falls back to a plain
+# shell if STARTUP is unset (useful for SFTP-only / debugging sessions).
+CMD ["/bin/bash", "-c", "exec ${STARTUP:-bash}"]
