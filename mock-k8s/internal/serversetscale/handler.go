@@ -8,9 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
+
+// osLookupEnv is wrapped so tests can override. Always reads at call
+// time so MOCK_K8S_LIST_ENABLE can be toggled live without a restart.
+var osLookupEnv = func(name string) string { return os.Getenv(name) }
 
 // Handler returns the http.HandlerFunc tree for /apis/igw.funcom.com/v1/...
 // The K8s URL shape we serve:
@@ -86,7 +91,7 @@ func handleList(s *Store, ns string, isWatch bool, w http.ResponseWriter, r *htt
 		streamWatch(s, ns, w, r)
 		return
 	}
-	// We deliberately return EMPTY items even when objects exist.
+	// By default we return EMPTY items even when objects exist.
 	// Reason: the Director's BattlegroupUtils.Igwo.Api.ListServerSetScales
 	// builds a Dictionary keyed by some string property on each item,
 	// and on at least one of those properties our serialized objects
@@ -96,20 +101,43 @@ func handleList(s *Store, ns string, isWatch bool, w http.ResponseWriter, r *htt
 	// opening port 11717 — which kills start-director.sh's
 	// wait_for_port and ultimately the container.
 	//
-	// Director doesn't actually need LIST results: it discovers maps
+	// Director doesn't strictly need LIST results: it discovers maps
 	// from the BattleGroup spec and then GETs each ServerSetScale by
 	// name (which our lazy-create handles) and PATCHes scale changes
-	// directly. Empty LIST is the cleanest workaround until we can
-	// pinpoint the specific null field — without disassembling the
-	// stripped .NET AOT Director binary it's a guessing game.
+	// directly. Empty LIST is the cleanest workaround.
+	//
+	// MOCK_K8S_LIST_ENABLE=1 opts into returning the real list. Used
+	// for bisecting which field on a real item triggers the crash —
+	// flip on, enable some-items, watch Director's exception, narrow.
+	items := []Object{}
+	if listEnabled() {
+		realItems := s.List(ns)
+		if realItems != nil {
+			items = realItems
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "igw.funcom.com/v1",
 		"kind":       "ServerSetScaleList",
 		"metadata": map[string]any{
 			"resourceVersion": s.CurrentResourceVersion(),
 		},
-		"items": []Object{},
+		"items": items,
 	})
+}
+
+// listEnabled returns true if MOCK_K8S_LIST_ENABLE is set to a
+// truthy value (1, true, yes). Read on every call so the operator
+// can toggle without restarting mock-k8s — useful when bisecting
+// which field a real-list item needs to satisfy Director's
+// Dictionary.Add without flapping the container.
+func listEnabled() bool {
+	v := osLookupEnv("MOCK_K8S_LIST_ENABLE")
+	switch v {
+	case "1", "true", "TRUE", "yes", "YES":
+		return true
+	}
+	return false
 }
 
 func handleCreate(s *Store, ns string, w http.ResponseWriter, r *http.Request) {
