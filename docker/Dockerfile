@@ -63,6 +63,18 @@ RUN apt-get update \
 # tooling that hard-codes this UID continues to work.
 RUN useradd --uid 988 --user-group --create-home --home-dir /home/container --shell /bin/bash container
 
+# AMP-compat symlink. CubeCoders' install.sh runs `patchelf --set-interpreter`
+# with absolute install-time paths (e.g. /mnt/server/extracted/postgres/lib/
+# ld-musl-x86_64.so.1). AMP itself uses /mnt/server as both install AND
+# runtime path — paths match, ELFs load. Pelican Wings installs into
+# /mnt/server (via the install container) but mounts the runtime volume at
+# /home/container, so the baked-in interpreter paths point at a directory
+# that doesn't exist at runtime → 'env: <bin>: No such file or directory'
+# from every musl-linked Funcom binary. Symlinking /mnt/server -> /home/
+# container at image build time makes the patchelf'd paths resolve at
+# runtime without re-running patchelf on every container start.
+RUN ln -s /home/container /mnt/server
+
 # K8s ServiceAccount mount — see header. The Funcom Director's IGWO
 # component reads /var/run/secrets/kubernetes.io/serviceaccount/{token,ca.crt}
 # at the standard path; mock-k8s-go writes them there as the container user.
