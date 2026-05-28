@@ -3,7 +3,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  detectTier,
   fetchHistory,
+  fetchItemCategories,
   fetchItems,
   fetchPlayers,
   fetchSkills,
@@ -15,6 +17,7 @@ import {
   skillCategoryStyle,
   vehicleIcon,
   type HistoryResponse,
+  type ItemCategoryBucket,
   type ItemRow,
   type PlayerRow,
   type PublishResult,
@@ -280,9 +283,26 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
 
 // ---- Items ------------------------------------------------------------
 
+// Curated display order for category pills. Anything not in here falls
+// to the end alphabetically.
+const ITEM_CATEGORY_ORDER = [
+  "weapons",
+  "clothing",
+  "consumables",
+  "resources",
+  "schematics",
+  "buildings",
+  "placeables",
+  "customizations",
+  "contracts",
+];
+
 export function ItemsTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>(""); // "" = all
+  const [tierFilter, setTierFilter] = useState<string>(""); // "" = all
+  const [categories, setCategories] = useState<ItemCategoryBucket[]>([]);
   const [matches, setMatches] = useState<ItemRow[]>([]);
   const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
   const [picked, setPicked] = useState<ItemRow | null>(null);
@@ -290,27 +310,64 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
   const [durability, setDurability] = useState(1.0);
   const [searching, setSearching] = useState(false);
 
+  // Load category list once.
   useEffect(() => {
-    if (!query.trim()) {
+    fetchItemCategories().then((res) => {
+      if (res.ok) {
+        const cats = (res.body as { categories: ItemCategoryBucket[] }).categories;
+        // Sort by curated order, then by count desc.
+        cats.sort((a, b) => {
+          const ai = ITEM_CATEGORY_ORDER.indexOf(a.id);
+          const bi = ITEM_CATEGORY_ORDER.indexOf(b.id);
+          if (ai !== -1 && bi !== -1) return ai - bi;
+          if (ai !== -1) return -1;
+          if (bi !== -1) return 1;
+          return b.count - a.count;
+        });
+        setCategories(cats);
+      }
+    });
+  }, []);
+
+  // Refetch matches when query or category changes.
+  useEffect(() => {
+    if (!query.trim() && !category) {
       setMatches([]);
       return;
     }
     const handle = setTimeout(async () => {
       setSearching(true);
-      const res = await fetchItems(query, 40);
+      // When browsing a category give a bigger window — Funcom ships
+      // ~290 weapons and ~280 garments so 500 covers both.
+      const limit = category ? 500 : 40;
+      const res = await fetchItems(query, limit, category);
       if (res.ok) {
         const list = (res.body as { items: ItemRow[] }).items;
         setMatches(list);
-        // Batch-fetch wiki entries (images + descriptions) in the
-        // background. List renders immediately; thumbnails fill in.
         lookupItemIdsBatch(list.map((it) => it.id)).then((map) =>
           setWiki((prev) => ({ ...prev, ...map })),
         );
       }
       setSearching(false);
-    }, 200);
+    }, category && !query ? 0 : 200);
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, category]);
+
+  // Available tier badges in the current result set, for the tier-filter
+  // chip row. Sorted naturally (T1 < T2 < … < T6 < Mk1 < … < Unique).
+  const tiers = useMemo(() => {
+    const seen = new Set<string>();
+    for (const m of matches) {
+      const t = detectTier(m.id);
+      if (t) seen.add(t);
+    }
+    return Array.from(seen).sort();
+  }, [matches]);
+
+  const visible = useMemo(
+    () => (tierFilter ? matches.filter((m) => detectTier(m.id) === tierFilter) : matches),
+    [matches, tierFilter],
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -324,7 +381,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
   }
 
   return (
-    <div className="grid gap-6 md:grid-cols-2">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
       <div className="card">
         <header className="card-header">
           <h2 className="font-semibold">Grant item</h2>
@@ -332,7 +389,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
         <form onSubmit={submit} className="p-4 space-y-4">
           <PlayerPicker />
           <div>
-            <label className="label">Item search</label>
+            <label className="label">Search (any name or id)</label>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -393,18 +450,160 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
         </form>
       </div>
 
-      <div className="card">
+      <div className="card flex flex-col min-h-0">
         <header className="card-header">
-          <h2 className="font-semibold">Results</h2>
-          <span className="text-xs text-slate-500">{searching ? "searching…" : `${matches.length} match`}</span>
+          <h2 className="font-semibold">Browse</h2>
+          <span className="text-xs text-slate-500">
+            {searching ? "searching…" : `${visible.length} of ${matches.length}`}
+          </span>
         </header>
-        <div className="max-h-[600px] overflow-y-auto">
-          {matches.length === 0 && (
-            <div className="p-8 text-center text-slate-500 text-sm">
-              Type to search 2558 items
+
+        {/* Category pill row */}
+        <div className="px-4 pt-3 pb-2 border-b border-slate-800 space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => { setCategory(""); setTierFilter(""); }}
+              className={
+                "px-2 py-1 rounded-full border text-xs transition " +
+                (category === ""
+                  ? "border-spice-500 bg-spice-900/40 text-spice-200"
+                  : "border-slate-700 text-slate-300 hover:bg-slate-800")
+              }
+            >
+              All
+            </button>
+            {categories.map((c) => {
+              const sty = itemCategoryStyle(c.id);
+              return (
+                <button
+                  type="button"
+                  key={c.id}
+                  onClick={() => { setCategory(c.id); setTierFilter(""); }}
+                  className={
+                    "px-2 py-1 rounded-full border text-xs flex items-center gap-1.5 transition " +
+                    (category === c.id
+                      ? "border-spice-500 bg-spice-900/40 text-spice-200"
+                      : "border-slate-700 text-slate-300 hover:bg-slate-800")
+                  }
+                >
+                  <span aria-hidden>{sty.icon}</span>
+                  <span className="capitalize">{c.id}</span>
+                  <span className="text-slate-500 text-[10px]">{c.count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tier chips — only when a category is picked + multiple tiers in view */}
+          {tiers.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">Tier</span>
+              <button
+                type="button"
+                onClick={() => setTierFilter("")}
+                className={
+                  "px-2 py-0.5 rounded text-xs border transition " +
+                  (tierFilter === ""
+                    ? "border-slate-500 bg-slate-800 text-slate-100"
+                    : "border-slate-800 text-slate-500 hover:bg-slate-800")
+                }
+              >
+                all
+              </button>
+              {tiers.map((t) => (
+                <button
+                  type="button"
+                  key={t}
+                  onClick={() => setTierFilter(t === tierFilter ? "" : t)}
+                  className={
+                    "px-2 py-0.5 rounded text-xs border font-mono transition " +
+                    (tierFilter === t
+                      ? "border-spice-500 bg-spice-900/40 text-spice-300"
+                      : "border-slate-800 text-slate-400 hover:bg-slate-800")
+                  }
+                >
+                  {t}
+                </button>
+              ))}
             </div>
           )}
-          {matches.map((it) => {
+        </div>
+
+        <div className="flex-1 max-h-[600px] overflow-y-auto">
+          {visible.length === 0 && (
+            <div className="p-8 text-center text-slate-500 text-sm">
+              {category
+                ? "No items match the current category + tier filter."
+                : "Pick a category above, or type to search 2558 items."}
+            </div>
+          )}
+          {/* Grid view when browsing a category; list view for free-text */}
+          {category && visible.length > 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 p-3">
+              {visible.slice(0, 200).map((it) => {
+                const sty = itemCategoryStyle(it.category);
+                const w = wiki[it.id];
+                const img = awakeningImageUrl(w?.image);
+                const tier = detectTier(it.id);
+                const active = picked?.id === it.id && picked?.source === it.source;
+                return (
+                  <div
+                    key={it.id + it.source}
+                    className={
+                      "rounded border p-2 text-xs hover:border-spice-500/50 transition relative " +
+                      (active ? "border-spice-500 bg-spice-900/30" : "border-slate-800 hover:bg-slate-800/50")
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setPicked(it)}
+                      className="w-full text-left flex flex-col items-center gap-1"
+                    >
+                      <div className="relative w-16 h-16 flex items-center justify-center">
+                        {img ? (
+                          <img
+                            src={img}
+                            alt=""
+                            width={56}
+                            height={56}
+                            loading="lazy"
+                            className="w-14 h-14 object-contain"
+                          />
+                        ) : (
+                          <span className="text-3xl" aria-hidden>{sty.icon}</span>
+                        )}
+                        {tier && (
+                          <span className="absolute -bottom-1 -right-1 text-[9px] font-mono px-1 py-0.5 rounded bg-slate-800/90 border border-slate-700 text-spice-300">
+                            {tier}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-center w-full">
+                        <div className={`truncate ${sty.color}`}>{w?.name || it.name || it.id}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{it.id}</div>
+                      </div>
+                    </button>
+                    <a
+                      href={wikiLinkFor(w, it.name || it.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="absolute top-1 right-1 text-slate-500 hover:text-spice-300 text-[10px]"
+                      title="View on awakening.wiki"
+                    >
+                      ↗
+                    </a>
+                  </div>
+                );
+              })}
+              {visible.length > 200 && (
+                <div className="col-span-full text-center text-xs text-slate-500 py-3">
+                  Showing first 200 — narrow the tier filter or search to see more.
+                </div>
+              )}
+            </div>
+          ) : (
+            visible.map((it) => {
             const sty = itemCategoryStyle(it.category);
             const active = picked?.id === it.id && picked?.source === it.source;
             const w = wiki[it.id];
@@ -453,7 +652,8 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
                 </a>
               </div>
             );
-          })}
+            })
+          )}
         </div>
       </div>
     </div>

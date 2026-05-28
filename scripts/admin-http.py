@@ -307,8 +307,14 @@ def fetch_steam_info(steam_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def search_data(name: str, query: str, limit: int) -> list[dict]:
+def search_data(name: str, query: str, limit: int, category: str = "") -> list[dict]:
+    """Search the bundled catalogue. `category` (when set) restricts to
+    rows whose `category` field matches case-insensitively. `query`
+    further narrows by substring across id+name+category."""
     rows = _DATA.get(name, [])
+    if category:
+        cat = category.lower()
+        rows = [r for r in rows if r.get("category", "").lower() == cat]
     if not query:
         return rows[:limit]
     needle = query.lower()
@@ -320,6 +326,21 @@ def search_data(name: str, query: str, limit: int) -> list[dict]:
         or needle in row.get("category", "").lower()
     ]
     return matches[:limit]
+
+
+def list_categories(name: str) -> list[dict]:
+    """Distinct (category, count) pairs from the bundled dataset, sorted
+    by count descending. Used by the SPA's category-pill row."""
+    rows = _DATA.get(name, [])
+    buckets: dict[str, int] = {}
+    for r in rows:
+        cat = r.get("category") or ""
+        if cat:
+            buckets[cat] = buckets.get(cat, 0) + 1
+    return sorted(
+        ({"id": cat, "count": n} for cat, n in buckets.items()),
+        key=lambda d: -d["count"],
+    )
 
 
 # --------------------------------------------------------------------------
@@ -447,10 +468,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/lookup/vehicles":
             self._write(200, {"vehicles": _DATA["vehicles"]})
             return
+        if path == "/api/lookup/item-categories":
+            # Distinct categories + counts so the SPA can render
+            # category-pill filters without shipping items.json
+            # client-side.
+            self._write(200, {"categories": list_categories("items")})
+            return
         if path == "/api/lookup/items":
             q = query.get("q", [""])[0]
-            limit = max(1, min(200, int(query.get("limit", ["40"])[0])))
-            self._write(200, {"items": search_data("items", q, limit)})
+            cat = query.get("category", [""])[0]
+            # Higher cap when browsing a category — Funcom ships ~300
+            # weapons, ~280 garments etc., we want the full list.
+            limit = max(1, min(500, int(query.get("limit", ["40"])[0])))
+            self._write(200, {"items": search_data("items", q, limit, cat)})
             return
         if path == "/api/lookup/skills":
             q = query.get("q", [""])[0]

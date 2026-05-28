@@ -121,8 +121,46 @@ export const fetchPos = (playerId: string) => api<PublishResult>("GET", `/api/po
 
 export const fetchVehicles = () => api<{ vehicles: VehicleClass[] }>("GET", "/api/lookup/vehicles");
 
-export const fetchItems = (q: string, limit = 40) =>
-  api<{ items: ItemRow[] }>("GET", `/api/lookup/items?q=${encodeURIComponent(q)}&limit=${limit}`);
+export interface ItemCategoryBucket {
+  id: string;
+  count: number;
+}
+
+export const fetchItems = (q: string, limit = 40, category = "") => {
+  const qs = new URLSearchParams();
+  if (q) qs.set("q", q);
+  if (category) qs.set("category", category);
+  qs.set("limit", String(limit));
+  return api<{ items: ItemRow[] }>("GET", `/api/lookup/items?${qs.toString()}`);
+};
+
+export const fetchItemCategories = () =>
+  api<{ categories: ItemCategoryBucket[] }>("GET", "/api/lookup/item-categories");
+
+/** Best-effort tier extraction from a Funcom FName.
+ *
+ *  Suffix conventions Funcom ships in DT_ItemTemplates:
+ *    - `_T6` / `_T<N>`        explicit tier suffix
+ *    - `_Mk<N>` / `Mk<N>`     mark number (most consumables)
+ *    - trailing `_<N>` digit  0..6 tier on weapons (0=Artisan ... 5=Regis)
+ *    - `_Unique_<name>...`   unique variants — return "Unique"
+ *
+ *  Returns a short label ("T6", "Mk5", "Unique", "—") suitable for a pill.
+ */
+export function detectTier(itemId: string): string {
+  if (!itemId) return "";
+  const t = itemId.match(/_T(\d+)(?:_|$)/i);
+  if (t) return `T${t[1]}`;
+  const mk = itemId.match(/Mk(\d+)$/i);
+  if (mk) return `Mk${mk[1]}`;
+  if (/_Unique_/i.test(itemId)) return "Unique";
+  const trail = itemId.match(/_(\d+)$/);
+  if (trail) {
+    // 0..6 numeric tail commonly maps to T-tier in weapons + tools.
+    return `T${trail[1]}`;
+  }
+  return "";
+}
 
 export const fetchSkills = (q: string, limit = 50) =>
   api<{ skills: SkillRow[] }>("GET", `/api/lookup/skills?q=${encodeURIComponent(q)}&limit=${limit}`);
