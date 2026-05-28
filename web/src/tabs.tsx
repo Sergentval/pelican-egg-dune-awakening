@@ -545,22 +545,55 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
 
 // ---- Vehicles --------------------------------------------------------
 
+// Vehicle factions accepted by the seabass handler. Free-text per
+// adainrivers' spec, but these five cover the in-game choices.
+const FACTIONS = ["", "Atreides", "Harkonnen", "Choam", "Smuggler", "Spacing Guild"] as const;
+
+interface VehiclePreset {
+  id: string; // local random id
+  name: string;
+  class: string;
+  template: string;
+  faction: string;
+  persistent: number;
+  zOffset: number;
+}
+const PRESETS_KEY = "dune-admin-vehicle-presets";
+
+function loadPresets(): VehiclePreset[] {
+  try {
+    const raw = localStorage.getItem(PRESETS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+function savePresets(presets: VehiclePreset[]): void {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+}
+
 export function VehiclesTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [vehicles, setVehicles] = useState<VehicleClass[]>([]);
   const [className, setClassName] = useState("");
   const [tplName, setTplName] = useState("");
+  const [tplCustom, setTplCustom] = useState(""); // free-text override
+  const [useCustomTpl, setUseCustomTpl] = useState(false);
   // Local X/Y/Z override — initializes from the shared target.pos but
-  // the operator can edit before spawning. When `dirty` is false the
-  // displayed value tracks target.pos so a position lookup in another
-  // tab is visible here immediately.
+  // the operator can edit before spawning.
   const [override, setOverride] = useState<{ x: number; y: number; z: number; dirty: boolean }>({ x: 0, y: 0, z: 0, dirty: false });
   const [rotation, setRotation] = useState<number | "">("");
   const [persistent, setPersistent] = useState(1.0);
+  const [faction, setFaction] = useState("");
+  const [zOffset, setZOffset] = useState(0);
+  const [spawnCount, setSpawnCount] = useState(1);
+  const [presets, setPresets] = useState<VehiclePreset[]>(loadPresets);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
 
-  const x = override.dirty ? override.x : target.pos?.x !== undefined ? Math.round(target.pos.x) : 0;
-  const y = override.dirty ? override.y : target.pos?.y !== undefined ? Math.round(target.pos.y) : 0;
-  const z = override.dirty ? override.z : target.pos?.z !== undefined ? Math.round(target.pos.z) : 0;
+  const baseX = override.dirty ? override.x : target.pos?.x !== undefined ? Math.round(target.pos.x) : 0;
+  const baseY = override.dirty ? override.y : target.pos?.y !== undefined ? Math.round(target.pos.y) : 0;
+  const baseZ = override.dirty ? override.z : target.pos?.z !== undefined ? Math.round(target.pos.z) : 0;
+  const effectiveTpl = useCustomTpl ? tplCustom.trim() : tplName;
 
   useEffect(() => {
     fetchVehicles().then((res) => {
@@ -592,27 +625,73 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
 
   function setXyz(axis: "x" | "y" | "z", v: number) {
     setOverride((prev) => ({
-      x: axis === "x" ? v : prev.dirty ? prev.x : x,
-      y: axis === "y" ? v : prev.dirty ? prev.y : y,
-      z: axis === "z" ? v : prev.dirty ? prev.z : z,
+      x: axis === "x" ? v : prev.dirty ? prev.x : baseX,
+      y: axis === "y" ? v : prev.dirty ? prev.y : baseY,
+      z: axis === "z" ? v : prev.dirty ? prev.z : baseZ,
       dirty: true,
     }));
   }
 
+  function applyPreset(p: VehiclePreset) {
+    setClassName(p.class);
+    setTplName(p.template);
+    setUseCustomTpl(false);
+    setFaction(p.faction);
+    setPersistent(p.persistent);
+    setZOffset(p.zOffset);
+  }
+
+  function saveCurrentAsPreset() {
+    const name = presetNameDraft.trim();
+    if (!name || !className || !effectiveTpl) return;
+    const next: VehiclePreset[] = [
+      ...presets.filter((p) => p.name !== name),
+      {
+        id: Math.random().toString(36).slice(2),
+        name,
+        class: className,
+        template: effectiveTpl,
+        faction,
+        persistent,
+        zOffset,
+      },
+    ];
+    setPresets(next);
+    savePresets(next);
+    setPresetNameDraft("");
+  }
+
+  function deletePreset(id: string) {
+    const next = presets.filter((p) => p.id !== id);
+    setPresets(next);
+    savePresets(next);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!className || !tplName) return;
-    const body: Record<string, unknown> = {
-      player_id: target.playerId,
-      class: className,
-      x,
-      y,
-      z,
-      template: tplName,
-      persistent,
-    };
-    if (rotation !== "") body["rotation"] = rotation;
-    await runAndLog(setConsoleEntries, "vehicle", body, `vehicle ${target.playerId} ${className}/${tplName}`);
+    if (!className || !effectiveTpl) return;
+    // Spawn 1..N copies. Multiples stagger Z by 200 so flying vehicles
+    // don't all spawn inside each other.
+    const count = Math.max(1, Math.min(10, spawnCount));
+    for (let i = 0; i < count; i++) {
+      const body: Record<string, unknown> = {
+        player_id: target.playerId,
+        class: className,
+        x: baseX,
+        y: baseY,
+        z: baseZ + zOffset + (count > 1 ? i * 200 : 0),
+        template: effectiveTpl,
+        persistent,
+      };
+      if (rotation !== "") body["rotation"] = rotation;
+      if (faction) body["faction"] = faction;
+      const label =
+        `vehicle ${target.playerId} ${className}/${effectiveTpl}` +
+        (faction ? ` faction=${faction}` : "") +
+        (count > 1 ? ` (${i + 1}/${count})` : "");
+      // eslint-disable-next-line no-await-in-loop
+      await runAndLog(setConsoleEntries, "vehicle", body, label);
+    }
   }
 
   return (
@@ -661,13 +740,69 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
           )}
         </div>
         <div>
-          <label className="label" htmlFor="vh-tpl">Template</label>
-          <select id="vh-tpl" value={tplName} onChange={(e) => setTplName(e.target.value)} className="input-field" disabled={currentTpls.length === 0}>
-            {currentTpls.length === 0 && <option value="">Pick a class first</option>}
-            {currentTpls.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
+          <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
+            <label className="label !mb-0" htmlFor="vh-tpl">Template</label>
+            <label className="text-xs text-slate-400 flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={useCustomTpl}
+                onChange={(e) => setUseCustomTpl(e.target.checked)}
+                className="accent-spice-500"
+              />
+              custom (free-text)
+            </label>
+          </div>
+          {useCustomTpl ? (
+            <input
+              id="vh-tpl-custom"
+              type="text"
+              value={tplCustom}
+              onChange={(e) => setTplCustom(e.target.value)}
+              placeholder="e.g. T6_Combat, T4_Inventory, or a new id Funcom shipped"
+              className="input-field font-mono"
+            />
+          ) : (
+            <select id="vh-tpl" value={tplName} onChange={(e) => setTplName(e.target.value)} className="input-field" disabled={currentTpls.length === 0}>
+              {currentTpls.length === 0 && <option value="">Pick a class first</option>}
+              {currentTpls.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label" htmlFor="vh-faction">Faction</label>
+            <select id="vh-faction" value={faction} onChange={(e) => setFaction(e.target.value)} className="input-field">
+              {FACTIONS.map((f) => (
+                <option key={f || "default"} value={f}>{f || "Default (CHOAM)"}</option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500 mt-1">Overrides the vehicle skin; blank = ship default.</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="vh-count">Spawn count</label>
+            <div className="flex items-center gap-2">
+              <input id="vh-count" type="number" min={1} max={10} value={spawnCount} onChange={(e) => setSpawnCount(parseInt(e.target.value) || 1)} className="input-field w-24" />
+              <div className="flex gap-1">
+                {[1, 3, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setSpawnCount(n)}
+                    className={
+                      "btn-ghost text-xs border border-slate-700 " +
+                      (spawnCount === n ? "bg-slate-800 text-spice-300" : "")
+                    }
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">Multiple copies stagger Z by +200 each to avoid clipping.</p>
+          </div>
         </div>
 
         <div>
@@ -690,11 +825,35 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
             </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <input type="number" placeholder="X" value={x} onChange={(e) => setXyz("x", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Y" value={y} onChange={(e) => setXyz("y", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Z" value={z} onChange={(e) => setXyz("z", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="X" value={baseX} onChange={(e) => setXyz("x", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Y" value={baseY} onChange={(e) => setXyz("y", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Z" value={baseZ} onChange={(e) => setXyz("z", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
           </div>
-          <p className="text-xs text-slate-500 mt-1">Tip: spawn drops at exact Z — for flying vehicles add ~200 above the ground.</p>
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
+            <span className="text-xs text-slate-500">Z offset:</span>
+            <input
+              type="number"
+              value={zOffset}
+              onChange={(e) => setZOffset(parseFloat(e.target.value) || 0)}
+              className="input-field font-mono w-24"
+            />
+            {[0, 100, 200, 500].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setZOffset(n)}
+                className={
+                  "btn-ghost text-xs border border-slate-700 " +
+                  (zOffset === n ? "bg-slate-800 text-spice-300" : "")
+                }
+              >
+                +{n}
+              </button>
+            ))}
+            <span className="text-xs text-slate-500">
+              spawn Z = {baseZ + zOffset}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -711,7 +870,58 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
           </div>
         </div>
 
-        <button type="submit" className="btn-primary" disabled={!className || !tplName}>Spawn</button>
+        <div className="border border-slate-800 rounded p-3 space-y-2 bg-slate-950/40">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="label !mb-0">Presets</span>
+            <span className="text-xs text-slate-500">{presets.length} saved locally</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {presets.length === 0 && (
+              <span className="text-xs text-slate-500 italic">No presets yet — fill the form, then name + save below.</span>
+            )}
+            {presets.map((p) => (
+              <div key={p.id} className="flex items-center gap-1 border border-slate-700 rounded">
+                <button
+                  type="button"
+                  className="px-2 py-1 text-xs hover:bg-slate-800"
+                  onClick={() => applyPreset(p)}
+                  title={`${p.class} / ${p.template}${p.faction ? ` · ${p.faction}` : ""} · z+${p.zOffset}`}
+                >
+                  <span className="text-spice-300">{p.name}</span>
+                </button>
+                <button
+                  type="button"
+                  className="px-2 py-1 text-xs text-slate-500 hover:text-red-400"
+                  onClick={() => deletePreset(p.id)}
+                  title="delete preset"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={presetNameDraft}
+              onChange={(e) => setPresetNameDraft(e.target.value)}
+              placeholder="preset name (e.g. ‘scout thopter’)"
+              className="input-field text-xs flex-1"
+            />
+            <button
+              type="button"
+              className="btn-ghost border border-slate-700 text-xs"
+              onClick={saveCurrentAsPreset}
+              disabled={!presetNameDraft.trim() || !className || !effectiveTpl}
+            >
+              save current
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" className="btn-primary" disabled={!className || !effectiveTpl}>
+          Spawn{spawnCount > 1 ? ` ×${spawnCount}` : ""}
+        </button>
       </form>
     </div>
   );

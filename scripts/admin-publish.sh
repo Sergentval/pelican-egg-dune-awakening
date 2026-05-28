@@ -53,7 +53,7 @@
 #   points <player_id> <amount>                              -- SkillsSetUnspentSkillPoints
 #   teleport <player_id> <x> <y> <z> [yaw]                   -- TeleportToExact (exact XYZ, no safe snap)
 #   tpsafe <player_id> <x> <y> <z> [yaw]                     -- TeleportTo (snaps to nearest safe location)
-#   vehicle <player_id> <ClassName> <x> <y> <z> <TemplateName> [rotation] [persistent=1.0]
+#   vehicle <player_id> <ClassName> <x> <y> <z> <TemplateName> [rotation] [persistent=1.0] [faction]
 #                                                            -- SpawnVehicleAt
 #   cheat <player_id> <ScriptName>                           -- CheatScript (NO-OP on seabass, kept for parity)
 #   exec <exec_command>                                      -- ServerExec   (NO-OP on seabass, kept for parity)
@@ -572,6 +572,8 @@ print(json.dumps(inner, separators=(',',':')))
             # SpawnVehicleAt — spawns a vehicle of <class> with <template>
             # variant at XYZ. ClassName + TemplateName are DT_VehicleTemplates
             # row keys. Persistent defaults to 1.0 (persists across restart).
+            # Optional Faction (free-text) overrides the default CHOAM skin —
+            # try Atreides / Harkonnen / Choam / Smuggler / faction tag.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
@@ -580,6 +582,7 @@ print(json.dumps(inner, separators=(',',':')))
             local tpl="${6:?template name required (e.g. T6_Combat)}"
             local rot="${7:-}"
             local persist="${8:-1.0}"
+            local faction="${9:-}"
             python3 -c "
 import json
 inner = {
@@ -593,6 +596,9 @@ inner = {
 rot = '$rot'
 if rot:
     inner['Rotation'] = float(rot)
+faction = '''$faction'''
+if faction:
+    inner['Faction'] = faction
 print(json.dumps(inner, separators=(',',':')))
 "
             ;;

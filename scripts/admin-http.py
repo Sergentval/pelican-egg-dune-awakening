@@ -192,9 +192,14 @@ def build_argv(sub: str, body: dict) -> list[str]:
             str(body["z"]),
             str(body["template"]),
         ]
-        if "rotation" in body or "persistent" in body:
+        # Positional optional trailing args. Once any tail field is set we
+        # need to pad the earlier ones with empty placeholders so position
+        # discipline is preserved.
+        if "rotation" in body or "persistent" in body or "faction" in body:
             argv.append(str(body.get("rotation", "")))
             argv.append(str(body.get("persistent", 1.0)))
+            if "faction" in body and body["faction"]:
+                argv.append(str(body["faction"]))
         return argv
     if sub == "cheat":
         return [sub, str(body["player_id"]), str(body["script"])]
