@@ -40,7 +40,6 @@ import (
 
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/apigroup"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/battlegroup"
-	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/directorstats"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/ondemand"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/pool"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/sa"
@@ -213,19 +212,12 @@ func run() error {
 
 	sssHandler := serversetscale.Handler(sssStore)
 	bgHandler := battlegroup.Handler(bgStore)
-	dsHandler := directorstats.Handler(directorstats.NewStore())
-	// Dispatch by resource plural. Order matters: "battlegroupdirectorstats"
-	// contains "battlegroups" as a substring, so the directorstats branch
-	// MUST be checked before the battlegroups branch.
 	mux.HandleFunc("/apis/igw.funcom.com/v1/", func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/battlegroupdirectorstats"):
-			dsHandler(w, r)
-		case strings.Contains(r.URL.Path, "/battlegroups"):
+		if strings.Contains(r.URL.Path, "/battlegroups") {
 			bgHandler(w, r)
-		default:
-			sssHandler(w, r)
+			return
 		}
+		sssHandler(w, r)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
