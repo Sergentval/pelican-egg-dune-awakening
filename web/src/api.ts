@@ -201,6 +201,26 @@ export function armorSetLabel(set: ArmorSet): string {
   return base;
 }
 
+/** True when the set base contains the `Unique` marker — these are
+ *  the rare/named one-off sets (Ginaz, Sisterhood, AtreidesDeserter,
+ *  etc.) as opposed to the tiered CHOAM/native/social variants. */
+export function isUniqueArmor(set: ArmorSet): boolean {
+  return /Unique/i.test(set.base);
+}
+
+/** Detect the tier from an armor set base. Funcom mostly uses a
+ *  trailing two-digit number (01-06) for tiered sets — that's the Mk
+ *  level. Returns a short label ("T6" / "T3" / "") suitable for a
+ *  small badge; empty string when the set is untierable (most
+ *  Unique sets fall here). */
+export function armorSetTier(set: ArmorSet): string {
+  const m = set.base.match(/(?:_)(\d{1,2})$/);
+  if (!m) return "";
+  const n = parseInt(m[1], 10);
+  if (n >= 1 && n <= 6) return `T${n}`;
+  return "";
+}
+
 /** Detect the class / armor family from the set base for icon coloring. */
 export function armorSetClass(set: ArmorSet): { icon: string; tag: string } {
   const b = set.base.toLowerCase();

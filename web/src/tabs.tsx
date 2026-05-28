@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   armorSetClass,
   armorSetLabel,
+  armorSetTier,
   detectSkillType,
   detectTier,
   fetchArmorSets,
@@ -16,6 +17,7 @@ import {
   fetchSkills,
   fetchSteamInfo,
   fetchVehicles,
+  isUniqueArmor,
   itemCategoryStyle,
   parsePlayerTable,
   publish,
@@ -1770,13 +1772,19 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
 // to achieve the same end result via consumables.
 
 // Build a Kit object from an ArmorSet returned by /api/lookup/armor-sets.
+// The Kit interface only carries name+emoji+blurb so we encode the
+// unique flag + tier in the blurb prefix; the renderer fishes them
+// back via the original ArmorSet object stored on a parallel map.
 function kitFromArmorSet(set: ArmorSet): Kit {
   const cls = armorSetClass(set);
+  const tier = armorSetTier(set);
+  const unique = isUniqueArmor(set);
+  const tierBit = tier ? `${tier} · ` : "";
   return {
     id: `armor-${set.base}`,
     name: armorSetLabel(set),
     emoji: cls.icon,
-    blurb: `${cls.tag} · ${set.pieces.length} pieces`,
+    blurb: `${unique ? "Unique · " : ""}${tierBit}${cls.tag} · ${set.pieces.length} pieces`,
     group: "armor",
     lines: set.pieces.map((p) => ({ id: p.id, name: p.name, qty: 1 })),
   };
@@ -1828,6 +1836,13 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   }, []);
 
   const armorKits: Kit[] = useMemo(() => armorSets.map(kitFromArmorSet), [armorSets]);
+  // Side-table so the Armor renderer can fish back the original
+  // ArmorSet (for tier/unique badging) without re-parsing the kit id.
+  const armorSetByKitId: Map<string, ArmorSet> = useMemo(() => {
+    const m = new Map<string, ArmorSet>();
+    armorSets.forEach((s) => m.set(`armor-${s.base}`, s));
+    return m;
+  }, [armorSets]);
   const builtInKits: Kit[] = useMemo(() => [...BUILT_IN_KITS, ...armorKits], [armorKits]);
 
   // Batch-fetch wiki entries for every line across built-in + custom +
@@ -1972,6 +1987,94 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
         const groupKits = builtInKits.filter((k) => k.group === g.id);
         if (groupKits.length === 0) return null;
         const isCollapsed = collapsed.has(g.id);
+
+        // Armor needs sub-sections: Unique vs Standard, with different
+        // colour treatments + tier badges. Everything else uses the
+        // plain grid.
+        const isArmor = g.id === "armor";
+        const armorSplit = isArmor
+          ? {
+              unique: groupKits.filter((k) => {
+                const s = armorSetByKitId.get(k.id);
+                return s && isUniqueArmor(s);
+              }),
+              standard: groupKits.filter((k) => {
+                const s = armorSetByKitId.get(k.id);
+                return s && !isUniqueArmor(s);
+              }),
+            }
+          : null;
+
+        const renderKitCard = (kit: Kit, opts: { unique?: boolean } = {}) => {
+          const s = armorSetByKitId.get(kit.id);
+          const tier = s ? armorSetTier(s) : "";
+          const cardBorder = opts.unique
+            ? "border-amber-700/60 hover:border-amber-400/70 bg-amber-950/10"
+            : "border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50";
+          return (
+            <div key={kit.id} className={`rounded-lg border transition relative ${cardBorder}`}>
+              {tier && (
+                <span
+                  className={
+                    "absolute top-2 right-2 text-[10px] font-mono px-1.5 py-0.5 rounded border " +
+                    (opts.unique
+                      ? "bg-amber-900/70 text-amber-200 border-amber-700"
+                      : "bg-slate-900 text-spice-300 border-slate-700")
+                  }
+                >
+                  {tier}
+                </span>
+              )}
+              <div className="p-3">
+                <div className="flex items-center gap-2 mb-1 pr-10">
+                  <span className="text-xl" aria-hidden>{kit.emoji}</span>
+                  <span className={`font-semibold truncate ${opts.unique ? "text-amber-200" : "text-spice-300"}`}>{kit.name}</span>
+                  {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+                </div>
+                <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
+                <ul className="text-xs text-slate-500 space-y-1">
+                  {kit.lines.slice(0, 5).map((l, i) => {
+                    const w = wiki[l.id];
+                    const img = awakeningImageUrl(w?.image);
+                    return (
+                      <li key={i} className="flex items-center gap-1.5 truncate">
+                        {img ? (
+                          <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
+                        ) : (
+                          <span className="w-4 h-4 shrink-0" />
+                        )}
+                        <span className="text-slate-400">×{l.qty}</span>
+                        <span className="truncate">{w?.name || l.name}</span>
+                      </li>
+                    );
+                  })}
+                  {kit.lines.length > 5 && (
+                    <li className="text-slate-600 italic">…+{kit.lines.length - 5} more</li>
+                  )}
+                </ul>
+              </div>
+              <div className="px-3 pb-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => runKit(kit, false)}
+                  disabled={running !== null}
+                  className="btn-primary text-xs flex-1"
+                >
+                  Grant all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openCustomize(kit)}
+                  className="btn-ghost border border-slate-700 text-xs"
+                  title="Open customize editor"
+                >
+                  ⚙ customize
+                </button>
+              </div>
+            </div>
+          );
+        };
+
         return (
           <div key={g.id} className="card">
             <button
@@ -1984,64 +2087,45 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                 <span className="text-slate-500 transition-transform inline-block w-3" style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
                 <span aria-hidden>{g.emoji}</span> {g.label}
               </h2>
-              <span className="text-xs text-slate-500">{groupKits.length} bundles</span>
+              <span className="text-xs text-slate-500">
+                {isArmor && armorSplit
+                  ? `${armorSplit.unique.length} unique · ${armorSplit.standard.length} standard`
+                  : `${groupKits.length} bundles`}
+              </span>
             </button>
             {!isCollapsed && (
-            <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-              {groupKits.map((kit) => (
-                <div
-                  key={kit.id}
-                  className="rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition"
-                >
-                  <div className="p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xl" aria-hidden>{kit.emoji}</span>
-                      <span className="font-semibold text-spice-300">{kit.name}</span>
-                      {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+              isArmor && armorSplit ? (
+                <div className="p-4 space-y-5">
+                  {armorSplit.unique.length > 0 && (
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wider text-amber-300/80 mb-2 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-400" aria-hidden />
+                        Unique armor
+                        <span className="text-slate-500 normal-case">({armorSplit.unique.length})</span>
+                      </h3>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {armorSplit.unique.map((kit) => renderKitCard(kit, { unique: true }))}
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
-                    <ul className="text-xs text-slate-500 space-y-1">
-                      {kit.lines.slice(0, 5).map((l, i) => {
-                        const w = wiki[l.id];
-                        const img = awakeningImageUrl(w?.image);
-                        return (
-                          <li key={i} className="flex items-center gap-1.5 truncate">
-                            {img ? (
-                              <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
-                            ) : (
-                              <span className="w-4 h-4 shrink-0" />
-                            )}
-                            <span className="text-slate-400">×{l.qty}</span>
-                            <span className="truncate">{w?.name || l.name}</span>
-                          </li>
-                        );
-                      })}
-                      {kit.lines.length > 5 && (
-                        <li className="text-slate-600 italic">…+{kit.lines.length - 5} more</li>
-                      )}
-                    </ul>
-                  </div>
-                  <div className="px-3 pb-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => runKit(kit, false)}
-                      disabled={running !== null}
-                      className="btn-primary text-xs flex-1"
-                    >
-                      Grant all
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openCustomize(kit)}
-                      className="btn-ghost border border-slate-700 text-xs"
-                      title="Open customize editor"
-                    >
-                      ⚙ customize
-                    </button>
-                  </div>
+                  )}
+                  {armorSplit.standard.length > 0 && (
+                    <div>
+                      <h3 className="text-xs uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-slate-500" aria-hidden />
+                        Standard armor
+                        <span className="text-slate-500 normal-case">({armorSplit.standard.length})</span>
+                      </h3>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {armorSplit.standard.map((kit) => renderKitCard(kit))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
+              ) : (
+                <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {groupKits.map((kit) => renderKitCard(kit))}
+                </div>
+              )
             )}
           </div>
         );

@@ -405,7 +405,7 @@ export const BUILT_IN_KITS: Kit[] = [
 /** Built-in kits indexed by group, in display order. */
 export const KIT_GROUPS: Array<{ id: Kit["group"]; label: string; emoji: string }> = [
   { id: "survival", label: "Survival", emoji: "🌵" },
-  { id: "armor", label: "Class armor", emoji: "🛡️" },
+  { id: "armor", label: "Armor", emoji: "🛡️" },
   { id: "weapons", label: "Weapons", emoji: "⚔️" },
   { id: "tools", label: "Tools", emoji: "🧰" },
   { id: "loot", label: "Loot drops", emoji: "💰" },
