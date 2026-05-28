@@ -6,6 +6,7 @@ import {
   armorSetClass,
   armorSetLabel,
   armorSetTier,
+  deleteVehicleActor,
   detectSkillType,
   detectTier,
   isUniqueItem,
@@ -16,17 +17,21 @@ import {
   fetchPlayers,
   fetchSkillCategories,
   fetchSkills,
+  fetchSpawnedVehicles,
   fetchSteamInfo,
   fetchVehicles,
   isUniqueArmor,
   itemCategoryStyle,
   parsePlayerTable,
+  parseVehicleListOutput,
   publish,
   skillCategoryStyle,
   skillTypeIcon,
+  vehicleActorToClass,
   vehicleIcon,
   vehicleImageFilename,
   type ArmorSet,
+  type VehicleActor,
   type HistoryResponse,
   type ItemCategoryBucket,
   type ItemRow,
@@ -1265,7 +1270,8 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
   }
 
   return (
-    <div className="card max-w-3xl">
+    <div className="space-y-6 max-w-3xl">
+      <div className="card">
       <header className="card-header">
         <h2 className="font-semibold">Spawn vehicle</h2>
         <span className="text-xs text-slate-500">{vehicles.length} classes available</span>
@@ -1510,6 +1516,137 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
           Spawn{spawnCount > 1 ? ` ×${spawnCount}` : ""}
         </button>
       </form>
+      </div>
+
+      <SpawnedVehiclesPanel setConsoleEntries={setConsoleEntries} />
+    </div>
+  );
+}
+
+// ---- Manage spawned vehicles (DB-direct delete) ------------------------
+//
+// Funcom doesn't expose a DespawnVehicle ServerCommand (verified by
+// the audit) — we go directly at `dune.actors`. The DELETE cascades
+// through every FK we audited; the live game eventually resyncs the
+// player's view (immediate for nearby vehicles, on next respawn for
+// further ones).
+function SpawnedVehiclesPanel({ setConsoleEntries }: TabProps) {
+  const target = useTarget();
+  const [vehicles, setVehicles] = useState<VehicleActor[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState<number | null>(null);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    const res = await fetchSpawnedVehicles();
+    if (res.ok) {
+      const stdout = (res.body as PublishResult).stdout || "";
+      setVehicles(parseVehicleListOutput(stdout));
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  async function doDelete(actorId: number) {
+    setConfirmId(null);
+    setDeleting(actorId);
+    const res = await deleteVehicleActor(actorId);
+    const ok = res.ok && (res.body as PublishResult).ok;
+    pushToConsole(setConsoleEntries, `vehicle-delete actor=${actorId}`, res.body as PublishResult, ok);
+    setDeleting(null);
+    if (ok) refresh();
+  }
+
+  // Distance from the shared target.pos (when known) so the user can
+  // sort visually by proximity to themselves.
+  const withDistance = useMemo(() => {
+    if (!target.pos) return vehicles.map((v) => ({ v, dist: null as number | null }));
+    return vehicles
+      .map((v) => {
+        const dx = v.x - target.pos!.x;
+        const dy = v.y - target.pos!.y;
+        const dz = v.z - target.pos!.z;
+        return { v, dist: Math.sqrt(dx * dx + dy * dy + dz * dz) };
+      })
+      .sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity));
+  }, [vehicles, target.pos]);
+
+  const confirmEntry = confirmId !== null ? vehicles.find((v) => v.id === confirmId) : null;
+
+  return (
+    <div className="card">
+      <header className="card-header">
+        <h2 className="font-semibold">Spawned vehicles</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500">{vehicles.length} active</span>
+          <button className="btn-ghost text-xs" onClick={refresh} disabled={loading}>
+            {loading ? "…" : "refresh"}
+          </button>
+        </div>
+      </header>
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-slate-400">
+          Funcom doesn't ship a DespawnVehicle command, so this list goes directly at <span className="font-mono text-slate-300">dune.actors</span>.
+          Deleting a row cascades cleanly through every FK; in-game the vehicle disappears as soon as the relevant Sietch resyncs (instant for nearby spawns, on relogin / restart for far ones).
+          {target.pos && <span className="text-spice-300/80"> Sorted by distance from {target.playerId}.</span>}
+        </p>
+        {withDistance.length === 0 && (
+          <div className="text-sm text-slate-500 italic py-4 text-center">
+            {loading ? "Loading…" : "No vehicles currently spawned."}
+          </div>
+        )}
+        <ul className="space-y-1.5">
+          {withDistance.map(({ v, dist }) => {
+            const cls = vehicleActorToClass(v.classShort);
+            const imgUrl = awakeningImageUrl(vehicleImageFilename(cls));
+            return (
+              <li key={v.id} className="flex items-center gap-3 p-2 rounded border border-slate-800 bg-slate-900/50">
+                <div className="w-10 h-10 shrink-0 flex items-center justify-center">
+                  {imgUrl ? (
+                    <img src={imgUrl} alt="" width={40} height={40} loading="lazy" className="w-10 h-10 object-contain" />
+                  ) : (
+                    <span className="text-2xl">{vehicleIcon(cls || "")}</span>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-200 truncate">
+                    {cls || v.classShort} <span className="text-xs text-slate-500 font-mono">#{v.id}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono">
+                    {v.map} · p{v.partition} · X={Math.round(v.x)} Y={Math.round(v.y)} Z={Math.round(v.z)}
+                    {dist !== null && (
+                      <span className="ml-2 text-spice-300/70">{Math.round(dist).toLocaleString()} from {target.playerId}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-danger text-xs"
+                  onClick={() => setConfirmId(v.id)}
+                  disabled={deleting !== null}
+                >
+                  {deleting === v.id ? "deleting…" : "delete"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <Confirm
+        open={confirmId !== null}
+        title="Delete vehicle?"
+        message={
+          confirmEntry
+            ? `Permanently remove ${vehicleActorToClass(confirmEntry.classShort) || confirmEntry.classShort} #${confirmEntry.id} from ${confirmEntry.map}. The vehicle's inventory + state cascade with it. Unrecoverable.`
+            : ""
+        }
+        confirmLabel="Delete"
+        onConfirm={() => confirmId !== null && doDelete(confirmId)}
+        onCancel={() => setConfirmId(null)}
+      />
     </div>
   );
 }

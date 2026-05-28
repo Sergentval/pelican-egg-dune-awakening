@@ -219,7 +219,8 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     )
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
-        or argv[0] in ("players", "resolve", "pos", "vehicles", "items", "skills", "items-json")
+        or "publish=db-delete" in result.stdout
+        or argv[0] in ("players", "resolve", "pos", "vehicles", "items", "skills", "items-json", "vehicle-list")
     )
     entry = {
         "ts": int(time.time()),
@@ -574,6 +575,11 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        if path == "/api/vehicles/list":
+            entry = run_publish(["vehicle-list"], timeout=10)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         if path == "/api/steam-info":
             # Comma-separated 64-bit Steam IDs.
             raw_ids = query.get("ids", [""])[0]
@@ -653,6 +659,18 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except json.JSONDecodeError as exc:
             self._write(400, {"error": "invalid JSON body", "detail": str(exc)})
+            return
+
+        if path == "/api/vehicles/delete":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            actor_id = body.get("actor_id") if isinstance(body, dict) else None
+            if not isinstance(actor_id, int) or actor_id <= 0:
+                self._write(400, {"error": "actor_id (positive int) required"})
+                return
+            entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
+            self._write(200 if entry["ok"] else 502, entry)
             return
 
         # /api/login is the only POST that bypasses Bearer auth.

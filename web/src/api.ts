@@ -194,6 +194,76 @@ export interface ArmorSet {
 export const fetchArmorSets = () =>
   api<{ sets: ArmorSet[] }>("GET", "/api/lookup/armor-sets");
 
+export interface VehicleActor {
+  id: number;
+  className: string;
+  classShort: string;
+  map: string;
+  partition: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const fetchSpawnedVehicles = () =>
+  api<PublishResult>("GET", "/api/vehicles/list");
+
+export const deleteVehicleActor = (actorId: number) =>
+  api<PublishResult>("POST", "/api/vehicles/delete", { actor_id: actorId });
+
+/** Parse the `vehicle-list` psql stdout into structured rows. */
+export function parseVehicleListOutput(stdout: string): VehicleActor[] {
+  if (!stdout) return [];
+  const lines = stdout.split(/\r?\n/);
+  const dividerIdx = lines.findIndex((l) => /^\s*-+(\+-+)+\s*$/.test(l));
+  if (dividerIdx <= 0) return [];
+  const header = lines[dividerIdx - 1].split("|").map((c) => c.trim());
+  const colIdx = (n: string) => header.findIndex((h) => h === n);
+  const idCol = colIdx("id");
+  const classCol = colIdx("class");
+  const mapCol = colIdx("map");
+  const partitionCol = colIdx("partition_id");
+  const transformCol = colIdx("transform");
+  const out: VehicleActor[] = [];
+  for (let i = dividerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\(\d+ rows?\)/.test(line.trim())) break;
+    if (!line.includes("|")) continue;
+    const cells = line.split("|").map((c) => c.trim());
+    if (cells.length < header.length) continue;
+    const cls = cells[classCol] || "";
+    const tform = cells[transformCol] || "";
+    const m = tform.match(/\((-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)\)/);
+    out.push({
+      id: parseInt(cells[idCol] || "0", 10),
+      className: cls,
+      classShort: cls.split("/").pop()?.split(".")[0] || cls,
+      map: cells[mapCol] || "",
+      partition: cells[partitionCol] || "",
+      x: m ? parseFloat(m[1]) : 0,
+      y: m ? parseFloat(m[2]) : 0,
+      z: m ? parseFloat(m[3]) : 0,
+    });
+  }
+  return out;
+}
+
+/** Map a vehicle actor's `classShort` back to a friendly ClassName
+ *  (Sandbike, Buggy, …) so we can reuse vehicleIcon/vehicleImageFilename. */
+export function vehicleActorToClass(classShort: string): string {
+  const s = classShort.toLowerCase();
+  if (s.includes("sandbike")) return "Sandbike";
+  if (s.includes("buggy")) return "Buggy";
+  if (s.includes("tank")) return "Tank";
+  if (s.includes("sandcrawler")) return "Sandcrawler";
+  if (s.includes("lightornithopter")) return "OrnithopterLight";
+  if (s.includes("mediumornithopter")) return "OrnithopterMedium";
+  if (s.includes("transportornithopter")) return "OrnithopterTransport";
+  if (s.includes("treadwheel")) return "TreadWheel";
+  if (s.includes("containervehicle")) return "ContainerVehicle";
+  return "";
+}
+
 /** Heuristic to give an armor set a readable label. We strip the
  *  shared `Combat_/Stillsuit_` prefixes and `_Unique_*` filler so the
  *  user sees "Swordmaster" or "AtreidesDeserterUnique01" instead of

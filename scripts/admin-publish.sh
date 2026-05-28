@@ -39,6 +39,11 @@
 #   skills <search>                              -- search 145 skill modules
 #   items-json <id>                              -- raw JSON for one item
 #
+# Postgres-direct subcommands (Funcom doesn't expose these as
+# ServerCommands; the DB writes are the same ones the in-game UI does):
+#   vehicle-list                                 -- list all spawned vehicle actors
+#   vehicle-delete <actor_id>                    -- delete one vehicle (cascade-safe)
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -342,6 +347,65 @@ print(f'Raw transform: {tform}')
         # Data files are MIT-licensed copies from
         # adainrivers/dune-dedicated-server-manager — see ATTRIBUTION.md.
         DUNE_BASE_DIR="$BASE" exec python3 "$BASE/scripts/admin-lookup.py" "$cmd" "$@"
+        ;;
+    vehicle-list)
+        # List every spawned vehicle in dune.actors. Funcom doesn't ship
+        # a DespawnVehicle ServerCommand (35 candidates probed, all
+        # rejected by seabass), so cleanup has to go through postgres.
+        # We filter to the 9 known vehicle blueprints + the unique-named
+        # actor_class entries from data/admin/vehicles.json so we never
+        # show NPCs / buildings / items here.
+        dune_psql -c "
+            SELECT id, class, map, partition_id, transform::text AS transform
+            FROM dune.actors
+            WHERE class ILIKE '%BP_Sandbike%'
+               OR class ILIKE '%BP_Buggy%'
+               OR class ILIKE '%BP_Tank%'
+               OR class ILIKE '%BP_SandCrawler%'
+               OR class ILIKE '%BP_LightOrnithopter%'
+               OR class ILIKE '%BP_MediumOrnithopter%'
+               OR class ILIKE '%BP_TransportOrnithopter%'
+               OR class ILIKE '%BP_TreadWheel%'
+               OR class ILIKE '%BP_ContainerVehicle%'
+            ORDER BY id
+        "
+        exit 0
+        ;;
+    vehicle-delete)
+        # Hard-delete a vehicle actor row by id. Cascades clean every FK
+        # we audited (actor_state, inventories, base_backup_linked_actors,
+        # …); overmap_players.vehicle_id is SET NULL so the player who
+        # last drove the vehicle keeps their overmap row.
+        #
+        # Safety: only proceed if the row's class string matches one of
+        # the known vehicle blueprint prefixes, so a typo of the id
+        # can't accidentally vaporise a player character or a building.
+        actor_id="${1:?usage: vehicle-delete <actor_id>}"
+        case "$actor_id" in
+            ''|*[!0-9]*) echo "[admin-publish] ERROR vehicle-delete: actor_id must be a positive integer, got '$actor_id'" >&2; exit 2 ;;
+        esac
+        # Inspect first.
+        row=$(dune_psql -tAc "SELECT class FROM dune.actors WHERE id = $actor_id" 2>/dev/null | tr -d '\r\n')
+        if [ -z "$row" ]; then
+            echo "[admin-publish] ERROR no actor with id $actor_id" >&2
+            exit 1
+        fi
+        case "$row" in
+            *BP_Sandbike*|*BP_Buggy*|*BP_Tank*|*BP_SandCrawler*|*BP_LightOrnithopter*|*BP_MediumOrnithopter*|*BP_TransportOrnithopter*|*BP_TreadWheel*|*BP_ContainerVehicle*)
+                ;;
+            *)
+                echo "[admin-publish] ERROR refusing to delete non-vehicle actor: $row" >&2
+                exit 1
+                ;;
+        esac
+        if dune_psql -c "DELETE FROM dune.actors WHERE id = $actor_id" >/dev/null 2>&1; then
+            echo "[admin-publish] OK vehicle-delete actor_id=$actor_id class=$(printf '%s' "$row" | sed 's|.*/||')"
+            echo "publish=db-delete actor_id=$actor_id"
+        else
+            echo "[admin-publish] ERROR vehicle-delete: postgres DELETE failed" >&2
+            exit 1
+        fi
+        exit 0
         ;;
 esac
 
