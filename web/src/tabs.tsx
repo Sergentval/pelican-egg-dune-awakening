@@ -1798,6 +1798,26 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   const [editingKit, setEditingKit] = useState<Kit | null>(null);
   const [overrides, setOverrides] = useState<Record<string, { include: boolean; qty: number }>>({});
 
+  // Collapsed-state per group + custom-kits section. Persisted so the
+  // operator's accordion preferences survive page reloads.
+  const COLLAPSED_KEY = "dune-admin-kit-collapsed-groups";
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_KEY);
+      return raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+  function toggleCollapsed(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(next)));
+      return next;
+    });
+  }
+
   // Armor kits are generated from items.json server-side — one kit per
   // 3+ piece wearable set (57 sets in catalog) — so they stay fresh
   // when Funcom ships a new armor without us touching the SPA source.
@@ -1951,14 +1971,22 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
       {KIT_GROUPS.map((g) => {
         const groupKits = builtInKits.filter((k) => k.group === g.id);
         if (groupKits.length === 0) return null;
+        const isCollapsed = collapsed.has(g.id);
         return (
           <div key={g.id} className="card">
-            <header className="card-header">
+            <button
+              type="button"
+              onClick={() => toggleCollapsed(g.id)}
+              className="card-header w-full hover:bg-slate-800/40 transition cursor-pointer text-left"
+              aria-expanded={!isCollapsed}
+            >
               <h2 className="font-semibold flex items-center gap-2">
+                <span className="text-slate-500 transition-transform inline-block w-3" style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
                 <span aria-hidden>{g.emoji}</span> {g.label}
               </h2>
               <span className="text-xs text-slate-500">{groupKits.length} bundles</span>
-            </header>
+            </button>
+            {!isCollapsed && (
             <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
               {groupKits.map((kit) => (
                 <div
@@ -2014,6 +2042,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                 </div>
               ))}
             </div>
+            )}
           </div>
         );
       })}
@@ -2125,10 +2154,19 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
       )}
 
       <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Your custom kits</h2>
+        <button
+          type="button"
+          onClick={() => toggleCollapsed("custom")}
+          className="card-header w-full hover:bg-slate-800/40 transition cursor-pointer text-left"
+          aria-expanded={!collapsed.has("custom")}
+        >
+          <h2 className="font-semibold flex items-center gap-2">
+            <span className="text-slate-500 transition-transform inline-block w-3" style={{ transform: collapsed.has("custom") ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
+            Your custom kits
+          </h2>
           <span className="text-xs text-slate-500">{custom.length} saved locally</span>
-        </header>
+        </button>
+        {!collapsed.has("custom") && (
         <div className="p-4 space-y-4">
           {custom.length > 0 && (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -2253,6 +2291,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
             </p>
           </div>
         </div>
+        )}
       </div>
     </div>
   );
