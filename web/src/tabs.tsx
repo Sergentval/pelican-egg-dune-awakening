@@ -418,6 +418,7 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
   const [picked, setPicked] = useState<SkillRow | null>(null);
   const [level, setLevel] = useState(1);
   const [unspent, setUnspent] = useState(50);
+  const [xpAmount, setXpAmount] = useState(5000);
 
   useEffect(() => {
     const handle = setTimeout(async () => {
@@ -440,6 +441,11 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
   async function submitPoints(e: React.FormEvent) {
     e.preventDefault();
     await runAndLog(setConsoleEntries, "points", { player_id: target.playerId, amount: unspent }, `points ${target.playerId} =${unspent}`);
+  }
+
+  async function submitXp(e: React.FormEvent) {
+    e.preventDefault();
+    await runAndLog(setConsoleEntries, "xp", { player_id: target.playerId, amount: xpAmount }, `xp ${target.playerId} +${xpAmount}`);
   }
 
   return (
@@ -498,6 +504,30 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
               <input id="unspent-amt" type="number" min={0} value={unspent} onChange={(e) => setUnspent(parseInt(e.target.value) || 0)} className="input-field" />
             </div>
             <button type="submit" className="btn-primary">Set</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <header className="card-header">
+            <h2 className="font-semibold">Award XP</h2>
+          </header>
+          <form onSubmit={submitXp} className="p-4 space-y-4">
+            <PlayerPicker />
+            <div>
+              <label className="label" htmlFor="xp-amt">Amount</label>
+              <div className="flex items-center gap-2">
+                <input id="xp-amt" type="number" min={1} value={xpAmount} onChange={(e) => setXpAmount(parseInt(e.target.value) || 0)} className="input-field flex-1" />
+                <div className="flex gap-1">
+                  {[1000, 5000, 25000].map((n) => (
+                    <button key={n} type="button" onClick={() => setXpAmount(n)} className={"btn-ghost text-xs border border-slate-700 " + (xpAmount === n ? "bg-slate-800 text-spice-300" : "")}>
+                      {n.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Category="Combat" is auto-injected (Funcom's handler no-ops without it).</p>
+            </div>
+            <button type="submit" className="btn-primary">Grant</button>
           </form>
         </div>
       </div>
@@ -1041,12 +1071,9 @@ export function MovementTab({ setConsoleEntries }: TabProps) {
 // ---- Maintenance (shutdown + xp + water) -------------------------------
 
 export function MaintenanceTab({ setConsoleEntries }: TabProps) {
-  const target = useTarget();
   const [shutType, setShutType] = useState("Restart");
   const [shutLead, setShutLead] = useState(600);
   const [shutFreq, setShutFreq] = useState(60);
-  const [xpAmount, setXpAmount] = useState(5000);
-  const [waterAmount, setWaterAmount] = useState(1_000_000);
 
   async function submitShutdown(e: React.FormEvent, cancel = false) {
     e.preventDefault();
@@ -1057,75 +1084,40 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
     }
   }
 
-  async function submitXp(e: React.FormEvent) {
-    e.preventDefault();
-    await runAndLog(setConsoleEntries, "xp", { player_id: target.playerId, amount: xpAmount }, `xp ${target.playerId} +${xpAmount}`);
-  }
-
-  async function submitWater(e: React.FormEvent) {
-    e.preventDefault();
-    await runAndLog(setConsoleEntries, "water", { player_id: target.playerId, amount: waterAmount }, `water ${target.playerId}`);
-  }
-
   return (
-    <div className="grid gap-6 md:grid-cols-2">
-      <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Scheduled shutdown</h2>
-        </header>
-        <form onSubmit={(e) => submitShutdown(e)} className="p-4 space-y-4">
+    <div className="card max-w-2xl">
+      <header className="card-header">
+        <h2 className="font-semibold">Scheduled shutdown</h2>
+        <span className="text-xs text-slate-500">sysadmin · affects all players</span>
+      </header>
+      <form onSubmit={(e) => submitShutdown(e)} className="p-4 space-y-4">
+        <p className="text-xs text-slate-400">
+          Broadcasts a countdown to every Sietch, then triggers a server-wide shutdown of the chosen type.
+          Use <span className="font-mono text-slate-300">Cancel pending</span> to abort an in-flight countdown.
+        </p>
+        <div>
+          <label className="label" htmlFor="shut-type">Type</label>
+          <select id="shut-type" value={shutType} onChange={(e) => setShutType(e.target.value)} className="input-field">
+            <option>Restart</option>
+            <option>Maintenance</option>
+            <option>Update</option>
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="label" htmlFor="shut-type">Type</label>
-            <select id="shut-type" value={shutType} onChange={(e) => setShutType(e.target.value)} className="input-field">
-              <option>Restart</option>
-              <option>Maintenance</option>
-              <option>Update</option>
-            </select>
+            <label className="label" htmlFor="shut-lead">Lead time (s)</label>
+            <input id="shut-lead" type="number" min={30} value={shutLead} onChange={(e) => setShutLead(parseInt(e.target.value) || 60)} className="input-field" />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label" htmlFor="shut-lead">Lead time (s)</label>
-              <input id="shut-lead" type="number" min={30} value={shutLead} onChange={(e) => setShutLead(parseInt(e.target.value) || 60)} className="input-field" />
-            </div>
-            <div>
-              <label className="label" htmlFor="shut-freq">Re-broadcast every (s)</label>
-              <input id="shut-freq" type="number" min={5} value={shutFreq} onChange={(e) => setShutFreq(parseInt(e.target.value) || 60)} className="input-field" />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button type="submit" className="btn-primary">Schedule</button>
-            <button type="button" className="btn-ghost border border-slate-700" onClick={(e) => submitShutdown(e, true)}>Cancel pending</button>
-          </div>
-        </form>
-      </div>
-
-      <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Award XP</h2>
-        </header>
-        <form onSubmit={submitXp} className="p-4 space-y-4">
-          <PlayerPicker />
           <div>
-            <label className="label" htmlFor="xp-amt">Amount</label>
-            <input id="xp-amt" type="number" min={1} value={xpAmount} onChange={(e) => setXpAmount(parseInt(e.target.value) || 0)} className="input-field" />
+            <label className="label" htmlFor="shut-freq">Re-broadcast every (s)</label>
+            <input id="shut-freq" type="number" min={5} value={shutFreq} onChange={(e) => setShutFreq(parseInt(e.target.value) || 60)} className="input-field" />
           </div>
-          <button type="submit" className="btn-primary">Grant</button>
-        </form>
-      </div>
-
-      <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Refill water</h2>
-        </header>
-        <form onSubmit={submitWater} className="p-4 space-y-4">
-          <PlayerPicker allowStar />
-          <div>
-            <label className="label" htmlFor="water-amt">Water amount</label>
-            <input id="water-amt" type="number" min={1} value={waterAmount} onChange={(e) => setWaterAmount(parseInt(e.target.value) || 0)} className="input-field" />
-          </div>
-          <button type="submit" className="btn-primary">Refill</button>
-        </form>
-      </div>
+        </div>
+        <div className="flex gap-2">
+          <button type="submit" className="btn-primary">Schedule</button>
+          <button type="button" className="btn-ghost border border-slate-700" onClick={(e) => submitShutdown(e, true)}>Cancel pending</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1135,6 +1127,7 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
 export function PlayersTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [confirm, setConfirm] = useState<{ sub: string; label: string; warn: string } | null>(null);
+  const [waterAmount, setWaterAmount] = useState(1_000_000);
 
   function attempt(sub: string, label: string, warn: string) {
     setConfirm({ sub, label, warn });
@@ -1147,32 +1140,80 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
     await runAndLog(setConsoleEntries, sub, { player_id: target.playerId }, `${sub} ${target.playerId} — ${label}`);
   }
 
+  async function submitWater(e: React.FormEvent) {
+    e.preventDefault();
+    await runAndLog(
+      setConsoleEntries,
+      "water",
+      { player_id: target.playerId, amount: waterAmount },
+      `water ${target.playerId} ${waterAmount}`,
+    );
+  }
+
   return (
-    <div className="card max-w-2xl">
-      <header className="card-header">
-        <h2 className="font-semibold">Player management</h2>
-      </header>
-      <div className="p-4 space-y-4">
-        <PlayerPicker allowStar />
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            className="btn-ghost border border-slate-700"
-            onClick={() => attempt("kick", "Kick", `Disconnect ${target.playerId}. They can reconnect immediately.`)}
-          >
-            Kick
-          </button>
-          <button
-            className="btn-danger"
-            onClick={() => attempt("clean", "Clean inventory", `Wipes ${target.playerId}'s entire inventory. Unrecoverable.`)}
-          >
-            Clean inventory
-          </button>
-          <button
-            className="btn-danger col-span-2"
-            onClick={() => attempt("reset", "Reset progression", `Wipes ${target.playerId}'s XP, skill levels, and unspent points. Unrecoverable.`)}
-          >
-            Reset progression
-          </button>
+    <div className="space-y-6 max-w-2xl">
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Target player</h2>
+        </header>
+        <div className="p-4">
+          <PlayerPicker allowStar />
+        </div>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Refill water containers</h2>
+          <span className="text-xs text-slate-500">non-destructive</span>
+        </header>
+        <form onSubmit={submitWater} className="p-4 space-y-3">
+          <p className="text-xs text-slate-400">
+            Tops up every fillable water container (jerrycans, stills, Literjons, etc.) the player carries.
+            <span className="text-slate-500"> Doesn't directly hydrate the character — for that, give them a Cup of Water via the Kits tab.</span>
+          </p>
+          <div>
+            <label className="label" htmlFor="pl-water">Water amount</label>
+            <div className="flex items-center gap-2">
+              <input
+                id="pl-water"
+                type="number"
+                min={1}
+                value={waterAmount}
+                onChange={(e) => setWaterAmount(parseInt(e.target.value) || 0)}
+                className="input-field w-40 font-mono"
+              />
+              <button type="submit" className="btn-primary">Refill</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Moderation</h2>
+          <span className="text-xs text-slate-500">destructive — confirm dialog gates these</span>
+        </header>
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              className="btn-ghost border border-slate-700"
+              onClick={() => attempt("kick", "Kick", `Disconnect ${target.playerId}. They can reconnect immediately.`)}
+            >
+              Kick
+            </button>
+            <button
+              className="btn-danger"
+              onClick={() => attempt("clean", "Clean inventory", `Wipes ${target.playerId}'s entire inventory. Unrecoverable.`)}
+            >
+              Clean inventory
+            </button>
+            <button
+              className="btn-danger col-span-2"
+              onClick={() => attempt("reset", "Reset progression", `Wipes ${target.playerId}'s XP, skill levels, and unspent points. Unrecoverable.`)}
+            >
+              Reset progression
+            </button>
+          </div>
         </div>
       </div>
 
