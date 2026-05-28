@@ -257,7 +257,26 @@ export interface PosInfo {
   ts: number;
 }
 
-/** Vehicle class → category icon. Bundled inline (no external dep). */
+/** Vehicle class → image filename hosted on awakening.wiki, or null if
+ *  Funcom's wiki doesn't ship an icon for that class (we fall back to
+ *  the emoji in vehicleIcon()). Filenames extracted from the live
+ *  Vehicles category page on awakening.wiki. */
+export function vehicleImageFilename(className: string): string | null {
+  switch (className) {
+    case "Sandbike": return "T_UI_IconVehCHSandBikeR_D.png";
+    case "Buggy": return "T_UI_IconVehCHBuggyR_D.png";
+    case "Tank": return "T_UI_IconVehCHTankR_D.png";
+    case "Sandcrawler": return "T_UI_IconVehCHSandCrawlerR_D.png";
+    case "OrnithopterLight": return "T_UI_IconVehCHOrniLightR_D.png";
+    case "OrnithopterMedium": return "T_UI_IconVehCHOrniMediumR_D.png";
+    case "OrnithopterTransport": return "T_UI_IconVehCHOrniTransportR_D.png";
+    case "TreadWheel": return "T_UI_IconVehOETreadwheelR_D.png";
+    // ContainerVehicle has no wiki icon — falls back to the emoji.
+    default: return null;
+  }
+}
+
+/** Vehicle class → emoji fallback used when no wiki icon is available. */
 export function vehicleIcon(className: string): string {
   switch (className) {
     case "Sandbike": return "🏍️";

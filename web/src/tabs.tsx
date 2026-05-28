@@ -19,6 +19,7 @@ import {
   skillCategoryStyle,
   skillTypeIcon,
   vehicleIcon,
+  vehicleImageFilename,
   type HistoryResponse,
   type ItemCategoryBucket,
   type ItemRow,
@@ -1201,22 +1202,39 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
         <div>
           <label className="label">Class</label>
           <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-2">
-            {vehicles.map((v) => (
-              <button
-                type="button"
-                key={v.id}
-                onClick={() => setClassName(v.id)}
-                className={
-                  "flex flex-col items-center gap-1 px-2 py-3 rounded border text-xs transition " +
-                  (className === v.id
-                    ? "border-spice-500 bg-spice-900/40 text-spice-100"
-                    : "border-slate-700 hover:border-slate-500 text-slate-300")
-                }
-              >
-                <span className="text-2xl leading-none" aria-hidden>{vehicleIcon(v.id)}</span>
-                <span className="truncate w-full text-center">{v.id}</span>
-              </button>
-            ))}
+            {vehicles.map((v) => {
+              const imgFile = vehicleImageFilename(v.id);
+              const imgUrl = awakeningImageUrl(imgFile);
+              return (
+                <button
+                  type="button"
+                  key={v.id}
+                  onClick={() => setClassName(v.id)}
+                  className={
+                    "flex flex-col items-center gap-1 px-2 py-3 rounded border text-xs transition " +
+                    (className === v.id
+                      ? "border-spice-500 bg-spice-900/40 text-spice-100"
+                      : "border-slate-700 hover:border-slate-500 text-slate-300")
+                  }
+                >
+                  <div className="w-14 h-14 flex items-center justify-center">
+                    {imgUrl ? (
+                      <img
+                        src={imgUrl}
+                        alt=""
+                        width={56}
+                        height={56}
+                        loading="lazy"
+                        className="w-14 h-14 object-contain"
+                      />
+                    ) : (
+                      <span className="text-3xl leading-none" aria-hidden>{vehicleIcon(v.id)}</span>
+                    )}
+                  </div>
+                  <span className="truncate w-full text-center">{v.id}</span>
+                </button>
+              );
+            })}
           </div>
           {className && (
             <div className="flex items-center justify-between text-xs text-slate-500">
