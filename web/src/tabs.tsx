@@ -1587,9 +1587,21 @@ function SpawnedVehiclesPanel({ setConsoleEntries }: TabProps) {
         </div>
       </header>
       <div className="p-4 space-y-3">
+        <div className="text-xs text-amber-200 bg-amber-950/40 border border-amber-800/60 rounded px-3 py-2 space-y-1">
+          <div className="font-semibold">⚠ Delete clears the DB row, but UE5 caches the actor in memory.</div>
+          <div className="text-amber-300/80">
+            Funcom doesn't ship a DespawnVehicle ServerCommand (35 candidates probed, all rejected).
+            The vehicle stays visible in-game until the Sietch resyncs.
+            To actually see the despawn now, choose one of:
+          </div>
+          <ul className="list-disc list-inside text-amber-300/80 marker:text-amber-500 space-y-0.5 pl-1">
+            <li>The affected player logs out + back in</li>
+            <li>The player moves far enough away that the vehicle leaves their relevance bubble, then returns</li>
+            <li>Restart the server (Pelican panel <span className="font-mono">Power → Restart</span>) — guaranteed clean state on next boot</li>
+          </ul>
+        </div>
         <p className="text-xs text-slate-400">
-          Funcom doesn't ship a DespawnVehicle command, so this list goes directly at <span className="font-mono text-slate-300">dune.actors</span>.
-          Deleting a row cascades cleanly through every FK; in-game the vehicle disappears as soon as the relevant Sietch resyncs (instant for nearby spawns, on relogin / restart for far ones).
+          Source of truth: <span className="font-mono text-slate-300">dune.actors</span>. Deleting a row cascades through every FK (inventory, state, attachments) so no orphans are left behind.
           {target.pos && <span className="text-spice-300/80"> Sorted by distance from {target.playerId}.</span>}
         </p>
         {withDistance.length === 0 && (
@@ -1640,10 +1652,10 @@ function SpawnedVehiclesPanel({ setConsoleEntries }: TabProps) {
         title="Delete vehicle?"
         message={
           confirmEntry
-            ? `Permanently remove ${vehicleActorToClass(confirmEntry.classShort) || confirmEntry.classShort} #${confirmEntry.id} from ${confirmEntry.map}. The vehicle's inventory + state cascade with it. Unrecoverable.`
+            ? `Permanently remove ${vehicleActorToClass(confirmEntry.classShort) || confirmEntry.classShort} #${confirmEntry.id} from ${confirmEntry.map}. Removes the postgres row + cascades the vehicle's inventory and state. UE5 keeps it visible in-game until the Sietch resyncs — relog or server-restart to see the despawn. Unrecoverable.`
             : ""
         }
-        confirmLabel="Delete"
+        confirmLabel="Delete row"
         onConfirm={() => confirmId !== null && doDelete(confirmId)}
         onCancel={() => setConfirmId(null)}
       />
