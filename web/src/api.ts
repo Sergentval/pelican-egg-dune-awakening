@@ -137,6 +137,15 @@ export const fetchItems = (q: string, limit = 40, category = "") => {
 export const fetchItemCategories = () =>
   api<{ categories: ItemCategoryBucket[] }>("GET", "/api/lookup/item-categories");
 
+/** True when the item id is a Unique blueprint variant — Funcom marks
+ *  them with `_Unique_` (most categories) or `Unique` as a prefix on
+ *  some weapon families (e.g. `UniqueAr1`, `UniqueSword_02`). Uniques
+ *  get amber styling in the Items grid + Kits armor section. */
+export function isUniqueItem(itemId: string): boolean {
+  if (!itemId) return false;
+  return /_Unique_|^Unique[A-Z0-9]/i.test(itemId);
+}
+
 /** Best-effort tier extraction from a Funcom FName.
  *
  *  Suffix conventions Funcom ships in DT_ItemTemplates:

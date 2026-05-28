@@ -8,6 +8,7 @@ import {
   armorSetTier,
   detectSkillType,
   detectTier,
+  isUniqueItem,
   fetchArmorSets,
   fetchHistory,
   fetchItemCategories,
@@ -312,6 +313,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(""); // "" = all
   const [tierFilter, setTierFilter] = useState<string>(""); // "" = all
+  const [uniqueFilter, setUniqueFilter] = useState<"" | "unique" | "standard">("");
   const [categories, setCategories] = useState<ItemCategoryBucket[]>([]);
   const [matches, setMatches] = useState<ItemRow[]>([]);
   const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
@@ -374,10 +376,17 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
     return Array.from(seen).sort();
   }, [matches]);
 
-  const visible = useMemo(
-    () => (tierFilter ? matches.filter((m) => detectTier(m.id) === tierFilter) : matches),
-    [matches, tierFilter],
-  );
+  const visible = useMemo(() => {
+    let rows = matches;
+    if (tierFilter) rows = rows.filter((m) => detectTier(m.id) === tierFilter);
+    if (uniqueFilter === "unique") rows = rows.filter((m) => isUniqueItem(m.id));
+    else if (uniqueFilter === "standard") rows = rows.filter((m) => !isUniqueItem(m.id));
+    return rows;
+  }, [matches, tierFilter, uniqueFilter]);
+
+  // Whether the current view contains any Unique blueprints — controls
+  // visibility of the Unique/Standard chip row.
+  const hasUniques = useMemo(() => matches.some((m) => isUniqueItem(m.id)), [matches]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -538,6 +547,51 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               ))}
             </div>
           )}
+
+          {/* Unique vs Standard filter — only appears when the result
+              set has uniques (e.g. browsing weapons / consumables). */}
+          {hasUniques && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">Rarity</span>
+              <button
+                type="button"
+                onClick={() => setUniqueFilter("")}
+                className={
+                  "px-2 py-0.5 rounded text-xs border transition " +
+                  (uniqueFilter === ""
+                    ? "border-slate-500 bg-slate-800 text-slate-100"
+                    : "border-slate-800 text-slate-500 hover:bg-slate-800")
+                }
+              >
+                all
+              </button>
+              <button
+                type="button"
+                onClick={() => setUniqueFilter(uniqueFilter === "unique" ? "" : "unique")}
+                className={
+                  "px-2 py-0.5 rounded text-xs border flex items-center gap-1 transition " +
+                  (uniqueFilter === "unique"
+                    ? "border-amber-500 bg-amber-900/40 text-amber-200"
+                    : "border-slate-800 text-amber-300/70 hover:bg-amber-900/30")
+                }
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden />
+                Unique
+              </button>
+              <button
+                type="button"
+                onClick={() => setUniqueFilter(uniqueFilter === "standard" ? "" : "standard")}
+                className={
+                  "px-2 py-0.5 rounded text-xs border transition " +
+                  (uniqueFilter === "standard"
+                    ? "border-slate-500 bg-slate-800 text-slate-100"
+                    : "border-slate-800 text-slate-500 hover:bg-slate-800")
+                }
+              >
+                Standard
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 max-h-[600px] overflow-y-auto">
@@ -556,14 +610,21 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
                 const w = wiki[it.id];
                 const img = awakeningImageUrl(w?.image);
                 const tier = detectTier(it.id);
+                const unique = isUniqueItem(it.id);
                 const active = picked?.id === it.id && picked?.source === it.source;
+                const borderClass = active
+                  ? "border-spice-500 bg-spice-900/30"
+                  : unique
+                    ? "border-amber-700/60 bg-amber-950/10 hover:border-amber-400/70"
+                    : "border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50";
+                const nameColor = unique ? "text-amber-200" : sty.color;
+                const tierBadgeClass = unique
+                  ? "bg-amber-900/80 border-amber-700 text-amber-200"
+                  : "bg-slate-800/90 border-slate-700 text-spice-300";
                 return (
                   <div
                     key={it.id + it.source}
-                    className={
-                      "rounded border p-2 text-xs hover:border-spice-500/50 transition relative " +
-                      (active ? "border-spice-500 bg-spice-900/30" : "border-slate-800 hover:bg-slate-800/50")
-                    }
+                    className={"rounded border p-2 text-xs transition relative " + borderClass}
                   >
                     <button
                       type="button"
@@ -584,13 +645,20 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
                           <span className="text-3xl" aria-hidden>{sty.icon}</span>
                         )}
                         {tier && (
-                          <span className="absolute -bottom-1 -right-1 text-[9px] font-mono px-1 py-0.5 rounded bg-slate-800/90 border border-slate-700 text-spice-300">
+                          <span className={"absolute -bottom-1 -right-1 text-[9px] font-mono px-1 py-0.5 rounded border " + tierBadgeClass}>
                             {tier}
                           </span>
                         )}
+                        {unique && (
+                          <span
+                            className="absolute -top-1 -left-1 w-2.5 h-2.5 rounded-full bg-amber-400 border border-amber-200/70 shadow shadow-amber-500/30"
+                            title="Unique blueprint"
+                            aria-label="Unique"
+                          />
+                        )}
                       </div>
                       <div className="text-center w-full">
-                        <div className={`truncate ${sty.color}`}>{w?.name || it.name || it.id}</div>
+                        <div className={`truncate ${nameColor}`}>{w?.name || it.name || it.id}</div>
                         <div className="text-[10px] text-slate-500 font-mono truncate">{it.id}</div>
                       </div>
                     </button>
