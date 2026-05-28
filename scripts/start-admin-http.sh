@@ -57,7 +57,9 @@ if [ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ]; then
     if wait_for_port "$WAIT_HOST" "$PORT" 5; then
         log "admin-http UI ready: success (pid $(read_pid admin-http))"
         log "  URL: http://${DUNE_EXTERNAL_IP:-$BIND}:${PORT}/"
-        [ -n "${DUNE_ADMIN_UI_DOMAIN:-}" ] && log "  Public domain: https://${DUNE_ADMIN_UI_DOMAIN}/ (configure your reverse proxy to point here)"
+        if [ -n "${DUNE_ADMIN_UI_DOMAIN:-}" ]; then
+            log "  Public domain: https://${DUNE_ADMIN_UI_DOMAIN}/ (configure your reverse proxy to point here)"
+        fi
     else
         tail -30 "$LOGS/admin-http.log" >&2 || true
         die "admin-http UI failed to bind within 5s"
