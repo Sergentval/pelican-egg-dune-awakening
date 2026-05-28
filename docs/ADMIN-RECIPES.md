@@ -16,9 +16,26 @@ per-player command:
 
 ```text
 admin players                 # who's online + their FLS ids
+admin pos <player_id>         # current X/Y/Z + ready-to-paste commands
 admin vehicles                # all 9 vehicle classes with templates
 admin items <search>          # 2558 items, case-insensitive substring
 admin skills <search>         # 145 skill modules
+```
+
+`admin pos me` is the easiest way to get coordinates for vehicle
+spawning or teleport recipes — it outputs the player's current X/Y/Z
+plus three pre-formatted `admin teleport` / `admin vehicle` lines
+you can copy directly into the console. Example output:
+
+```text
+FLS:        DE0BCCAA2501BF22
+Map:        HaggaBasin  (partition 1)
+Position:   X=100454.19  Y=281732.57  Z=1966.59
+
+Ready-to-paste commands:
+  admin teleport me 100454 281733 1967
+  admin vehicle  me Sandbike 100454 281733 1967 T3_Boost
+  admin vehicle  me OrnithopterLight 100454 281733 2166 T6_Combat
 ```
 
 `<search>` is matched against both the canonical FName id and the
@@ -87,9 +104,11 @@ Spawn syntax:
 admin vehicle <player_id> <ClassName> <x> <y> <z> <TemplateName> [rotation] [persistent=1.0]
 ```
 
-Real examples (replace XYZ with coordinates near the player; use
-`admin tpsafe me <x> <y> <z>` to ride along, or pull XYZ from
-`SELECT pawn_loc FROM dune.encrypted_player_state` if you need exact):
+To get XYZ near the player, use `admin pos me` (or
+`admin pos <fls_id>` for someone else). It prints the current
+position **and** three pre-formatted vehicle/teleport commands ready
+to paste. Real examples below use coordinates from a live HaggaBasin
+session — substitute your own with `admin pos me` first:
 
 ```text
 admin vehicle me Sandbike 101000 285000 4300 T3_Boost

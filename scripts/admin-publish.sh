@@ -35,6 +35,7 @@
 # Lookup helpers (no AMQP publish):
 #   players [all|online]                         -- list accounts + FLS ids + Steam info
 #   resolve <fls_id|me|steam:<id>|*>             -- debug what resolve_player_id() returns
+#   pos <player_id>                              -- look up X/Y/Z (handy for vehicle/teleport)
 #   vehicles                                     -- list 9 vehicle ClassName + TemplateName combos
 #   items <search>                               -- search 2558 items by id/name (case-insensitive)
 #   skills <search>                              -- search 145 skill modules
@@ -253,6 +254,58 @@ case "$cmd" in
         else
             exit 1
         fi
+        ;;
+    pos|where)
+        # Look up a player's current XYZ position by joining their
+        # BP_DunePlayerCharacter actor row to encrypted_accounts via
+        # owner_account_id. Transform is a postgres composite holding
+        # ("(x,y,z)","(qx,qy,qz,qw)") — we extract the position vector.
+        # Outputs three blocks: 1) parsed numbers, 2) ready-to-paste
+        # admin commands you can copy directly, 3) raw transform text.
+        raw="${1:?usage: pos <fls_id|me|steam:<id>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR pos: cannot look up '*' — pass a single player" >&2
+            exit 2
+        fi
+        row=$(dune_psql -tAF $'\t' -c "
+            SELECT ac.map, ac.partition_id, ac.transform::text
+            FROM dune.actors ac
+            JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+            WHERE a.\"user\" = '$fls_id'
+              AND ac.class LIKE '%BP_DunePlayerCharacter%'
+            ORDER BY ac.id DESC
+            LIMIT 1
+        " 2>/dev/null)
+        if [ -z "$row" ]; then
+            echo "[admin-publish] ERROR no BP_DunePlayerCharacter row for $fls_id" >&2
+            echo "                player may be offline or in a Sietch we haven't queried." >&2
+            exit 1
+        fi
+        # row is "map<TAB>partition_id<TAB>("(x,y,z)","(qx,qy,qz,qw)")"
+        python3 -c "
+import re, sys
+row = sys.stdin.read().strip()
+parts = row.split('\t')
+if len(parts) < 3:
+    sys.stderr.write(f'unexpected row: {row}\n'); sys.exit(1)
+mapname, partition, tform = parts[0], parts[1], '\t'.join(parts[2:])
+m = re.search(r'\((-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)\)', tform)
+if not m:
+    sys.stderr.write(f'could not parse transform: {tform}\n'); sys.exit(1)
+x, y, z = (float(g) for g in m.groups())
+print(f'FLS:        $fls_id')
+print(f'Map:        {mapname}  (partition {partition})')
+print(f'Position:   X={x:.2f}  Y={y:.2f}  Z={z:.2f}')
+print()
+print('Ready-to-paste commands:')
+print(f'  admin teleport $raw {x:.0f} {y:.0f} {z:.0f}')
+print(f'  admin vehicle  $raw Sandbike {x:.0f} {y:.0f} {z:.0f} T3_Boost')
+print(f'  admin vehicle  $raw OrnithopterLight {x:.0f} {y:.0f} {int(z+200)} T6_Combat')
+print()
+print(f'Raw transform: {tform}')
+" <<< "$row"
+        exit 0
         ;;
     vehicles|items|skills|items-json)
         # Catalogue lookups — read-only, hit the bundled data/admin/*.json

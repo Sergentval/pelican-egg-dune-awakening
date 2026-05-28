@@ -89,9 +89,16 @@ All read-only — no AMQP publish.
 ```text
 admin players              # list every known account with FLS id + Steam id + online state
 admin players online       # same, filtered to currently-connected
+admin pos me               # current X/Y/Z + ready-to-paste teleport/vehicle commands
+admin pos <fls_id>         # any player's last-known position
 admin resolve me           # debug: what does 'me' resolve to right now?
 admin resolve steam:76561198041278656
 ```
+
+`admin pos` joins `dune.actors` (the `BP_DunePlayerCharacter` row) to
+`encrypted_accounts.user` via `owner_account_id`. The actor's
+`transform` postgres composite holds both position and rotation
+quaternion — only the position vector is extracted.
 
 **Catalogue lookups (read bundled `data/admin/*.json`, sourced from
 adainrivers/dune-dedicated-server-manager MIT):**
