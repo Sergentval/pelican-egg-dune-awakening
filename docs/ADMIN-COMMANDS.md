@@ -82,7 +82,9 @@ Four accepted forms:
 
 ### Lookup helpers
 
-These query postgres directly — no AMQP publish. Read-only.
+All read-only — no AMQP publish.
+
+**Player lookups (query postgres):**
 
 ```text
 admin players              # list every known account with FLS id + Steam id + online state
@@ -90,6 +92,19 @@ admin players online       # same, filtered to currently-connected
 admin resolve me           # debug: what does 'me' resolve to right now?
 admin resolve steam:76561198041278656
 ```
+
+**Catalogue lookups (read bundled `data/admin/*.json`, sourced from
+adainrivers/dune-dedicated-server-manager MIT):**
+
+```text
+admin vehicles                  # 9 vehicle classes + their TemplateName options
+admin items <search>            # 2558 items, case-insensitive id+name match
+admin skills <search>           # 145 skill modules
+admin items-json <ItemFName>    # raw JSON for one item
+```
+
+Searches cap at 40 (items) / 50 (skills) results to keep panel output
+usable. Narrow the search term if you're hitting the cap.
 
 Sample output of `admin players`:
 
@@ -207,11 +222,15 @@ award lands as generic player XP regardless of category.
 admin skill <player_id> <Module> <Level>
 ```
 
-`Module` is a row key from `DT_SkillModules`. Examples:
-`Swordmaster_T1`, `Planetologist_T2`, etc.
+`Module` uses the canonical UE5 ability id form: `Skills.Ability.<Name>`
+or `Skills.Attribute.<Name>`. Run `admin skills <search>` to browse —
+adainrivers' specs.rs helper hints at a `Swordmaster_T1`-style shorthand
+that no longer works on shipping builds.
 
 ```text
-admin skill A1B2C3D4 Swordmaster_T1 5
+admin skills swordmaster                        # list Swordmaster modules
+admin skill me Skills.Ability.BattleCry 3       # max out Inspiration
+admin skill me Skills.Attribute.Blade1 3        # max blade damage
 ```
 
 ### `points` — set unspent skill points

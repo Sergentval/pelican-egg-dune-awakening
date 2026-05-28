@@ -65,9 +65,20 @@ In-game character names (`Sergentval`, etc.) cannot be used — Funcom
 stores them encrypted. Use the FLS id (from `admin players`),
 `me`, `steam:<id>`, or `*`.
 
+Lookup helpers (panel console):
+
+```text
+admin vehicles                   # 9 vehicle classes + their templates
+admin items spice                # search 2558 items (case-insensitive)
+admin skills swordmaster         # search 145 skill modules by category
+```
+
 Full catalogue (16 subcommands), payload schemas, examples,
 no-op caveats, and troubleshooting in
-[`docs/ADMIN-COMMANDS.md`](./docs/ADMIN-COMMANDS.md). Protocol
+[`docs/ADMIN-COMMANDS.md`](./docs/ADMIN-COMMANDS.md).
+Copy-paste recipes by scenario (welcome kit, vehicle spawn, event
+prep, scheduled restart) in
+[`docs/ADMIN-RECIPES.md`](./docs/ADMIN-RECIPES.md). Protocol
 reverse-engineering credit:
 [adainrivers/dune-dedicated-server-manager](https://github.com/adainrivers/dune-dedicated-server-manager)
 (MIT). See [`ATTRIBUTION.md`](./ATTRIBUTION.md).

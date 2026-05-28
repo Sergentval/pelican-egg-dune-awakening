@@ -32,9 +32,13 @@
 # Funcom stores them encrypted (encrypted_player_state.encrypted_character_name
 # bytea). Use `admin players` to list accounts with their FLS ids.
 #
-# Lookup helpers (no AMQP publish, query postgres directly):
+# Lookup helpers (no AMQP publish):
 #   players [all|online]                         -- list accounts + FLS ids + Steam info
 #   resolve <fls_id|me|steam:<id>|*>             -- debug what resolve_player_id() returns
+#   vehicles                                     -- list 9 vehicle ClassName + TemplateName combos
+#   items <search>                               -- search 2558 items by id/name (case-insensitive)
+#   skills <search>                              -- search 145 skill modules
+#   items-json <id>                              -- raw JSON for one item
 #
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
@@ -110,13 +114,9 @@ MQ_ROOT="$BASE/extracted/mq"
 ERL_ROOT="$MQ_ROOT/opt/erlang/lib/erlang"
 RMQ_SBIN="$MQ_ROOT/opt/rabbitmq/sbin"
 
-# rabbitmqctl is only required for the actual publish — DRY_RUN should be
-# usable on any host (e.g. for local development of new subcommands).
-if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ] && [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; then
-    echo "[admin-publish] ERROR rabbitmqctl missing at $RMQ_SBIN/rabbitmqctl" >&2
-    echo "[admin-publish]   run from inside the Pelican container, or set DUNE_ADMIN_DRY_RUN=1" >&2
-    exit 1
-fi
+# rabbitmqctl check moved below — lookup subcommands (players, vehicles,
+# items, skills, resolve) don't need it. The check fires just before the
+# publish path actually invokes rabbitmqctl.
 
 usage() {
     sed -n '1,70p' "$0" | sed -n 's/^# \?//p'
@@ -253,6 +253,13 @@ case "$cmd" in
         else
             exit 1
         fi
+        ;;
+    vehicles|items|skills|items-json)
+        # Catalogue lookups — read-only, hit the bundled data/admin/*.json
+        # files. Saves humans from grepping 293KB of items.json by hand.
+        # Data files are MIT-licensed copies from
+        # adainrivers/dune-dedicated-server-manager — see ATTRIBUTION.md.
+        DUNE_BASE_DIR="$BASE" exec python3 "$BASE/scripts/admin-lookup.py" "$cmd" "$@"
         ;;
 esac
 
@@ -553,6 +560,14 @@ print(json.dumps(json.loads(s), separators=(',',':')))
 }
 
 INNER_JSON=$(build_inner "$cmd" "$@")
+
+# rabbitmqctl is only required for the actual publish. Lookup
+# subcommands exited above; only publish paths reach this far.
+if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ] && [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; then
+    echo "[admin-publish] ERROR rabbitmqctl missing at $RMQ_SBIN/rabbitmqctl" >&2
+    echo "[admin-publish]   run from inside the Pelican container, or set DUNE_ADMIN_DRY_RUN=1" >&2
+    exit 1
+fi
 
 # --------------------------------------------------------------------------
 # Build the outer envelope: {Version: 2, AuthToken: <token>, MessageContent: <inner-as-string>}

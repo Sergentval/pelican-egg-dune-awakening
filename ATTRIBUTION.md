@@ -82,6 +82,12 @@ Rust + Tauri). All of the following come from their work:
   commands silently no-op, XP Category field ignored,
   AwardXPByEventTag returns "unknown ServerCommand") — saved us
   reverse-engineering the same dead ends.
+- The bundled catalogue JSON files in `data/admin/` — verbatim copies
+  of `vehicles.json` (9 vehicle classes + templates), `items.json`
+  (2558 items), and `skill-modules.json` (145 ability/attribute
+  modules) from their `crates/dune-server-service/data/`. Used by
+  `scripts/admin-lookup.py` to back the `admin vehicles | items |
+  skills` panel subcommands.
 
 If you want a polished desktop GUI for managing a Dune server (item
 grants, vehicle spawns, player lookup, scheduled restarts), check out
