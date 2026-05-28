@@ -30,6 +30,14 @@ import {
   type ConsoleEntry,
 } from "./components";
 import { useTarget } from "./target";
+import {
+  BUILT_IN_KITS,
+  loadCustomKits,
+  saveCustomKits,
+  type CustomKit,
+  type Kit,
+  type KitLine,
+} from "./kits";
 
 // Props shared by every tab — the parent passes setConsoleEntries so
 // commands flow into the persistent output panel.
@@ -1176,6 +1184,238 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
         onConfirm={execute}
         onCancel={() => setConfirm(null)}
       />
+    </div>
+  );
+}
+
+// ---- Kits -------------------------------------------------------------
+//
+// One-click bundled item grants. Funcom's seabass handler has no direct
+// "heal player" / "set hydration" command (verified exhaustively, see
+// the protocol wiki note), so these compose AddItemToInventory calls
+// to achieve the same end result via consumables.
+
+export function KitsTab({ setConsoleEntries }: TabProps) {
+  const target = useTarget();
+  const [custom, setCustom] = useState<CustomKit[]>(loadCustomKits);
+  const [draftName, setDraftName] = useState("");
+  const [draftItemId, setDraftItemId] = useState("");
+  const [draftQty, setDraftQty] = useState(1);
+  const [draftLines, setDraftLines] = useState<KitLine[]>([]);
+  const [running, setRunning] = useState<string | null>(null);
+
+  async function runKit(kit: Kit) {
+    setRunning(kit.id);
+    try {
+      for (const line of kit.lines) {
+        const body: Record<string, unknown> = {
+          player_id: target.playerId,
+          item: line.id,
+          qty: line.qty,
+        };
+        if (line.durability !== undefined) body["durability"] = line.durability;
+        // eslint-disable-next-line no-await-in-loop
+        await runAndLog(
+          setConsoleEntries,
+          "give",
+          body,
+          `${kit.emoji} ${kit.name}: ${line.name} ×${line.qty}`,
+        );
+      }
+    } finally {
+      setRunning(null);
+    }
+  }
+
+  function addDraftLine() {
+    const id = draftItemId.trim();
+    if (!id) return;
+    setDraftLines((prev) => [...prev, { id, name: id, qty: Math.max(1, draftQty) }]);
+    setDraftItemId("");
+    setDraftQty(1);
+  }
+
+  function saveDraft() {
+    const name = draftName.trim();
+    if (!name || draftLines.length === 0) return;
+    const k: CustomKit = {
+      id: `c-${Math.random().toString(36).slice(2, 9)}`,
+      name,
+      emoji: "📦",
+      blurb: `${draftLines.length} item${draftLines.length === 1 ? "" : "s"} (custom)`,
+      lines: draftLines,
+      custom: true,
+    };
+    const next = [...custom, k];
+    setCustom(next);
+    saveCustomKits(next);
+    setDraftName("");
+    setDraftLines([]);
+  }
+
+  function deleteCustom(id: string) {
+    const next = custom.filter((k) => k.id !== id);
+    setCustom(next);
+    saveCustomKits(next);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="card max-w-3xl">
+        <header className="card-header">
+          <h2 className="font-semibold">Target player</h2>
+        </header>
+        <div className="p-4">
+          <PlayerPicker />
+          <p className="text-xs text-slate-500 mt-2">
+            Each kit fires multiple <span className="font-mono text-slate-400">/admin/give</span> calls back-to-back at the player above.
+            Funcom doesn't ship a direct heal / set-hydration command — these bundles use the in-game consumables instead.
+          </p>
+        </div>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Built-in kits</h2>
+          <span className="text-xs text-slate-500">{BUILT_IN_KITS.length} bundles</span>
+        </header>
+        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          {BUILT_IN_KITS.map((kit) => (
+            <button
+              key={kit.id}
+              type="button"
+              onClick={() => runKit(kit)}
+              disabled={running !== null}
+              className="text-left p-3 rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition disabled:opacity-40"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl" aria-hidden>{kit.emoji}</span>
+                <span className="font-semibold text-spice-300">{kit.name}</span>
+                {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+              </div>
+              <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
+              <ul className="text-xs text-slate-500 space-y-0.5">
+                {kit.lines.map((l, i) => (
+                  <li key={i} className="font-mono truncate">
+                    <span className="text-slate-400">×{l.qty}</span> {l.name}
+                  </li>
+                ))}
+              </ul>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Your custom kits</h2>
+          <span className="text-xs text-slate-500">{custom.length} saved locally</span>
+        </header>
+        <div className="p-4 space-y-4">
+          {custom.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {custom.map((k) => (
+                <div key={k.id} className="p-3 rounded-lg border border-slate-800 group">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xl" aria-hidden>{k.emoji}</span>
+                    <span className="font-semibold text-spice-300">{k.name}</span>
+                    <button
+                      type="button"
+                      className="ml-auto text-slate-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition"
+                      onClick={() => deleteCustom(k.id)}
+                      title="delete custom kit"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <ul className="text-xs text-slate-500 space-y-0.5 mb-2">
+                    {k.lines.map((l, i) => (
+                      <li key={i} className="font-mono truncate">
+                        <span className="text-slate-400">×{l.qty}</span> {l.id}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => runKit(k)}
+                    disabled={running !== null}
+                    className="btn-primary w-full text-xs"
+                  >
+                    Grant to {target.playerId}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="border border-dashed border-slate-700 rounded-lg p-4 space-y-3">
+            <div className="text-sm font-semibold text-slate-300">Build a custom kit</div>
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                type="text"
+                value={draftItemId}
+                onChange={(e) => setDraftItemId(e.target.value)}
+                placeholder="ItemFName (e.g. MelangeSpice)"
+                className="input-field font-mono col-span-2 text-xs"
+              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={draftQty}
+                  onChange={(e) => setDraftQty(parseInt(e.target.value) || 1)}
+                  className="input-field font-mono text-xs flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={addDraftLine}
+                  disabled={!draftItemId.trim()}
+                  className="btn-ghost border border-slate-700 text-xs"
+                >
+                  + add
+                </button>
+              </div>
+            </div>
+            {draftLines.length > 0 && (
+              <ul className="text-xs text-slate-400 space-y-1">
+                {draftLines.map((l, i) => (
+                  <li key={i} className="flex items-center gap-2 font-mono">
+                    <span className="text-slate-500">×{l.qty}</span>
+                    <span className="text-spice-300">{l.id}</span>
+                    <button
+                      type="button"
+                      className="ml-auto text-slate-600 hover:text-red-400"
+                      onClick={() => setDraftLines((prev) => prev.filter((_, idx) => idx !== i))}
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="kit name (e.g. ‘event drop’)"
+                className="input-field flex-1 text-xs"
+              />
+              <button
+                type="button"
+                onClick={saveDraft}
+                disabled={!draftName.trim() || draftLines.length === 0}
+                className="btn-ghost border border-slate-700 text-xs"
+              >
+                save kit
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Use the <span className="font-mono">Items</span> tab to search 2558 item FNames if you don't have one handy.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

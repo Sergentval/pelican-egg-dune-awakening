@@ -4,6 +4,7 @@ import {
   Dashboard,
   HistoryTab,
   ItemsTab,
+  KitsTab,
   MaintenanceTab,
   MovementTab,
   PlayersTab,
@@ -18,6 +19,7 @@ type TabId =
   | "dashboard"
   | "broadcast"
   | "players"
+  | "kits"
   | "items"
   | "skills"
   | "vehicles"
@@ -34,6 +36,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
+  { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
@@ -162,6 +165,7 @@ export default function App() {
 
         <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
           {tab === "dashboard" && <Dashboard setConsoleEntries={setEntries} />}
+          {tab === "kits" && <KitsTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
