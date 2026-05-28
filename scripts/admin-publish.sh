@@ -20,7 +20,23 @@
 #   docker exec <container> bash /home/container/scripts/admin-publish.sh broadcast \
 #     "Server announcement" "Hello from admin"
 #
-# Subcommands (PlayerId accepts FLS id or "*" for all online unless noted):
+# Subcommands.
+#
+# PlayerId argument forms (accepted everywhere a <player_id> is documented):
+#   <16-hex>       FLS id, the canonical wire form (e.g. DE0BCCAA2501BF22)
+#   me             single currently-online account (errors if 0 or >1 online)
+#   steam:<digits> resolved from encrypted_accounts.platform_id
+#   *              all online players (where the seabass handler supports it)
+#
+# In-game character names ("Sergentval", etc.) CANNOT be resolved because
+# Funcom stores them encrypted (encrypted_player_state.encrypted_character_name
+# bytea). Use `admin players` to list accounts with their FLS ids.
+#
+# Lookup helpers (no AMQP publish, query postgres directly):
+#   players [all|online]                         -- list accounts + FLS ids + Steam info
+#   resolve <fls_id|me|steam:<id>|*>             -- debug what resolve_player_id() returns
+#
+# AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
 #                                                            -- ServiceBroadcast (ServerShutdown)
@@ -103,7 +119,91 @@ if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ] && [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; th
 fi
 
 usage() {
-    sed -n '1,55p' "$0" | sed -n 's/^# \?//p'
+    sed -n '1,70p' "$0" | sed -n 's/^# \?//p'
+}
+
+# --------------------------------------------------------------------------
+# Postgres helper. Wraps Funcom's extracted psql with the right library
+# paths so it can connect via the unix socket the gateway uses.
+# Used by both `players` listing and `resolve_player_id` (steam: lookup).
+# --------------------------------------------------------------------------
+PG_BIN="$BASE/extracted/postgres/usr/local/bin"
+PG_LIBS="$BASE/extracted/postgres/lib:$BASE/extracted/postgres/usr/lib:$BASE/extracted/postgres/usr/local/lib"
+PG_ICU=""
+if [ -d "$BASE/extracted/postgres/usr/local/share/icu" ]; then
+    PG_ICU=$(find "$BASE/extracted/postgres/usr/local/share/icu" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1 || true)
+fi
+PG_PORT="${DUNE_PG_PORT:-15432}"
+PG_SOCK="$BASE/runtime/postgresql"
+
+dune_psql() {
+    LD_LIBRARY_PATH="$PG_LIBS" ICU_DATA="$PG_ICU" \
+        "$PG_BIN/psql" -h "$PG_SOCK" -p "$PG_PORT" -U dune -d dune "$@"
+}
+
+# --------------------------------------------------------------------------
+# Player-id resolver. PlayerIds on the wire MUST be the 16-hex FLS id;
+# in-game character names cannot be looked up (Funcom stores them
+# encrypted in encrypted_player_state.encrypted_character_name). This
+# helper accepts the user-friendly forms:
+#
+#   <16-hex>      pass through unchanged
+#   *             pass through (means "all online" to the handler)
+#   steam:<digits> resolve Steam platform id -> FLS id via encrypted_accounts
+#   me            resolve the single currently-online account (errors if 0 or >1)
+#
+# Anything else exits non-zero with a hint to run `admin players` to
+# find the FLS id. Sentry checks keep us from sending obviously-wrong
+# strings that the seabass handler would silently drop.
+# --------------------------------------------------------------------------
+resolve_player_id() {
+    local raw="$1"
+    case "$raw" in
+        '')
+            echo "[admin-publish] ERROR empty player id" >&2
+            return 1
+            ;;
+        '*')
+            printf '%s' '*'
+            return 0
+            ;;
+        steam:*)
+            local sid="${raw#steam:}"
+            case "$sid" in *[!0-9]*|'') echo "[admin-publish] ERROR steam: requires numeric SteamID, got '$sid'" >&2; return 1 ;; esac
+            local resolved
+            resolved=$(dune_psql -tAc "SELECT \"user\" FROM dune.encrypted_accounts WHERE platform_id='$sid' AND platform_name='Steam' LIMIT 1" 2>/dev/null | tr -d '\r\n')
+            if [ -z "$resolved" ]; then
+                echo "[admin-publish] ERROR no FLS account for Steam id $sid (run 'admin players' to list)" >&2
+                return 1
+            fi
+            printf '%s' "$resolved"
+            ;;
+        me)
+            local online_count online_id
+            online_count=$(dune_psql -tAc "SELECT count(*) FROM dune.encrypted_accounts a JOIN dune.encrypted_player_state ps ON ps.account_id=a.id WHERE ps.online_status='Online'" 2>/dev/null | tr -d '\r\n')
+            case "$online_count" in
+                0|'') echo "[admin-publish] ERROR 'me' shortcut: no players online" >&2; return 1 ;;
+                1)
+                    online_id=$(dune_psql -tAc "SELECT a.\"user\" FROM dune.encrypted_accounts a JOIN dune.encrypted_player_state ps ON ps.account_id=a.id WHERE ps.online_status='Online' LIMIT 1" 2>/dev/null | tr -d '\r\n')
+                    printf '%s' "$online_id"
+                    ;;
+                *) echo "[admin-publish] ERROR 'me' shortcut: $online_count players online — pass an explicit FLS id (run 'admin players')" >&2; return 1 ;;
+            esac
+            ;;
+        *)
+            # Accept anything that looks like a 16-hex FLS id. Reject the rest
+            # with a helpful pointer to `admin players`.
+            if [ "${#raw}" -eq 16 ] && [ -z "${raw//[0-9A-Fa-f]/}" ]; then
+                printf '%s' "$raw" | tr 'a-f' 'A-F'
+                return 0
+            fi
+            echo "[admin-publish] ERROR '$raw' is not a valid FLS id (16-hex). Funcom stores character" >&2
+            echo "                names encrypted so 'Sergentval'-style names can't be resolved." >&2
+            echo "                Run 'admin players' to list accounts, then re-issue with the FLS id," >&2
+            echo "                or use 'me' / 'steam:<steamID>' shortcuts." >&2
+            return 1
+            ;;
+    esac
 }
 
 cmd="${1:-}"
@@ -112,6 +212,49 @@ if [ -z "$cmd" ]; then
     exit 2
 fi
 shift
+
+# --------------------------------------------------------------------------
+# Short-circuit subcommands that don't go through the publish path.
+#   admin players              — list all accounts with FLS id + Steam info
+#   admin players online       — filter to currently-online
+#   admin resolve <id>         — debug: print what resolve_player_id() returns
+# --------------------------------------------------------------------------
+case "$cmd" in
+    players)
+        sub="${1:-all}"
+        case "$sub" in
+            all)    where_clause="" ;;
+            online) where_clause="WHERE ps.online_status='Online'" ;;
+            *)
+                echo "[admin-publish] ERROR usage: players [all|online]" >&2
+                exit 2
+                ;;
+        esac
+        dune_psql -c "
+            SELECT a.\"user\"           AS fls_id,
+                   a.platform_id        AS steam_id,
+                   a.platform_name,
+                   COALESCE(ps.life_state::text, '-')      AS life,
+                   COALESCE(ps.online_status::text, '-')   AS online,
+                   ps.last_avatar_activity
+            FROM dune.encrypted_accounts a
+            LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+            $where_clause
+            ORDER BY ps.last_avatar_activity DESC NULLS LAST
+            LIMIT 100
+        "
+        exit 0
+        ;;
+    resolve)
+        raw="${1:?usage: resolve <fls_id|me|steam:<id>|*>}"
+        if resolved=$(resolve_player_id "$raw"); then
+            printf '%s -> %s\n' "$raw" "$resolved"
+            exit 0
+        else
+            exit 1
+        fi
+        ;;
+esac
 
 # --------------------------------------------------------------------------
 # Build the inner JSON payload based on the subcommand. Each subcommand
@@ -180,7 +323,9 @@ print(json.dumps(inner, separators=(',',':')))
 "
             ;;
         kick)
-            local pid="${1:?player id required (or \"*\" for all online)}"
+            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             python3 -c "
 import json
 print(json.dumps({'ServerCommand': 'KickPlayer', 'PlayerId': '''$pid'''}, separators=(',',':')))
@@ -188,7 +333,9 @@ print(json.dumps({'ServerCommand': 'KickPlayer', 'PlayerId': '''$pid'''}, separa
             ;;
         clean)
             # CleanPlayerInventory — DESTRUCTIVE. Wipes the target's inventory.
-            local pid="${1:?player id required (or \"*\" for all online)}"
+            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             python3 -c "
 import json
 print(json.dumps({'ServerCommand': 'CleanPlayerInventory', 'PlayerId': '''$pid'''}, separators=(',',':')))
@@ -196,7 +343,9 @@ print(json.dumps({'ServerCommand': 'CleanPlayerInventory', 'PlayerId': '''$pid''
             ;;
         reset)
             # ResetProgression — DESTRUCTIVE. Wipes XP/skills/journey for target.
-            local pid="${1:?player id required (or \"*\" for all online)}"
+            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             python3 -c "
 import json
 print(json.dumps({'ServerCommand': 'ResetProgression', 'PlayerId': '''$pid'''}, separators=(',',':')))
@@ -205,7 +354,9 @@ print(json.dumps({'ServerCommand': 'ResetProgression', 'PlayerId': '''$pid'''}, 
         water)
             # UpdateAllWaterFillables — refills water in target's fillable
             # containers (jerrycans, stills, etc). Default amount is 1 000 000.
-            local pid="${1:?player id required (or \"*\" for all online)}"
+            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local amt="${2:-1000000}"
             python3 -c "
 import json
@@ -217,7 +368,9 @@ print(json.dumps({
 "
             ;;
         give)
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local item="${2:?item FName required (case-insensitive)}"
             local qty="${3:-1}"
             local dura="${4:-1.0}"
@@ -237,7 +390,9 @@ print(json.dumps({
             # `Category` is present in the payload. The value itself is
             # ignored (every category lands as generic player XP) but the
             # field must exist. Injecting "Combat" as a known-accepted value.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local amt="${2:?xp amount required}"
             python3 -c "
 import json
@@ -251,7 +406,9 @@ print(json.dumps({
             ;;
         skill)
             # SkillsSetModuleLevel — sets a specific skill module's level.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local module="${2:?module name required (e.g. Swordmaster_T1)}"
             local lvl="${3:?level required}"
             python3 -c "
@@ -266,7 +423,9 @@ print(json.dumps({
             ;;
         points)
             # SkillsSetUnspentSkillPoints — sets the unspent skill point pool.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local pts="${2:?skill points required}"
             python3 -c "
 import json
@@ -281,7 +440,9 @@ print(json.dumps({
             # TeleportToExact — drops the player at the EXACT XYZ. No safety
             # snapping. Use tpsafe instead if you want collision/safe-spawn.
             # Optional yaw rotates the player around vertical axis.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
             local yaw="${5:-}"
             python3 -c "
@@ -300,7 +461,9 @@ print(json.dumps(inner, separators=(',',':')))
         tpsafe)
             # TeleportTo — snaps to the nearest safe (non-clipping, on-ground)
             # location near the requested XYZ. Same field set as teleport.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
             local yaw="${5:-}"
             python3 -c "
@@ -320,7 +483,9 @@ print(json.dumps(inner, separators=(',',':')))
             # SpawnVehicleAt — spawns a vehicle of <class> with <template>
             # variant at XYZ. ClassName + TemplateName are DT_VehicleTemplates
             # row keys. Persistent defaults to 1.0 (persists across restart).
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local cls="${2:?vehicle class required (e.g. Sandbike, Buggy)}"
             local x="${3:?x required}" y="${4:?y required}" z="${5:?z required}"
             local tpl="${6:?template name required (e.g. T6_Combat)}"
@@ -346,7 +511,9 @@ print(json.dumps(inner, separators=(',',':')))
             # CheatScript — runs a [CheatScript.<name>] block from
             # DefaultGame.ini. KNOWN NO-OP on seabass servers (handler logs
             # the call but applies no state). Kept for protocol parity.
-            local pid="${1:?player id required}"
+            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
+            local pid
+            pid=$(resolve_player_id "$pid_raw") || exit 1
             local name="${2:?script name required (e.g. PlaytestSetupAdmin)}"
             python3 -c "
 import json

@@ -65,10 +65,42 @@ deleting `runtime/state/svc-cmd-token` and restarting the container.
 
 ### Player targeting
 
-Every per-player command takes a `PlayerId` argument. Use either:
+Every per-player command takes a `<player_id>` argument. **In-game
+character names ("Sergentval", "Atreides", etc.) cannot be used** —
+Funcom stores them encrypted in
+`dune.encrypted_player_state.encrypted_character_name` (BYTEA) and the
+decryption key is not available to admin tooling.
 
-- An FLS player id (16-char hex, visible in postgres `dune.player_state` table)
-- `"*"` (asterisk) to target every online player on the cluster
+Four accepted forms:
+
+| Form | Example | Meaning |
+|---|---|---|
+| 16-char hex | `DE0BCCAA2501BF22` | FLS id, the canonical wire form |
+| `me` | `me` | The single currently-online account (errors if 0 or >1) |
+| `steam:<digits>` | `steam:76561198041278656` | Resolved via the unencrypted Steam platform id |
+| `*` | `*` | All online players (where the handler supports it) |
+
+### Lookup helpers
+
+These query postgres directly — no AMQP publish. Read-only.
+
+```text
+admin players              # list every known account with FLS id + Steam id + online state
+admin players online       # same, filtered to currently-connected
+admin resolve me           # debug: what does 'me' resolve to right now?
+admin resolve steam:76561198041278656
+```
+
+Sample output of `admin players`:
+
+```text
+      fls_id      |     steam_id      | platform_name | life  | online |    last_avatar_activity
+------------------+-------------------+---------------+-------+--------+-----------------------------
+ DE0BCCAA2501BF22 | 76561198041278656 | Steam         | Alive | Online | 2026-05-28 07:22:05.861+00
+```
+
+Copy the `fls_id` value into per-player commands. Or use the `me` /
+`steam:<id>` shortcuts to skip the copy step.
 
 ### `broadcast` — server-wide notification banner
 
@@ -107,7 +139,7 @@ admin shutdown cancel              # abort the countdown
 ### `kick` — disconnect a player
 
 ```text
-admin kick <player_id_or_*>
+admin kick <player_id>
 ```
 
 ```text
@@ -120,7 +152,7 @@ admin kick A1B2C3D4E5F60718
 ⚠️ **Destructive — there is no undo.**
 
 ```text
-admin clean <player_id_or_*>
+admin clean <player_id>
 ```
 
 ### `reset` — reset a player's XP and skills
@@ -128,13 +160,13 @@ admin clean <player_id_or_*>
 ⚠️ **Destructive — wipes XP, skill levels, unspent points.**
 
 ```text
-admin reset <player_id_or_*>
+admin reset <player_id>
 ```
 
 ### `water` — refill water containers
 
 ```text
-admin water <player_id_or_*> [amount=1000000]
+admin water <player_id> [amount=1000000]
 ```
 
 Refills jerrycans, stills, and other fillable water containers carried

@@ -60,6 +60,11 @@ USAGE = (
     "  curl -X POST http://127.0.0.1:8089/admin/raw \\\n"
     "       -H 'Content-Type: application/json' \\\n"
     "       -d '{\"ServerCommand\":\"AwardXP\",\"PlayerId\":\"fls-1\",\"Experience\":1000}'\n\n"
+    "Lookup helpers (GET — no body):\n"
+    "  GET /players                                   # list all known accounts\n"
+    "  GET /players?filter=online                     # only currently-online\n\n"
+    "player_id fields accept the same shortcuts as admin-publish.sh:\n"
+    "  16-hex FLS id (canonical), 'me', 'steam:<digits>', '*' (all online)\n\n"
     "Subcommands accept the same payloads as scripts/admin-publish.sh:\n"
     "  broadcast {title, body, duration?}\n"
     "  shutdown  {type, lead_secs?, freq_secs?}     # type: Restart|Maintenance|Update|cancel\n"
@@ -180,6 +185,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(200, {"ok": True})
                 return
             self._write(200, USAGE, content_type="text/plain")
+            return
+        if self.path in ("/players", "/players?filter=all", "/players?filter=online"):
+            # Shells out to admin-publish.sh players [all|online] which queries
+            # postgres for the account list. Auth is the same Bearer check as POST.
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            sub_filter = "online" if self.path.endswith("filter=online") else "all"
+            result = subprocess.run(
+                [PUBLISH_SH, "players", sub_filter],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            status = 200 if result.returncode == 0 else 500
+            self._write(status, result.stdout + result.stderr, content_type="text/plain")
             return
         self._write(404, {"error": "not found", "path": self.path})
 

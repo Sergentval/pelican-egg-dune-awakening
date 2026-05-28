@@ -53,13 +53,17 @@ in-game console. Type `admin <subcommand>` in the Pelican panel's
 **Console** tab, or POST to the loopback HTTP wrapper:
 
 ```text
-admin broadcast "Maintenance" "Restart in 5 minutes" 20
-admin kick A1B2C3D4
-admin give A1B2C3D4 AAR1_Spice 100
-admin xp A1B2C3D4 10000
-admin teleport A1B2C3D4 101000 285000 4300
-admin shutdown Restart 300 60
+admin players                                       # list FLS ids
+admin broadcast "Maintenance" "Restart in 5 min" 20 # server-wide banner
+admin give me AAR1_Spice 100                        # 'me' = single online account
+admin xp steam:76561198041278656 10000              # resolve from Steam id
+admin teleport DE0BCCAA2501BF22 101000 285000 4300  # canonical FLS id
+admin shutdown Restart 300 60                       # 5-min restart with countdown
 ```
+
+In-game character names (`Sergentval`, etc.) cannot be used — Funcom
+stores them encrypted. Use the FLS id (from `admin players`),
+`me`, `steam:<id>`, or `*`.
 
 Full catalogue (16 subcommands), payload schemas, examples,
 no-op caveats, and troubleshooting in
