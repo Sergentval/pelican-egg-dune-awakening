@@ -32,6 +32,7 @@ import {
 import { useTarget } from "./target";
 import {
   BUILT_IN_KITS,
+  KIT_GROUPS,
   loadCustomKits,
   saveCustomKits,
   type CustomKit,
@@ -1284,6 +1285,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
       name,
       emoji: "📦",
       blurb: `${draftLines.length} item${draftLines.length === 1 ? "" : "s"} (custom)`,
+      group: "loot",
       lines: draftLines,
       custom: true,
     };
@@ -1315,37 +1317,48 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
         </div>
       </div>
 
-      <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Built-in kits</h2>
-          <span className="text-xs text-slate-500">{BUILT_IN_KITS.length} bundles</span>
-        </header>
-        <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-          {BUILT_IN_KITS.map((kit) => (
-            <button
-              key={kit.id}
-              type="button"
-              onClick={() => runKit(kit)}
-              disabled={running !== null}
-              className="text-left p-3 rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition disabled:opacity-40"
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xl" aria-hidden>{kit.emoji}</span>
-                <span className="font-semibold text-spice-300">{kit.name}</span>
-                {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
-              </div>
-              <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
-              <ul className="text-xs text-slate-500 space-y-0.5">
-                {kit.lines.map((l, i) => (
-                  <li key={i} className="font-mono truncate">
-                    <span className="text-slate-400">×{l.qty}</span> {l.name}
-                  </li>
-                ))}
-              </ul>
-            </button>
-          ))}
-        </div>
-      </div>
+      {KIT_GROUPS.map((g) => {
+        const groupKits = BUILT_IN_KITS.filter((k) => k.group === g.id);
+        if (groupKits.length === 0) return null;
+        return (
+          <div key={g.id} className="card">
+            <header className="card-header">
+              <h2 className="font-semibold flex items-center gap-2">
+                <span aria-hidden>{g.emoji}</span> {g.label}
+              </h2>
+              <span className="text-xs text-slate-500">{groupKits.length} bundles</span>
+            </header>
+            <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+              {groupKits.map((kit) => (
+                <button
+                  key={kit.id}
+                  type="button"
+                  onClick={() => runKit(kit)}
+                  disabled={running !== null}
+                  className="text-left p-3 rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition disabled:opacity-40"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xl" aria-hidden>{kit.emoji}</span>
+                    <span className="font-semibold text-spice-300">{kit.name}</span>
+                    {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+                  </div>
+                  <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
+                  <ul className="text-xs text-slate-500 space-y-0.5">
+                    {kit.lines.slice(0, 6).map((l, i) => (
+                      <li key={i} className="font-mono truncate">
+                        <span className="text-slate-400">×{l.qty}</span> {l.name}
+                      </li>
+                    ))}
+                    {kit.lines.length > 6 && (
+                      <li className="text-slate-600 italic">…+{kit.lines.length - 6} more</li>
+                    )}
+                  </ul>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
 
       <div className="card">
         <header className="card-header">
