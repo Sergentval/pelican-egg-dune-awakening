@@ -3,14 +3,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  dgtSearch,
   fetchHistory,
   fetchItems,
   fetchPlayers,
   fetchSkills,
   fetchSteamInfo,
   fetchVehicles,
+  itemCategoryStyle,
   parsePlayerTable,
   publish,
+  skillCategoryStyle,
+  vehicleIcon,
   type HistoryResponse,
   type ItemRow,
   type PlayerRow,
@@ -311,10 +315,18 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               className="input-field"
             />
             {picked && (
-              <div className="mt-2 text-xs text-slate-300 flex items-center gap-2">
-                Selected:
-                <span className="font-mono text-spice-300">{picked.id}</span>
+              <div className="mt-2 text-xs text-slate-300 flex items-center gap-2 flex-wrap">
+                <span aria-hidden>{itemCategoryStyle(picked.category).icon}</span>
+                <span className={`font-mono ${itemCategoryStyle(picked.category).color}`}>{picked.id}</span>
                 <span className="text-slate-500">({picked.name || "?"})</span>
+                <a
+                  href={dgtSearch(picked.name || picked.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-slate-500 hover:text-spice-300"
+                >
+                  ↗
+                </a>
                 <button type="button" className="btn-ghost text-xs ml-auto" onClick={() => setPicked(null)}>
                   clear
                 </button>
@@ -346,22 +358,43 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               Type to search 2558 items
             </div>
           )}
-          {matches.map((it) => (
-            <button
-              type="button"
-              key={it.id + it.source}
-              onClick={() => setPicked(it)}
-              className={
-                "block w-full text-left px-4 py-2 text-xs border-b border-slate-800 hover:bg-slate-800 transition " +
-                (picked?.id === it.id && picked?.source === it.source ? "bg-spice-900/30" : "")
-              }
-            >
-              <div className="font-mono text-spice-300">{it.id}</div>
-              <div className="text-slate-400 mt-0.5">
-                {it.name} <span className="text-slate-600">— {it.category} / {it.source}</span>
+          {matches.map((it) => {
+            const sty = itemCategoryStyle(it.category);
+            const active = picked?.id === it.id && picked?.source === it.source;
+            return (
+              <div
+                key={it.id + it.source}
+                className={
+                  "flex items-start gap-2 border-b border-slate-800 hover:bg-slate-800 transition " +
+                  (active ? "bg-spice-900/30" : "")
+                }
+              >
+                <button
+                  type="button"
+                  onClick={() => setPicked(it)}
+                  className="flex-1 text-left px-4 py-2 text-xs min-w-0"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden>{sty.icon}</span>
+                    <span className={`font-mono ${sty.color}`}>{it.id}</span>
+                  </div>
+                  <div className="text-slate-400 mt-0.5 truncate">
+                    {it.name} <span className="text-slate-600">— {it.category} / {it.source}</span>
+                  </div>
+                </button>
+                <a
+                  href={dgtSearch(it.name || it.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
+                  title="View on dune.gaming.tools"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  ↗
+                </a>
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -419,10 +452,18 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
                 className="input-field"
               />
               {picked && (
-                <div className="mt-2 text-xs text-slate-300 flex items-center gap-2">
-                  Selected:
-                  <span className="font-mono text-spice-300">{picked.id}</span>
+                <div className="mt-2 text-xs text-slate-300 flex items-center gap-2 flex-wrap">
+                  <span aria-hidden>{skillCategoryStyle(picked.category).icon}</span>
+                  <span className={`font-mono ${skillCategoryStyle(picked.category).color}`}>{picked.id}</span>
                   <span className="text-slate-500">({picked.name || "?"})</span>
+                  <a
+                    href={dgtSearch(picked.name || picked.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-slate-500 hover:text-spice-300"
+                  >
+                    ↗
+                  </a>
                   <button type="button" className="btn-ghost text-xs ml-auto" onClick={() => setPicked(null)}>
                     clear
                   </button>
@@ -459,23 +500,43 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
           <span className="text-xs text-slate-500">{matches.length} match</span>
         </header>
         <div className="max-h-[600px] overflow-y-auto">
-          {matches.map((s) => (
-            <button
-              type="button"
-              key={s.id}
-              onClick={() => setPicked(s)}
-              className={
-                "block w-full text-left px-4 py-2 text-xs border-b border-slate-800 hover:bg-slate-800 transition " +
-                (picked?.id === s.id ? "bg-spice-900/30" : "")
-              }
-            >
-              <div className="font-mono text-spice-300">{s.id}</div>
-              <div className="text-slate-400 mt-0.5">
-                {s.name}
-                <span className="text-slate-600"> — {s.category} (max {s.maxLevel})</span>
+          {matches.map((s) => {
+            const sty = skillCategoryStyle(s.category);
+            const active = picked?.id === s.id;
+            return (
+              <div
+                key={s.id}
+                className={
+                  "flex items-start gap-2 border-b border-slate-800 hover:bg-slate-800 transition " +
+                  (active ? "bg-spice-900/30" : "")
+                }
+              >
+                <button
+                  type="button"
+                  onClick={() => setPicked(s)}
+                  className="flex-1 text-left px-4 py-2 text-xs min-w-0"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span aria-hidden>{sty.icon}</span>
+                    <span className={`font-mono ${sty.color}`}>{s.id}</span>
+                  </div>
+                  <div className="text-slate-400 mt-0.5 truncate">
+                    {s.name} <span className="text-slate-600">— {s.category} (max {s.maxLevel})</span>
+                  </div>
+                </button>
+                <a
+                  href={dgtSearch(s.name || s.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
+                  title="View on dune.gaming.tools"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  ↗
+                </a>
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -563,25 +624,50 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
       <form onSubmit={submit} className="p-4 space-y-4">
         <PlayerPicker />
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label" htmlFor="vh-class">Class</label>
-            <select id="vh-class" value={className} onChange={(e) => setClassName(e.target.value)} className="input-field">
-              <option value="" disabled>Select a vehicle…</option>
-              {vehicles.map((v) => (
-                <option key={v.id} value={v.id}>{v.id}</option>
-              ))}
-            </select>
+        <div>
+          <label className="label">Class</label>
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-2">
+            {vehicles.map((v) => (
+              <button
+                type="button"
+                key={v.id}
+                onClick={() => setClassName(v.id)}
+                className={
+                  "flex flex-col items-center gap-1 px-2 py-3 rounded border text-xs transition " +
+                  (className === v.id
+                    ? "border-spice-500 bg-spice-900/40 text-spice-100"
+                    : "border-slate-700 hover:border-slate-500 text-slate-300")
+                }
+              >
+                <span className="text-2xl leading-none" aria-hidden>{vehicleIcon(v.id)}</span>
+                <span className="truncate w-full text-center">{v.id}</span>
+              </button>
+            ))}
           </div>
-          <div>
-            <label className="label" htmlFor="vh-tpl">Template</label>
-            <select id="vh-tpl" value={tplName} onChange={(e) => setTplName(e.target.value)} className="input-field" disabled={currentTpls.length === 0}>
-              {currentTpls.length === 0 && <option value="">Pick a class first</option>}
-              {currentTpls.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
+          {className && (
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span>
+                {vehicles.find((v) => v.id === className)?.templates.length || 0} templates available
+              </span>
+              <a
+                href={dgtSearch(className)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-slate-500 hover:text-spice-300"
+              >
+                view {className} on dune.gaming.tools ↗
+              </a>
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="label" htmlFor="vh-tpl">Template</label>
+          <select id="vh-tpl" value={tplName} onChange={(e) => setTplName(e.target.value)} className="input-field" disabled={currentTpls.length === 0}>
+            {currentTpls.length === 0 && <option value="">Pick a class first</option>}
+            {currentTpls.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
         </div>
 
         <div>

@@ -181,7 +181,11 @@ export default function App() {
           <a href="https://github.com/adainrivers/dune-dedicated-server-manager" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
             adainrivers
           </a>{" "}
-          (MIT)
+          (MIT) · item images on{" "}
+          <a href="https://dune.gaming.tools" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
+            dune.gaming.tools
+          </a>{" "}
+          (↗)
         </span>
         <span>
           <a href="https://github.com/Sergentval/pelican-egg-dune-awakening" className="text-slate-400 hover:text-slate-200" target="_blank" rel="noreferrer">

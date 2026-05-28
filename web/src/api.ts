@@ -190,6 +190,64 @@ export interface PosInfo {
   ts: number;
 }
 
+// dune.gaming.tools is a community game reference (item/skill/vehicle
+// browser with images + tooltips). Their site is gated by Cloudflare
+// bot protection so we can't hotlink images server-side or proxy them.
+// What we CAN do is link out — the user's browser handles the JS
+// challenge once and any subsequent tab opens cleanly.
+export const DGT_BASE = "https://dune.gaming.tools";
+
+/** Open the deep-link search for a free-text term. Use for items
+ *  (FName like `Crysknife`) and skills (id like `Skills.Ability.X`). */
+export function dgtSearch(query: string): string {
+  return `${DGT_BASE}/en/search?q=${encodeURIComponent(query)}`;
+}
+
+/** Vehicle class → category icon. Bundled inline (no external dep). */
+export function vehicleIcon(className: string): string {
+  switch (className) {
+    case "Sandbike": return "🏍️";
+    case "Buggy": return "🛺";
+    case "Tank": return "🚛";
+    case "Sandcrawler": return "🚜";
+    case "OrnithopterLight":
+    case "OrnithopterMedium":
+    case "OrnithopterTransport": return "🪶";
+    case "TreadWheel": return "🛞";
+    case "ContainerVehicle": return "📦";
+    default: return "🚗";
+  }
+}
+
+/** Item category → tailwind color class + small emoji prefix. */
+export function itemCategoryStyle(category?: string): { color: string; icon: string } {
+  switch ((category || "").toLowerCase()) {
+    case "weapons": return { color: "text-red-300", icon: "⚔️" };
+    case "clothing": return { color: "text-violet-300", icon: "👕" };
+    case "resources": return { color: "text-emerald-300", icon: "🪨" };
+    case "buildings":
+    case "placeables": return { color: "text-amber-300", icon: "🏗️" };
+    case "schematics": return { color: "text-sky-300", icon: "📜" };
+    case "contracts": return { color: "text-blue-300", icon: "📋" };
+    case "customizations": return { color: "text-pink-300", icon: "🎨" };
+    default: return { color: "text-slate-300", icon: "•" };
+  }
+}
+
+/** Skill category → tailwind color + emoji. Matches the in-game class banners. */
+export function skillCategoryStyle(category?: string): { color: string; icon: string } {
+  switch ((category || "").toLowerCase()) {
+    case "benegesserit": return { color: "text-violet-300", icon: "✨" };
+    case "swordmaster": return { color: "text-red-300", icon: "⚔️" };
+    case "mentat": return { color: "text-amber-300", icon: "🧠" };
+    case "trooper": return { color: "text-orange-300", icon: "🪖" };
+    case "planetologist": return { color: "text-emerald-300", icon: "🌍" };
+    case "duelist":
+    case "fighter": return { color: "text-rose-300", icon: "🗡️" };
+    default: return { color: "text-slate-300", icon: "•" };
+  }
+}
+
 export function parsePosOutput(stdout: string, source: string): PosInfo | null {
   const flsMatch = stdout.match(/FLS:\s+(\S+)/);
   const mapMatch = stdout.match(/Map:\s+(\S+)\s+\(partition\s+(\S+)\)/);
