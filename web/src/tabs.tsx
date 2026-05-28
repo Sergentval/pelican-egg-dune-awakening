@@ -6,12 +6,10 @@ import {
   fetchHistory,
   fetchItems,
   fetchPlayers,
-  fetchPos,
   fetchSkills,
   fetchSteamInfo,
   fetchVehicles,
   parsePlayerTable,
-  parsePosOutput,
   publish,
   type HistoryResponse,
   type ItemRow,
@@ -27,6 +25,7 @@ import {
   pushToConsole,
   type ConsoleEntry,
 } from "./components";
+import { useTarget } from "./target";
 
 // Props shared by every tab — the parent passes setConsoleEntries so
 // commands flow into the persistent output panel.
@@ -54,6 +53,7 @@ async function runAndLog(
 // ---- Dashboard --------------------------------------------------------
 
 export function Dashboard({ setConsoleEntries }: TabProps) {
+  const target = useTarget();
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [steam, setSteam] = useState<Record<string, SteamPersona>>({});
@@ -163,13 +163,17 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
                       <button
                         className="btn-ghost text-xs"
                         onClick={async () => {
-                          const target = p.character ? `name:${p.character}` : p.fls_id;
-                          const res = await fetchPos(target);
+                          const pid = p.character ? `name:${p.character}` : p.fls_id;
+                          target.setPlayerId(pid);
+                          const looked = await target.lookupPos(pid);
+                          // Also surface in the per-session output log.
                           pushToConsole(
                             setConsoleEntries,
-                            `pos ${target}`,
-                            res.body as PublishResult,
-                            res.ok && (res.body as PublishResult).ok,
+                            `pos ${pid}`,
+                            looked
+                              ? `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`
+                              : "pos lookup failed",
+                            !!looked,
                           );
                         }}
                       >
@@ -257,7 +261,7 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
 // ---- Items ------------------------------------------------------------
 
 export function ItemsTab({ setConsoleEntries }: TabProps) {
-  const [playerId, setPlayerId] = useState("me");
+  const target = useTarget();
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ItemRow[]>([]);
   const [picked, setPicked] = useState<ItemRow | null>(null);
@@ -283,11 +287,11 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
     e.preventDefault();
     if (!picked) return;
     await runAndLog(setConsoleEntries, "give", {
-      player_id: playerId,
+      player_id: target.playerId,
       item: picked.id,
       qty,
       durability,
-    }, `give ${playerId} ${picked.id} ×${qty}`);
+    }, `give ${target.playerId} ${picked.id} ×${qty}`);
   }
 
   return (
@@ -297,7 +301,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
           <h2 className="font-semibold">Grant item</h2>
         </header>
         <form onSubmit={submit} className="p-4 space-y-4">
-          <PlayerPicker value={playerId} onChange={setPlayerId} />
+          <PlayerPicker />
           <div>
             <label className="label">Item search</label>
             <input
@@ -367,7 +371,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
 // ---- Skills -----------------------------------------------------------
 
 export function SkillsTab({ setConsoleEntries }: TabProps) {
-  const [playerId, setPlayerId] = useState("me");
+  const target = useTarget();
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<SkillRow[]>([]);
   const [picked, setPicked] = useState<SkillRow | null>(null);
@@ -386,15 +390,15 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
     e.preventDefault();
     if (!picked) return;
     await runAndLog(setConsoleEntries, "skill", {
-      player_id: playerId,
+      player_id: target.playerId,
       module: picked.id,
       level,
-    }, `skill ${playerId} ${picked.id} =${level}`);
+    }, `skill ${target.playerId} ${picked.id} =${level}`);
   }
 
   async function submitPoints(e: React.FormEvent) {
     e.preventDefault();
-    await runAndLog(setConsoleEntries, "points", { player_id: playerId, amount: unspent }, `points ${playerId} =${unspent}`);
+    await runAndLog(setConsoleEntries, "points", { player_id: target.playerId, amount: unspent }, `points ${target.playerId} =${unspent}`);
   }
 
   return (
@@ -405,7 +409,7 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
             <h2 className="font-semibold">Set skill module level</h2>
           </header>
           <form onSubmit={submitSkill} className="p-4 space-y-4">
-            <PlayerPicker value={playerId} onChange={setPlayerId} />
+            <PlayerPicker />
             <div>
               <label className="label">Module</label>
               <input
@@ -439,7 +443,7 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
             <h2 className="font-semibold">Unspent skill points</h2>
           </header>
           <form onSubmit={submitPoints} className="p-4 space-y-4">
-            <PlayerPicker value={playerId} onChange={setPlayerId} />
+            <PlayerPicker />
             <div>
               <label className="label" htmlFor="unspent-amt">Amount</label>
               <input id="unspent-amt" type="number" min={0} value={unspent} onChange={(e) => setUnspent(parseInt(e.target.value) || 0)} className="input-field" />
@@ -481,16 +485,21 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
 // ---- Vehicles --------------------------------------------------------
 
 export function VehiclesTab({ setConsoleEntries }: TabProps) {
-  const [playerId, setPlayerId] = useState("me");
+  const target = useTarget();
   const [vehicles, setVehicles] = useState<VehicleClass[]>([]);
   const [className, setClassName] = useState("");
   const [tplName, setTplName] = useState("");
-  const [x, setX] = useState(0);
-  const [y, setY] = useState(0);
-  const [z, setZ] = useState(0);
+  // Local X/Y/Z override — initializes from the shared target.pos but
+  // the operator can edit before spawning. When `dirty` is false the
+  // displayed value tracks target.pos so a position lookup in another
+  // tab is visible here immediately.
+  const [override, setOverride] = useState<{ x: number; y: number; z: number; dirty: boolean }>({ x: 0, y: 0, z: 0, dirty: false });
   const [rotation, setRotation] = useState<number | "">("");
   const [persistent, setPersistent] = useState(1.0);
-  const [posLoading, setPosLoading] = useState(false);
+
+  const x = override.dirty ? override.x : target.pos?.x !== undefined ? Math.round(target.pos.x) : 0;
+  const y = override.dirty ? override.y : target.pos?.y !== undefined ? Math.round(target.pos.y) : 0;
+  const z = override.dirty ? override.z : target.pos?.z !== undefined ? Math.round(target.pos.z) : 0;
 
   useEffect(() => {
     fetchVehicles().then((res) => {
@@ -506,25 +515,34 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
   }, [currentTpls, tplName]);
 
   async function fetchAndFillPos() {
-    setPosLoading(true);
-    const res = await fetchPos(playerId);
-    setPosLoading(false);
-    pushToConsole(setConsoleEntries, `pos ${playerId}`, res.body as PublishResult, res.ok && (res.body as PublishResult).ok);
-    if (res.ok) {
-      const parsed = parsePosOutput((res.body as PublishResult).stdout);
-      if (parsed) {
-        setX(Math.round(parsed.x));
-        setY(Math.round(parsed.y));
-        setZ(Math.round(parsed.z));
-      }
+    const looked = await target.lookupPos();
+    if (looked) {
+      setOverride({ x: 0, y: 0, z: 0, dirty: false });
+      pushToConsole(
+        setConsoleEntries,
+        `pos ${target.playerId}`,
+        `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
+        true,
+      );
+    } else {
+      pushToConsole(setConsoleEntries, `pos ${target.playerId}`, target.posError || "lookup failed", false);
     }
+  }
+
+  function setXyz(axis: "x" | "y" | "z", v: number) {
+    setOverride((prev) => ({
+      x: axis === "x" ? v : prev.dirty ? prev.x : x,
+      y: axis === "y" ? v : prev.dirty ? prev.y : y,
+      z: axis === "z" ? v : prev.dirty ? prev.z : z,
+      dirty: true,
+    }));
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!className || !tplName) return;
     const body: Record<string, unknown> = {
-      player_id: playerId,
+      player_id: target.playerId,
       class: className,
       x,
       y,
@@ -533,7 +551,7 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
       persistent,
     };
     if (rotation !== "") body["rotation"] = rotation;
-    await runAndLog(setConsoleEntries, "vehicle", body, `vehicle ${playerId} ${className}/${tplName}`);
+    await runAndLog(setConsoleEntries, "vehicle", body, `vehicle ${target.playerId} ${className}/${tplName}`);
   }
 
   return (
@@ -543,7 +561,7 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
         <span className="text-xs text-slate-500">{vehicles.length} classes available</span>
       </header>
       <form onSubmit={submit} className="p-4 space-y-4">
-        <PlayerPicker value={playerId} onChange={setPlayerId} />
+        <PlayerPicker />
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -567,16 +585,28 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
         </div>
 
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
             <span className="label !mb-0">Position</span>
-            <button type="button" className="btn-ghost text-xs" onClick={fetchAndFillPos} disabled={posLoading}>
-              {posLoading ? "…" : `fill from ${playerId}`}
-            </button>
+            <div className="flex items-center gap-2">
+              {target.pos && !override.dirty && (
+                <span className="text-xs text-slate-500">
+                  from <span className="font-mono text-slate-400">{target.pos.source}</span> @ {target.pos.map}
+                </span>
+              )}
+              {override.dirty && (
+                <button type="button" className="btn-ghost text-xs" onClick={() => setOverride({ x: 0, y: 0, z: 0, dirty: false })}>
+                  reset to target
+                </button>
+              )}
+              <button type="button" className="btn-ghost text-xs" onClick={fetchAndFillPos} disabled={target.posLoading}>
+                {target.posLoading ? "…" : `lookup ${target.playerId}`}
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <input type="number" placeholder="X" value={x} onChange={(e) => setX(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Y" value={y} onChange={(e) => setY(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Z" value={z} onChange={(e) => setZ(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="X" value={x} onChange={(e) => setXyz("x", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Y" value={y} onChange={(e) => setXyz("y", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Z" value={z} onChange={(e) => setXyz("z", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
           </div>
           <p className="text-xs text-slate-500 mt-1">Tip: spawn drops at exact Z — for flying vehicles add ~200 above the ground.</p>
         </div>
@@ -604,31 +634,44 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
 // ---- Movement (teleport + tpsafe + position lookup) --------------------
 
 export function MovementTab({ setConsoleEntries }: TabProps) {
-  const [playerId, setPlayerId] = useState("me");
-  const [x, setX] = useState(0);
-  const [y, setY] = useState(0);
-  const [z, setZ] = useState(0);
+  const target = useTarget();
+  const [override, setOverride] = useState<{ x: number; y: number; z: number; dirty: boolean }>({ x: 0, y: 0, z: 0, dirty: false });
   const [yaw, setYaw] = useState<number | "">("");
   const [mode, setMode] = useState<"teleport" | "tpsafe">("teleport");
 
+  const x = override.dirty ? override.x : target.pos?.x !== undefined ? Math.round(target.pos.x) : 0;
+  const y = override.dirty ? override.y : target.pos?.y !== undefined ? Math.round(target.pos.y) : 0;
+  const z = override.dirty ? override.z : target.pos?.z !== undefined ? Math.round(target.pos.z) : 0;
+
+  function setXyz(axis: "x" | "y" | "z", v: number) {
+    setOverride((prev) => ({
+      x: axis === "x" ? v : prev.dirty ? prev.x : x,
+      y: axis === "y" ? v : prev.dirty ? prev.y : y,
+      z: axis === "z" ? v : prev.dirty ? prev.z : z,
+      dirty: true,
+    }));
+  }
+
   async function lookupPos() {
-    const res = await fetchPos(playerId);
-    pushToConsole(setConsoleEntries, `pos ${playerId}`, res.body as PublishResult, res.ok && (res.body as PublishResult).ok);
-    if (res.ok) {
-      const parsed = parsePosOutput((res.body as PublishResult).stdout);
-      if (parsed) {
-        setX(Math.round(parsed.x));
-        setY(Math.round(parsed.y));
-        setZ(Math.round(parsed.z));
-      }
+    const looked = await target.lookupPos();
+    if (looked) {
+      setOverride({ x: 0, y: 0, z: 0, dirty: false });
+      pushToConsole(
+        setConsoleEntries,
+        `pos ${target.playerId}`,
+        `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
+        true,
+      );
+    } else {
+      pushToConsole(setConsoleEntries, `pos ${target.playerId}`, target.posError || "lookup failed", false);
     }
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const body: Record<string, unknown> = { player_id: playerId, x, y, z };
+    const body: Record<string, unknown> = { player_id: target.playerId, x, y, z };
     if (yaw !== "") body["yaw"] = yaw;
-    await runAndLog(setConsoleEntries, mode, body, `${mode} ${playerId} → ${x},${y},${z}`);
+    await runAndLog(setConsoleEntries, mode, body, `${mode} ${target.playerId} → ${x},${y},${z}`);
   }
 
   return (
@@ -653,18 +696,30 @@ export function MovementTab({ setConsoleEntries }: TabProps) {
         </div>
       </header>
       <form onSubmit={submit} className="p-4 space-y-4">
-        <PlayerPicker value={playerId} onChange={setPlayerId} />
+        <PlayerPicker />
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
             <span className="label !mb-0">Destination</span>
-            <button type="button" className="btn-ghost text-xs" onClick={lookupPos}>
-              read {playerId}'s current pos
-            </button>
+            <div className="flex items-center gap-2">
+              {target.pos && !override.dirty && (
+                <span className="text-xs text-slate-500">
+                  from <span className="font-mono text-slate-400">{target.pos.source}</span> @ {target.pos.map}
+                </span>
+              )}
+              {override.dirty && (
+                <button type="button" className="btn-ghost text-xs" onClick={() => setOverride({ x: 0, y: 0, z: 0, dirty: false })}>
+                  reset to target
+                </button>
+              )}
+              <button type="button" className="btn-ghost text-xs" onClick={lookupPos} disabled={target.posLoading}>
+                {target.posLoading ? "…" : `lookup ${target.playerId}`}
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <input type="number" placeholder="X" value={x} onChange={(e) => setX(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Y" value={y} onChange={(e) => setY(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
-            <input type="number" placeholder="Z" value={z} onChange={(e) => setZ(parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="X" value={x} onChange={(e) => setXyz("x", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Y" value={y} onChange={(e) => setXyz("y", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
+            <input type="number" placeholder="Z" value={z} onChange={(e) => setXyz("z", parseFloat(e.target.value) || 0)} className="input-field font-mono" />
           </div>
         </div>
         <div>
@@ -682,17 +737,11 @@ export function MovementTab({ setConsoleEntries }: TabProps) {
 // ---- Maintenance (shutdown + xp + water) -------------------------------
 
 export function MaintenanceTab({ setConsoleEntries }: TabProps) {
-  // Shutdown
+  const target = useTarget();
   const [shutType, setShutType] = useState("Restart");
   const [shutLead, setShutLead] = useState(600);
   const [shutFreq, setShutFreq] = useState(60);
-
-  // XP
-  const [xpPlayer, setXpPlayer] = useState("me");
   const [xpAmount, setXpAmount] = useState(5000);
-
-  // Water
-  const [waterPlayer, setWaterPlayer] = useState("me");
   const [waterAmount, setWaterAmount] = useState(1_000_000);
 
   async function submitShutdown(e: React.FormEvent, cancel = false) {
@@ -706,12 +755,12 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
 
   async function submitXp(e: React.FormEvent) {
     e.preventDefault();
-    await runAndLog(setConsoleEntries, "xp", { player_id: xpPlayer, amount: xpAmount }, `xp ${xpPlayer} +${xpAmount}`);
+    await runAndLog(setConsoleEntries, "xp", { player_id: target.playerId, amount: xpAmount }, `xp ${target.playerId} +${xpAmount}`);
   }
 
   async function submitWater(e: React.FormEvent) {
     e.preventDefault();
-    await runAndLog(setConsoleEntries, "water", { player_id: waterPlayer, amount: waterAmount }, `water ${waterPlayer}`);
+    await runAndLog(setConsoleEntries, "water", { player_id: target.playerId, amount: waterAmount }, `water ${target.playerId}`);
   }
 
   return (
@@ -751,7 +800,7 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
           <h2 className="font-semibold">Award XP</h2>
         </header>
         <form onSubmit={submitXp} className="p-4 space-y-4">
-          <PlayerPicker value={xpPlayer} onChange={setXpPlayer} />
+          <PlayerPicker />
           <div>
             <label className="label" htmlFor="xp-amt">Amount</label>
             <input id="xp-amt" type="number" min={1} value={xpAmount} onChange={(e) => setXpAmount(parseInt(e.target.value) || 0)} className="input-field" />
@@ -765,7 +814,7 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
           <h2 className="font-semibold">Refill water</h2>
         </header>
         <form onSubmit={submitWater} className="p-4 space-y-4">
-          <PlayerPicker value={waterPlayer} onChange={setWaterPlayer} allowStar />
+          <PlayerPicker allowStar />
           <div>
             <label className="label" htmlFor="water-amt">Water amount</label>
             <input id="water-amt" type="number" min={1} value={waterAmount} onChange={(e) => setWaterAmount(parseInt(e.target.value) || 0)} className="input-field" />
@@ -780,7 +829,7 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
 // ---- Players (kick + clean + reset) -----------------------------------
 
 export function PlayersTab({ setConsoleEntries }: TabProps) {
-  const [playerId, setPlayerId] = useState("me");
+  const target = useTarget();
   const [confirm, setConfirm] = useState<{ sub: string; label: string; warn: string } | null>(null);
 
   function attempt(sub: string, label: string, warn: string) {
@@ -791,7 +840,7 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
     if (!confirm) return;
     const { sub, label } = confirm;
     setConfirm(null);
-    await runAndLog(setConsoleEntries, sub, { player_id: playerId }, `${sub} ${playerId} — ${label}`);
+    await runAndLog(setConsoleEntries, sub, { player_id: target.playerId }, `${sub} ${target.playerId} — ${label}`);
   }
 
   return (
@@ -800,23 +849,23 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
         <h2 className="font-semibold">Player management</h2>
       </header>
       <div className="p-4 space-y-4">
-        <PlayerPicker value={playerId} onChange={setPlayerId} allowStar />
+        <PlayerPicker allowStar />
         <div className="grid grid-cols-2 gap-3">
           <button
             className="btn-ghost border border-slate-700"
-            onClick={() => attempt("kick", "Kick", `Disconnect ${playerId}. They can reconnect immediately.`)}
+            onClick={() => attempt("kick", "Kick", `Disconnect ${target.playerId}. They can reconnect immediately.`)}
           >
             Kick
           </button>
           <button
             className="btn-danger"
-            onClick={() => attempt("clean", "Clean inventory", `Wipes ${playerId}'s entire inventory. Unrecoverable.`)}
+            onClick={() => attempt("clean", "Clean inventory", `Wipes ${target.playerId}'s entire inventory. Unrecoverable.`)}
           >
             Clean inventory
           </button>
           <button
             className="btn-danger col-span-2"
-            onClick={() => attempt("reset", "Reset progression", `Wipes ${playerId}'s XP, skill levels, and unspent points. Unrecoverable.`)}
+            onClick={() => attempt("reset", "Reset progression", `Wipes ${target.playerId}'s XP, skill levels, and unspent points. Unrecoverable.`)}
           >
             Reset progression
           </button>

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PublishResult } from "./api";
 import { fetchPlayers, login, parsePlayerTable, setToken } from "./api";
+import { useTarget } from "./target";
 
 // ---- Login -------------------------------------------------------------
 
@@ -134,8 +135,10 @@ export function pushToConsole(
 // input with a dropdown of known accounts. Default value is "me".
 
 interface PlayerPickerProps {
-  value: string;
-  onChange: (next: string) => void;
+  /** Controlled value. If omitted, the picker reads from useTarget(). */
+  value?: string;
+  /** Change handler. If omitted, the picker writes via useTarget(). */
+  onChange?: (next: string) => void;
   allowStar?: boolean;
 }
 
@@ -149,6 +152,12 @@ interface KnownPlayer {
 let cachedPlayers: KnownPlayer[] | null = null;
 
 export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPickerProps) {
+  const target = useTarget();
+  // Default: drive the shared target. Tabs can still pass explicit
+  // value/onChange to keep their own picker isolated if they want.
+  const effectiveValue = value ?? target.playerId;
+  const effectiveChange = onChange ?? target.setPlayerId;
+
   const [players, setPlayers] = useState<KnownPlayer[]>(cachedPlayers || []);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -176,23 +185,23 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
     <div className="space-y-2">
       <label className="label">Player</label>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => onChange("me")}>
+        <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => effectiveChange("me")}>
           me
         </button>
         {allowStar && (
-          <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => onChange("*")}>
+          <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => effectiveChange("*")}>
             all online
           </button>
         )}
         {players.map((p) => {
           const label = p.character || `${p.fls_id.slice(0, 8)}…`;
-          const value = p.character ? `name:${p.character}` : p.fls_id;
+          const buttonValue = p.character ? `name:${p.character}` : p.fls_id;
           return (
             <button
               type="button"
               key={p.fls_id}
               className="btn-ghost text-xs border border-slate-700 flex items-center gap-1.5"
-              onClick={() => onChange(value)}
+              onClick={() => effectiveChange(buttonValue)}
               title={`FLS ${p.fls_id} · Steam ${p.steam_id || "?"}`}
             >
               <span
@@ -209,8 +218,8 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
       </div>
       <input
         type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        value={effectiveValue}
+        onChange={(e) => effectiveChange(e.target.value)}
         placeholder="me, *, name:Sergentval, steam:76561198..., or 16-hex FLS id"
         className="input-field font-mono text-xs"
       />

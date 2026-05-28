@@ -12,6 +12,7 @@ import {
 } from "./tabs";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, getToken, me, onUnauthorized, setToken } from "./api";
+import { TargetPill, TargetProvider } from "./target";
 
 type TabId =
   | "dashboard"
@@ -86,9 +87,10 @@ export default function App() {
   }
 
   return (
+    <TargetProvider>
     <div className="min-h-screen flex flex-col">
-      <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between bg-slate-950/80 backdrop-blur sticky top-0 z-30">
-        <div className="flex items-center gap-3">
+      <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between bg-slate-950/80 backdrop-blur sticky top-0 z-30 gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             className="lg:hidden text-slate-400 hover:text-slate-100"
             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -97,20 +99,24 @@ export default function App() {
             ☰
           </button>
           <span className="text-xl">🌀</span>
-          <div>
+          <div className="hidden sm:block">
             <div className="text-spice-300 font-semibold leading-tight">Dune Admin</div>
             <div className="text-xs text-slate-500">Pelican egg</div>
           </div>
         </div>
+        <div className="hidden md:block min-w-0 truncate">
+          <TargetPill />
+        </div>
         <div className="flex items-center gap-3">
-          <span className={mode === "ui" ? "pill-ok" : "pill-warn"}>
-            mode: {mode}
-          </span>
+          <span className={mode === "ui" ? "pill-ok" : "pill-warn"}>mode: {mode}</span>
           <button onClick={logout} className="btn-ghost text-xs">
             Log out
           </button>
         </div>
       </header>
+      <div className="md:hidden border-b border-slate-800 px-4 py-2 bg-slate-950/60">
+        <TargetPill />
+      </div>
 
       <div className="flex-1 flex">
         {/* Sidebar */}
@@ -184,5 +190,6 @@ export default function App() {
         </span>
       </footer>
     </div>
+    </TargetProvider>
   );
 }

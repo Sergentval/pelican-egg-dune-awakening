@@ -184,9 +184,13 @@ export interface PosInfo {
   x: number;
   y: number;
   z: number;
+  /** Player id used to look up this position (e.g. "me", "name:Sergentval"). */
+  source: string;
+  /** When the lookup completed. */
+  ts: number;
 }
 
-export function parsePosOutput(stdout: string): PosInfo | null {
+export function parsePosOutput(stdout: string, source: string): PosInfo | null {
   const flsMatch = stdout.match(/FLS:\s+(\S+)/);
   const mapMatch = stdout.match(/Map:\s+(\S+)\s+\(partition\s+(\S+)\)/);
   const posMatch = stdout.match(/Position:\s+X=(-?\d+\.?\d*)\s+Y=(-?\d+\.?\d*)\s+Z=(-?\d+\.?\d*)/);
@@ -198,5 +202,7 @@ export function parsePosOutput(stdout: string): PosInfo | null {
     x: parseFloat(posMatch[1]),
     y: parseFloat(posMatch[2]),
     z: parseFloat(posMatch[3]),
+    source,
+    ts: Date.now(),
   };
 }
