@@ -3,11 +3,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  detectSkillType,
   detectTier,
   fetchHistory,
   fetchItemCategories,
   fetchItems,
   fetchPlayers,
+  fetchSkillCategories,
   fetchSkills,
   fetchSteamInfo,
   fetchVehicles,
@@ -15,6 +17,7 @@ import {
   parsePlayerTable,
   publish,
   skillCategoryStyle,
+  skillTypeIcon,
   vehicleIcon,
   type HistoryResponse,
   type ItemCategoryBucket,
@@ -662,22 +665,84 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
 
 // ---- Skills -----------------------------------------------------------
 
+// Curated display order for skill class pills. Anything not listed
+// falls to the end alphabetically.
+const SKILL_CATEGORY_ORDER = [
+  "Swordmaster",
+  "Trooper",
+  "Mentat",
+  "BeneGesserit",
+  "Planetologist",
+  "Hidden",
+];
+
+const SKILL_TYPES = [
+  { id: "ability", label: "Abilities" },
+  { id: "attribute", label: "Attributes" },
+  { id: "perk", label: "Perks" },
+  { id: "key", label: "Key skills" },
+  { id: "spice", label: "Spice" },
+  { id: "science", label: "Science" },
+];
+
 export function SkillsTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>(""); // "" = all classes
+  const [typeFilter, setTypeFilter] = useState<string>(""); // "" = all types
+  const [categories, setCategories] = useState<ItemCategoryBucket[]>([]);
   const [matches, setMatches] = useState<SkillRow[]>([]);
   const [picked, setPicked] = useState<SkillRow | null>(null);
   const [level, setLevel] = useState(1);
   const [unspent, setUnspent] = useState(50);
   const [xpAmount, setXpAmount] = useState(5000);
 
+  // Class pills loaded once.
   useEffect(() => {
+    fetchSkillCategories().then((res) => {
+      if (res.ok) {
+        const cats = (res.body as { categories: ItemCategoryBucket[] }).categories;
+        cats.sort((a, b) => {
+          const ai = SKILL_CATEGORY_ORDER.indexOf(a.id);
+          const bi = SKILL_CATEGORY_ORDER.indexOf(b.id);
+          if (ai !== -1 && bi !== -1) return ai - bi;
+          if (ai !== -1) return -1;
+          if (bi !== -1) return 1;
+          return b.count - a.count;
+        });
+        setCategories(cats);
+      }
+    });
+  }, []);
+
+  // Refetch when query / category changes.
+  useEffect(() => {
+    if (!query.trim() && !category) {
+      setMatches([]);
+      return;
+    }
     const handle = setTimeout(async () => {
-      const res = await fetchSkills(query, 60);
+      const limit = category ? 200 : 60;
+      const res = await fetchSkills(query, limit, category);
       if (res.ok) setMatches((res.body as { skills: SkillRow[] }).skills);
-    }, 200);
+    }, category && !query ? 0 : 200);
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, category]);
+
+  // Available type chips for the current result set.
+  const availableTypes = useMemo(() => {
+    const seen = new Set<string>();
+    for (const m of matches) {
+      const t = detectSkillType(m.id);
+      if (t) seen.add(t);
+    }
+    return SKILL_TYPES.filter((t) => seen.has(t.id));
+  }, [matches]);
+
+  const visible = useMemo(
+    () => (typeFilter ? matches.filter((m) => detectSkillType(m.id) === typeFilter) : matches),
+    [matches, typeFilter],
+  );
 
   async function submitSkill(e: React.FormEvent) {
     e.preventDefault();
@@ -784,49 +849,189 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
         </div>
       </div>
 
-      <div className="card">
+      <div className="card flex flex-col min-h-0">
         <header className="card-header">
-          <h2 className="font-semibold">Modules</h2>
-          <span className="text-xs text-slate-500">{matches.length} match</span>
+          <h2 className="font-semibold">Browse modules</h2>
+          <span className="text-xs text-slate-500">
+            {visible.length} of {matches.length}
+          </span>
         </header>
-        <div className="max-h-[600px] overflow-y-auto">
-          {matches.map((s) => {
-            const sty = skillCategoryStyle(s.category);
-            const active = picked?.id === s.id;
-            return (
-              <div
-                key={s.id}
-                className={
-                  "flex items-start gap-2 border-b border-slate-800 hover:bg-slate-800 transition " +
-                  (active ? "bg-spice-900/30" : "")
-                }
-              >
+
+        {/* Class pill row */}
+        <div className="px-4 pt-3 pb-2 border-b border-slate-800 space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => { setCategory(""); setTypeFilter(""); }}
+              className={
+                "px-2 py-1 rounded-full border text-xs transition " +
+                (category === ""
+                  ? "border-spice-500 bg-spice-900/40 text-spice-200"
+                  : "border-slate-700 text-slate-300 hover:bg-slate-800")
+              }
+            >
+              All
+            </button>
+            {categories.map((c) => {
+              const sty = skillCategoryStyle(c.id);
+              return (
                 <button
                   type="button"
-                  onClick={() => setPicked(s)}
-                  className="flex-1 text-left px-4 py-2 text-xs min-w-0"
+                  key={c.id}
+                  onClick={() => { setCategory(c.id); setTypeFilter(""); }}
+                  className={
+                    "px-2 py-1 rounded-full border text-xs flex items-center gap-1.5 transition " +
+                    (category === c.id
+                      ? "border-spice-500 bg-spice-900/40 text-spice-200"
+                      : "border-slate-700 text-slate-300 hover:bg-slate-800")
+                  }
                 >
-                  <div className="flex items-center gap-1.5">
-                    <span aria-hidden>{sty.icon}</span>
-                    <span className={`font-mono ${sty.color}`}>{s.id}</span>
-                  </div>
-                  <div className="text-slate-400 mt-0.5 truncate">
-                    {s.name} <span className="text-slate-600">— {s.category} (max {s.maxLevel})</span>
-                  </div>
+                  <span aria-hidden>{sty.icon}</span>
+                  <span>{c.id}</span>
+                  <span className="text-slate-500 text-[10px]">{c.count}</span>
                 </button>
-                <a
-                  href={awakeningSearch(s.name || s.id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
-                  title="View on awakening.wiki"
-                  onClick={(e) => e.stopPropagation()}
+              );
+            })}
+          </div>
+
+          {/* Type filter — Ability / Attribute / Perk / Key / Spice / Science */}
+          {availableTypes.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">Type</span>
+              <button
+                type="button"
+                onClick={() => setTypeFilter("")}
+                className={
+                  "px-2 py-0.5 rounded text-xs border transition " +
+                  (typeFilter === ""
+                    ? "border-slate-500 bg-slate-800 text-slate-100"
+                    : "border-slate-800 text-slate-500 hover:bg-slate-800")
+                }
+              >
+                all
+              </button>
+              {availableTypes.map((t) => (
+                <button
+                  type="button"
+                  key={t.id}
+                  onClick={() => setTypeFilter(t.id === typeFilter ? "" : t.id)}
+                  className={
+                    "px-2 py-0.5 rounded text-xs border flex items-center gap-1 transition " +
+                    (typeFilter === t.id
+                      ? "border-spice-500 bg-spice-900/40 text-spice-300"
+                      : "border-slate-800 text-slate-400 hover:bg-slate-800")
+                  }
                 >
-                  ↗
-                </a>
-              </div>
-            );
-          })}
+                  <span aria-hidden>{skillTypeIcon(t.id)}</span>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 max-h-[600px] overflow-y-auto">
+          {visible.length === 0 && (
+            <div className="p-8 text-center text-slate-500 text-sm">
+              {category
+                ? "No modules match the current class + type filter."
+                : "Pick a class above, or type to search 145 modules."}
+            </div>
+          )}
+
+          {/* Grid view when browsing a class; list view when free-text searching */}
+          {category && visible.length > 0 ? (
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 p-3">
+              {visible.map((s) => {
+                const sty = skillCategoryStyle(s.category);
+                const type = detectSkillType(s.id);
+                const active = picked?.id === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    className={
+                      "rounded border p-2 text-xs transition relative " +
+                      (active
+                        ? "border-spice-500 bg-spice-900/30"
+                        : "border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50")
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setPicked(s)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-lg" aria-hidden>{sty.icon}</span>
+                        <span className={`font-semibold ${sty.color} truncate flex-1`}>{s.name || s.id}</span>
+                      </div>
+                      <div className="flex items-center gap-1 flex-wrap text-[10px]">
+                        {type && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-slate-300 flex items-center gap-1">
+                            <span aria-hidden>{skillTypeIcon(type)}</span>
+                            {type}
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-slate-400">
+                          max {s.maxLevel ?? "?"}
+                        </span>
+                      </div>
+                      <div className="text-slate-500 font-mono text-[10px] mt-1 truncate">{s.id}</div>
+                    </button>
+                    <a
+                      href={awakeningSearch(s.name || s.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="absolute top-1 right-1 text-slate-500 hover:text-spice-300 text-[10px]"
+                      title="View on awakening.wiki"
+                    >
+                      ↗
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            visible.map((s) => {
+              const sty = skillCategoryStyle(s.category);
+              const type = detectSkillType(s.id);
+              const active = picked?.id === s.id;
+              return (
+                <div
+                  key={s.id}
+                  className={
+                    "flex items-start gap-2 border-b border-slate-800 hover:bg-slate-800 transition " +
+                    (active ? "bg-spice-900/30" : "")
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={() => setPicked(s)}
+                    className="flex-1 text-left px-4 py-2 text-xs min-w-0"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span aria-hidden>{sty.icon}</span>
+                      <span className={`font-mono ${sty.color}`}>{s.id}</span>
+                      {type && <span className="text-slate-500 text-[10px]">{skillTypeIcon(type)}</span>}
+                    </div>
+                    <div className="text-slate-400 mt-0.5 truncate">
+                      {s.name} <span className="text-slate-600">— {s.category} (max {s.maxLevel})</span>
+                    </div>
+                  </button>
+                  <a
+                    href={awakeningSearch(s.name || s.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
+                    title="View on awakening.wiki"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    ↗
+                  </a>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

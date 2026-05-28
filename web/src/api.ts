@@ -162,8 +162,37 @@ export function detectTier(itemId: string): string {
   return "";
 }
 
-export const fetchSkills = (q: string, limit = 50) =>
-  api<{ skills: SkillRow[] }>("GET", `/api/lookup/skills?q=${encodeURIComponent(q)}&limit=${limit}`);
+export const fetchSkills = (q: string, limit = 50, category = "") => {
+  const qs = new URLSearchParams();
+  if (q) qs.set("q", q);
+  if (category) qs.set("category", category);
+  qs.set("limit", String(limit));
+  return api<{ skills: SkillRow[] }>("GET", `/api/lookup/skills?${qs.toString()}`);
+};
+
+export const fetchSkillCategories = () =>
+  api<{ categories: ItemCategoryBucket[] }>("GET", "/api/lookup/skill-categories");
+
+/** Extract the type segment of a skill id (`Skills.<Type>.<Name>`).
+ *  Returns the lowercase type tag — "ability", "attribute", "perk",
+ *  "key", "spice", "science" — or empty when the id isn't a Skills.* form. */
+export function detectSkillType(skillId: string): string {
+  const m = skillId.match(/^Skills\.([A-Za-z]+)\./);
+  return m ? m[1].toLowerCase() : "";
+}
+
+/** Skill type → small emoji badge for the chip. */
+export function skillTypeIcon(type: string): string {
+  switch (type) {
+    case "ability": return "🌀";
+    case "attribute": return "📈";
+    case "perk": return "⭐";
+    case "key": return "🔑";
+    case "spice": return "🧂";
+    case "science": return "🧪";
+    default: return "•";
+  }
+}
 
 export const fetchHistory = (limit = 50) =>
   api<HistoryResponse>("GET", `/api/history?limit=${limit}`);

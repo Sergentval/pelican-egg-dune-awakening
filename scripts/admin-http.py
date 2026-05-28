@@ -343,6 +343,27 @@ def list_categories(name: str) -> list[dict]:
     )
 
 
+def search_skills(query: str, limit: int, category: str = "") -> list[dict]:
+    """Skill lookup. Same filter shape as search_data but also matches
+    the type segment of the skill id (e.g. 'Ability' / 'Attribute' /
+    'Perk') against the query for convenience."""
+    rows = _DATA.get("skills", [])
+    if category:
+        cat = category.lower()
+        rows = [r for r in rows if r.get("category", "").lower() == cat]
+    if not query:
+        return rows[:limit]
+    needle = query.lower()
+    matches = [
+        row
+        for row in rows
+        if needle in row.get("id", "").lower()
+        or needle in row.get("name", "").lower()
+        or needle in row.get("category", "").lower()
+    ]
+    return matches[:limit]
+
+
 # --------------------------------------------------------------------------
 # Handler.
 # --------------------------------------------------------------------------
@@ -482,10 +503,16 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(500, int(query.get("limit", ["40"])[0])))
             self._write(200, {"items": search_data("items", q, limit, cat)})
             return
+        if path == "/api/lookup/skill-categories":
+            self._write(200, {"categories": list_categories("skills")})
+            return
         if path == "/api/lookup/skills":
             q = query.get("q", [""])[0]
+            cat = query.get("category", [""])[0]
+            # 145 modules total — 200 is enough to show every category
+            # in one go without pagination.
             limit = max(1, min(200, int(query.get("limit", ["50"])[0])))
-            self._write(200, {"skills": search_data("skills", q, limit)})
+            self._write(200, {"skills": search_skills(q, limit, cat)})
             return
 
         if path == "/api/players":
