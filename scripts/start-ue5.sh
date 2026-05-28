@@ -81,6 +81,8 @@ launch_bg "$INSTANCE_ID" "$LOGS/$INSTANCE_ID.log" -- env \
     -FarmRegion="$DUNE_REGION" \
     "-ini:engine:[FuncomLiveServices]:ServiceAuthToken=$DUNE_JWT" \
     "-ini:engine:[FuncomLiveServices]:DefaultFlsEnvironment=$DUNE_FLS_ENV" \
+    "-ini:engine:[FuncomLiveServices]:ServerCommandsAuthToken=${DUNE_SVC_CMD_TOKEN:-}" \
+    "-ini:engine:[FuncomLiveServices_$DUNE_FLS_ENV]:ServerCommandsAuthToken=${DUNE_SVC_CMD_TOKEN:-}" \
     "-ini:engine:[OnlineSubsystem]:ServerName=$DUNE_WORLD_NAME" \
     "-ini:engine:[OnlineSubsystem]:DatacenterId=$DUNE_REGION" \
     -RMQGameTlsEnabled=true \
