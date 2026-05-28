@@ -24,7 +24,7 @@ export SOURCE="console"
 source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
 
 # Dependency order — services started in this order; stopped in reverse
-SERVICES=(postgres mq-admin mq-game text-router mock-k8s director gateway ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1)
+SERVICES=(postgres mq-admin mq-game text-router mock-k8s director gateway admin-http ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1)
 
 # --------------------------------------------------------------------------
 # Shutdown handler
@@ -37,6 +37,7 @@ shutdown_all() {
   # so DB+RMQ must outlive UE5.  Then gateway/director/text-router (the
   # FLS-bridging .NET trio), then the brokers, then Postgres last.
   local -a PHASES=(
+    "admin-http"
     "ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1"
     "gateway"
     "director"
@@ -46,6 +47,7 @@ shutdown_all() {
     "postgres"
   )
   declare -A GRACE=(
+    ["admin-http"]=3
     ["ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1"]=25
     ["gateway"]=8
     ["director"]=8

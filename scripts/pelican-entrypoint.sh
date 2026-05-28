@@ -70,5 +70,6 @@ bash scripts/start-text-router.sh "$BASE"
 bash scripts/start-mock-k8s.sh   "$BASE"
 bash scripts/start-director.sh   "$BASE"
 bash scripts/start-gateway.sh    "$BASE"
+bash scripts/start-admin-http.sh "$BASE"
 
 exec bash scripts/console.sh "$BASE"
