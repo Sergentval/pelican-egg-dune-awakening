@@ -203,5 +203,19 @@ if [ -f "$STATE/svc-cmd-token" ]; then
   export DUNE_SVC_CMD_TOKEN
 fi
 
+# Admin web UI — if the operator left DUNE_ADMIN_UI_PASSWORD blank but
+# enabled the UI, prestart.sh generates one and persists it here so the
+# value survives container restarts.
+if [ -z "${DUNE_ADMIN_UI_PASSWORD:-}" ] && [ -f "$STATE/admin-ui-password" ]; then
+  DUNE_ADMIN_UI_PASSWORD=$(cat "$STATE/admin-ui-password")
+  export DUNE_ADMIN_UI_PASSWORD
+fi
+# Used by admin-http.py to sign issued session tokens. Generated once
+# per install, persisted across restarts. NOT user-configurable.
+if [ -f "$STATE/admin-ui-session-secret" ]; then
+  DUNE_ADMIN_UI_SESSION_SECRET=$(cat "$STATE/admin-ui-session-secret")
+  export DUNE_ADMIN_UI_SESSION_SECRET
+fi
+
 # Mark lib loaded so children can sanity-check
 export DUNE_LIB_LOADED=1

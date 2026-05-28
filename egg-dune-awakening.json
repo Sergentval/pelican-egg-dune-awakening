@@ -541,6 +541,78 @@
         "max:512"
       ],
       "field_type": "text"
+    },
+    {
+      "name": "Admin Web UI — Enabled",
+      "description": "Turn the bundled admin web interface on (1) or off (0). When enabled, admin-http.py serves the React SPA from data/web/ on the configured port AND requires Bearer-token auth on every request. Use this to manage broadcasts, item grants, vehicle spawns, player kicks, etc. from a browser instead of the panel console.",
+      "env_variable": "DUNE_ADMIN_UI_ENABLED",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "required",
+        "string",
+        "in:0,1"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Admin Web UI — Bind IP",
+      "description": "Interface the admin UI listens on. Default 0.0.0.0 exposes it on all interfaces (use only if you have Traefik/Cloudflare in front, or if your firewall blocks direct WAN access). Set to 127.0.0.1 for ssh-tunnel-only access.",
+      "env_variable": "DUNE_ADMIN_UI_BIND",
+      "default_value": "0.0.0.0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "required",
+        "string",
+        "max:45"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Admin Web UI — Port",
+      "description": "TCP port for the admin web interface. Default 8090 (one above the internal HTTP wrapper on 8089). Don't reuse a game port. Wings allocates this to a host port via the normal port mapping.",
+      "env_variable": "DUNE_ADMIN_UI_PORT",
+      "default_value": "8090",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "required",
+        "string",
+        "regex:/^[0-9]+$/",
+        "max:5"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Admin Web UI — Public Domain",
+      "description": "Optional. Hostname you'll access the UI from (e.g. dune-admin.example.com). Used for CORS / cookie policy and for the login QR code. Leave blank if accessing via IP:port.",
+      "env_variable": "DUNE_ADMIN_UI_DOMAIN",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:253"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Admin Web UI — Login Password",
+      "description": "Password required to log into the admin UI. REQUIRED when the UI is enabled. Treat as a secret. If left blank while enabled, prestart.sh auto-generates one and writes the value to the container log (look for 'admin-ui generated password').",
+      "env_variable": "DUNE_ADMIN_UI_PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "min:8",
+        "max:128"
+      ],
+      "field_type": "text"
     }
   ]
 }

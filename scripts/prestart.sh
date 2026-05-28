@@ -135,6 +135,39 @@ if [ ! -f "$SVC_CMD_FILE" ]; then
 fi
 export DUNE_SVC_CMD_TOKEN="$(cat "$SVC_CMD_FILE")"
 
+# Admin web UI secrets. Only relevant when DUNE_ADMIN_UI_ENABLED=1, but we
+# generate the session secret unconditionally so the value is stable across
+# enable/disable toggles (changing it would log everyone out).
+ADMIN_UI_SESSION_FILE="$STATE/admin-ui-session-secret"
+if [ ! -f "$ADMIN_UI_SESSION_FILE" ]; then
+  umask 077
+  openssl rand -hex 32 | tr -d '\n' > "$ADMIN_UI_SESSION_FILE"
+fi
+export DUNE_ADMIN_UI_SESSION_SECRET="$(cat "$ADMIN_UI_SESSION_FILE")"
+
+# Password: only generate if UI is enabled AND operator left the env blank.
+# Persist so the value survives restarts but operator-supplied values
+# always take precedence on next boot.
+if [ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ]; then
+  ADMIN_UI_PW_FILE="$STATE/admin-ui-password"
+  if [ -n "${DUNE_ADMIN_UI_PASSWORD:-}" ]; then
+    umask 077
+    printf '%s' "$DUNE_ADMIN_UI_PASSWORD" > "$ADMIN_UI_PW_FILE"
+    log "admin-ui: using operator-supplied DUNE_ADMIN_UI_PASSWORD"
+  elif [ ! -f "$ADMIN_UI_PW_FILE" ]; then
+    umask 077
+    openssl rand -hex 12 | tr -d '\n' > "$ADMIN_UI_PW_FILE"
+    GENERATED_PW=$(cat "$ADMIN_UI_PW_FILE")
+    log "admin-ui generated password: $GENERATED_PW"
+    log "admin-ui: copy this into DUNE_ADMIN_UI_PASSWORD to persist your choice;"
+    log "admin-ui: otherwise this auto-generated value will be re-used until you change it."
+    export DUNE_ADMIN_UI_PASSWORD="$GENERATED_PW"
+  else
+    export DUNE_ADMIN_UI_PASSWORD="$(cat "$ADMIN_UI_PW_FILE")"
+    log "admin-ui: re-using persisted auto-generated password (see prior boot log for value)"
+  fi
+fi
+
 # --------------------------------------------------------------------------
 # 2. Self-signed RMQ TLS cert (replaces cert-manager from the k3s build)
 # --------------------------------------------------------------------------

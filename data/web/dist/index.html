@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dune Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <!-- Login screen -->
+  <div id="login" class="hidden min-h-screen flex items-center justify-center px-4">
+    <form id="login-form" class="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl">
+      <h1 class="text-xl font-semibold mb-1 text-amber-300">Dune Admin</h1>
+      <p class="text-sm text-slate-400 mb-6">Pelican egg admin panel — Phase 1 preview</p>
+      <label class="block text-sm text-slate-300 mb-1" for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required
+             class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 mono text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50">
+      <p id="login-error" class="text-sm text-red-400 mt-2 hidden"></p>
+      <button class="mt-4 w-full bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold rounded px-4 py-2 transition">Sign in</button>
+      <p class="text-xs text-slate-500 mt-4">If you didn't set a password in the egg variables, check the container start-up log for "admin-ui generated password".</p>
+    </form>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="hidden">
+    <header class="border-b border-slate-800 px-6 py-3 flex items-center justify-between">
+      <div>
+        <div class="text-amber-300 font-semibold">Dune Admin</div>
+        <div class="text-xs text-slate-500">Phase 1 preview — basic verification UI</div>
+      </div>
+      <div class="flex items-center gap-3 text-xs text-slate-400">
+        <span id="health-pill" class="px-2 py-1 rounded-full bg-slate-800">checking…</span>
+        <button id="logout" class="px-3 py-1 rounded border border-slate-700 hover:bg-slate-800">Log out</button>
+      </div>
+    </header>
+    <main class="max-w-6xl mx-auto px-6 py-6 grid gap-6 md:grid-cols-2">
+      <section class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <header class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <h2 class="font-semibold">Players</h2>
+          <button id="refresh-players" class="text-xs text-slate-400 hover:text-slate-200">refresh</button>
+        </header>
+        <pre id="players-out" class="mono text-xs p-4 text-slate-300 whitespace-pre overflow-x-auto max-h-72">loading…</pre>
+      </section>
+
+      <section class="bg-slate-900 border border-slate-800 rounded-xl">
+        <header class="px-4 py-3 border-b border-slate-800"><h2 class="font-semibold">Quick broadcast</h2></header>
+        <form id="bcast-form" class="p-4 space-y-3">
+          <input id="bcast-title" placeholder="Title" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" required>
+          <input id="bcast-body" placeholder="Body" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" required>
+          <div class="flex items-center gap-2">
+            <input id="bcast-duration" type="number" value="15" min="1" max="300" class="w-24 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+            <span class="text-xs text-slate-500">seconds</span>
+            <button class="ml-auto bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold rounded px-4 py-2 text-sm">Send</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <header class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <h2 class="font-semibold">Output</h2>
+          <span class="text-xs text-slate-500">persistent — scroll back through this session's commands</span>
+        </header>
+        <div id="output" class="mono text-xs p-4 space-y-2 max-h-96 overflow-y-auto"></div>
+      </section>
+    </main>
+
+    <footer class="text-center text-xs text-slate-600 py-6">
+      Phase 1 placeholder — full React UI lands in the next release. See <a href="https://github.com/Sergentval/pelican-egg-dune-awakening" class="text-amber-400 hover:underline">repo</a> for progress.
+    </footer>
+  </div>
+
+  <script>
+    const TOKEN_KEY = "dune-admin-token";
+    let token = localStorage.getItem(TOKEN_KEY) || "";
+
+    const $ = (id) => document.getElementById(id);
+    const show = (id) => $(id).classList.remove("hidden");
+    const hide = (id) => $(id).classList.add("hidden");
+
+    function el(tag, attrs, ...children) {
+      const node = document.createElement(tag);
+      if (attrs) {
+        for (const [k, v] of Object.entries(attrs)) {
+          if (k === "class") node.className = v;
+          else node.setAttribute(k, v);
+        }
+      }
+      for (const c of children) {
+        if (c == null) continue;
+        node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+      }
+      return node;
+    }
+
+    function appendOutput(label, body, ok = true) {
+      const ts = new Date().toLocaleTimeString();
+      const borderClass = ok ? "border-emerald-500" : "border-red-500";
+      const block = el(
+        "div",
+        { class: "border-l-2 pl-2 " + borderClass },
+        el("div", { class: "text-slate-500 text-[10px]" }, `[${ts}] ${label}`),
+        el("pre", { class: "whitespace-pre-wrap text-slate-300" }, body || ""),
+      );
+      const out = $("output");
+      out.insertBefore(block, out.firstChild);
+    }
+
+    async function api(method, path, body) {
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const res = await fetch(path, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      return { ok: res.ok, status: res.status, body: parsed };
+    }
+
+    async function checkAuth() {
+      const res = await api("GET", "/api/me");
+      if (res.ok) {
+        show("dashboard"); hide("login");
+        loadHealth(); refreshPlayers();
+      } else {
+        token = ""; localStorage.removeItem(TOKEN_KEY);
+        show("login"); hide("dashboard");
+      }
+    }
+
+    async function loadHealth() {
+      const res = await api("GET", "/api/healthz");
+      const pill = $("health-pill");
+      if (res.ok && res.body.ok) {
+        pill.textContent = `mode=${res.body.mode} • ok`;
+        pill.className = "px-2 py-1 rounded-full bg-emerald-900 text-emerald-300";
+      } else {
+        pill.textContent = "down";
+        pill.className = "px-2 py-1 rounded-full bg-red-900 text-red-300";
+      }
+    }
+
+    async function refreshPlayers() {
+      const res = await api("GET", "/api/players");
+      const out = $("players-out");
+      if (res.ok && res.body.stdout) {
+        out.textContent = res.body.stdout || res.body.stderr || "(no output)";
+      } else {
+        out.textContent = "error: " + (res.body.error || res.body.stderr || JSON.stringify(res.body));
+      }
+    }
+
+    $("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const password = $("password").value;
+      const res = await api("POST", "/api/login", { password });
+      const err = $("login-error");
+      if (res.ok && res.body.token) {
+        token = res.body.token;
+        localStorage.setItem(TOKEN_KEY, token);
+        err.classList.add("hidden");
+        checkAuth();
+      } else {
+        err.textContent = res.body.error || "Login failed";
+        err.classList.remove("hidden");
+      }
+    });
+
+    $("logout").addEventListener("click", () => {
+      token = ""; localStorage.removeItem(TOKEN_KEY);
+      checkAuth();
+    });
+
+    $("refresh-players").addEventListener("click", refreshPlayers);
+
+    $("bcast-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const title = $("bcast-title").value;
+      const body = $("bcast-body").value;
+      const duration = parseInt($("bcast-duration").value, 10) || 15;
+      const res = await api("POST", "/admin/broadcast", { title, body, duration });
+      appendOutput(
+        `broadcast "${title}" "${body}" ${duration}s`,
+        (res.body.stdout || "") + (res.body.stderr || ""),
+        res.ok && res.body.ok,
+      );
+    });
+
+    checkAuth();
+  </script>
+</body>
+</html>
