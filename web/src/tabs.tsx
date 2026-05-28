@@ -3,7 +3,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  dgtSearch,
   fetchHistory,
   fetchItems,
   fetchPlayers,
@@ -23,6 +22,14 @@ import {
   type SteamPersona,
   type VehicleClass,
 } from "./api";
+import {
+  awakeningImageUrl,
+  awakeningPageUrl,
+  awakeningSearch,
+  lookupItemIdsBatch,
+  wikiLinkFor,
+  type WikiEntry,
+} from "./awakening";
 import {
   Confirm,
   PlayerPicker,
@@ -277,6 +284,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ItemRow[]>([]);
+  const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
   const [picked, setPicked] = useState<ItemRow | null>(null);
   const [qty, setQty] = useState(1);
   const [durability, setDurability] = useState(1.0);
@@ -290,7 +298,15 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
     const handle = setTimeout(async () => {
       setSearching(true);
       const res = await fetchItems(query, 40);
-      if (res.ok) setMatches((res.body as { items: ItemRow[] }).items);
+      if (res.ok) {
+        const list = (res.body as { items: ItemRow[] }).items;
+        setMatches(list);
+        // Batch-fetch wiki entries (images + descriptions) in the
+        // background. List renders immediately; thumbnails fill in.
+        lookupItemIdsBatch(list.map((it) => it.id)).then((map) =>
+          setWiki((prev) => ({ ...prev, ...map })),
+        );
+      }
       setSearching(false);
     }, 200);
     return () => clearTimeout(handle);
@@ -323,24 +339,45 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               placeholder="spice, crysknife, stilltent, solari…"
               className="input-field"
             />
-            {picked && (
-              <div className="mt-2 text-xs text-slate-300 flex items-center gap-2 flex-wrap">
-                <span aria-hidden>{itemCategoryStyle(picked.category).icon}</span>
-                <span className={`font-mono ${itemCategoryStyle(picked.category).color}`}>{picked.id}</span>
-                <span className="text-slate-500">({picked.name || "?"})</span>
-                <a
-                  href={dgtSearch(picked.name || picked.id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-slate-500 hover:text-spice-300"
-                >
-                  ↗
-                </a>
-                <button type="button" className="btn-ghost text-xs ml-auto" onClick={() => setPicked(null)}>
-                  clear
-                </button>
-              </div>
-            )}
+            {picked && (() => {
+              const w = wiki[picked.id];
+              const img = awakeningImageUrl(w?.image);
+              return (
+                <div className="mt-2 flex items-start gap-3 p-2 rounded bg-slate-800/50">
+                  {img && (
+                    <img
+                      src={img}
+                      alt=""
+                      width={48}
+                      height={48}
+                      loading="lazy"
+                      className="w-12 h-12 rounded bg-slate-900 object-contain border border-slate-700 shrink-0"
+                    />
+                  )}
+                  <div className="min-w-0 flex-1 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`font-mono ${itemCategoryStyle(picked.category).color}`}>{picked.id}</span>
+                      <a
+                        href={wikiLinkFor(w, picked.name || picked.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-slate-500 hover:text-spice-300"
+                        title="View on awakening.wiki"
+                      >
+                        ↗
+                      </a>
+                      <button type="button" className="btn-ghost text-xs ml-auto" onClick={() => setPicked(null)}>
+                        clear
+                      </button>
+                    </div>
+                    <div className="text-slate-400">{w?.name || picked.name || "?"}</div>
+                    {(w?.short_description || w?.long_description) && (
+                      <div className="text-slate-500 mt-1 line-clamp-2">{w?.short_description || w?.long_description}</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -370,33 +407,46 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
           {matches.map((it) => {
             const sty = itemCategoryStyle(it.category);
             const active = picked?.id === it.id && picked?.source === it.source;
+            const w = wiki[it.id];
+            const img = awakeningImageUrl(w?.image);
             return (
               <div
                 key={it.id + it.source}
                 className={
-                  "flex items-start gap-2 border-b border-slate-800 hover:bg-slate-800 transition " +
+                  "flex items-center gap-2 border-b border-slate-800 hover:bg-slate-800 transition px-2 " +
                   (active ? "bg-spice-900/30" : "")
                 }
               >
+                <div className="w-8 h-8 shrink-0 flex items-center justify-center">
+                  {img ? (
+                    <img
+                      src={img}
+                      alt=""
+                      width={32}
+                      height={32}
+                      loading="lazy"
+                      className="w-8 h-8 rounded bg-slate-950 object-contain border border-slate-800"
+                    />
+                  ) : (
+                    <span className="text-lg" aria-hidden>{sty.icon}</span>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => setPicked(it)}
-                  className="flex-1 text-left px-4 py-2 text-xs min-w-0"
+                  className="flex-1 text-left py-2 text-xs min-w-0"
                 >
-                  <div className="flex items-center gap-1.5">
-                    <span aria-hidden>{sty.icon}</span>
-                    <span className={`font-mono ${sty.color}`}>{it.id}</span>
-                  </div>
+                  <div className={`font-mono ${sty.color} truncate`}>{it.id}</div>
                   <div className="text-slate-400 mt-0.5 truncate">
-                    {it.name} <span className="text-slate-600">— {it.category} / {it.source}</span>
+                    {w?.name || it.name} <span className="text-slate-600">— {it.category} / {it.source}</span>
                   </div>
                 </button>
                 <a
-                  href={dgtSearch(it.name || it.id)}
+                  href={wikiLinkFor(w, it.name || it.id)}
                   target="_blank"
                   rel="noreferrer"
                   className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
-                  title="View on dune.gaming.tools"
+                  title="View on awakening.wiki"
                   onClick={(e) => e.stopPropagation()}
                 >
                   ↗
@@ -472,10 +522,11 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
                   <span className={`font-mono ${skillCategoryStyle(picked.category).color}`}>{picked.id}</span>
                   <span className="text-slate-500">({picked.name || "?"})</span>
                   <a
-                    href={dgtSearch(picked.name || picked.id)}
+                    href={awakeningSearch(picked.name || picked.id)}
                     target="_blank"
                     rel="noreferrer"
                     className="text-slate-500 hover:text-spice-300"
+                    title="View on awakening.wiki"
                   >
                     ↗
                   </a>
@@ -564,11 +615,11 @@ export function SkillsTab({ setConsoleEntries }: TabProps) {
                   </div>
                 </button>
                 <a
-                  href={dgtSearch(s.name || s.id)}
+                  href={awakeningSearch(s.name || s.id)}
                   target="_blank"
                   rel="noreferrer"
                   className="self-center px-3 py-2 text-slate-500 hover:text-spice-300"
-                  title="View on dune.gaming.tools"
+                  title="View on awakening.wiki"
                   onClick={(e) => e.stopPropagation()}
                 >
                   ↗
@@ -768,12 +819,12 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
                 {vehicles.find((v) => v.id === className)?.templates.length || 0} templates available
               </span>
               <a
-                href={dgtSearch(className)}
+                href={awakeningPageUrl(className)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-slate-500 hover:text-spice-300"
               >
-                view {className} on dune.gaming.tools ↗
+                view {className} on awakening.wiki ↗
               </a>
             </div>
           )}
@@ -1245,6 +1296,17 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   const [draftQty, setDraftQty] = useState(1);
   const [draftLines, setDraftLines] = useState<KitLine[]>([]);
   const [running, setRunning] = useState<string | null>(null);
+  const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
+
+  // Batch-fetch wiki entries for every line in every built-in + custom kit
+  // on first render. ~80 unique ids; gets cached, so re-renders are free.
+  useEffect(() => {
+    const allIds = new Set<string>();
+    for (const k of BUILT_IN_KITS) k.lines.forEach((l) => allIds.add(l.id));
+    for (const k of custom) k.lines.forEach((l) => allIds.add(l.id));
+    if (allIds.size === 0) return;
+    lookupItemIdsBatch(Array.from(allIds)).then(setWiki);
+  }, [custom.length]);
 
   async function runKit(kit: Kit) {
     setRunning(kit.id);
@@ -1343,12 +1405,22 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                     {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
                   </div>
                   <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
-                  <ul className="text-xs text-slate-500 space-y-0.5">
-                    {kit.lines.slice(0, 6).map((l, i) => (
-                      <li key={i} className="font-mono truncate">
-                        <span className="text-slate-400">×{l.qty}</span> {l.name}
-                      </li>
-                    ))}
+                  <ul className="text-xs text-slate-500 space-y-1">
+                    {kit.lines.slice(0, 6).map((l, i) => {
+                      const w = wiki[l.id];
+                      const img = awakeningImageUrl(w?.image);
+                      return (
+                        <li key={i} className="flex items-center gap-1.5 truncate">
+                          {img ? (
+                            <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
+                          ) : (
+                            <span className="w-4 h-4 shrink-0" />
+                          )}
+                          <span className="text-slate-400">×{l.qty}</span>
+                          <span className="truncate">{w?.name || l.name}</span>
+                        </li>
+                      );
+                    })}
                     {kit.lines.length > 6 && (
                       <li className="text-slate-600 italic">…+{kit.lines.length - 6} more</li>
                     )}
@@ -1382,12 +1454,22 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                       ×
                     </button>
                   </div>
-                  <ul className="text-xs text-slate-500 space-y-0.5 mb-2">
-                    {k.lines.map((l, i) => (
-                      <li key={i} className="font-mono truncate">
-                        <span className="text-slate-400">×{l.qty}</span> {l.id}
-                      </li>
-                    ))}
+                  <ul className="text-xs text-slate-500 space-y-1 mb-2">
+                    {k.lines.map((l, i) => {
+                      const w = wiki[l.id];
+                      const img = awakeningImageUrl(w?.image);
+                      return (
+                        <li key={i} className="flex items-center gap-1.5 truncate">
+                          {img ? (
+                            <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
+                          ) : (
+                            <span className="w-4 h-4 shrink-0" />
+                          )}
+                          <span className="text-slate-400">×{l.qty}</span>
+                          <span className="truncate font-mono">{l.id}</span>
+                        </li>
+                      );
+                    })}
                   </ul>
                   <button
                     type="button"

@@ -190,19 +190,6 @@ export interface PosInfo {
   ts: number;
 }
 
-// dune.gaming.tools is a community game reference (item/skill/vehicle
-// browser with images + tooltips). Their site is gated by Cloudflare
-// bot protection so we can't hotlink images server-side or proxy them.
-// What we CAN do is link out — the user's browser handles the JS
-// challenge once and any subsequent tab opens cleanly.
-export const DGT_BASE = "https://dune.gaming.tools";
-
-/** Open the deep-link search for a free-text term. Use for items
- *  (FName like `Crysknife`) and skills (id like `Skills.Ability.X`). */
-export function dgtSearch(query: string): string {
-  return `${DGT_BASE}/en/search?q=${encodeURIComponent(query)}`;
-}
-
 /** Vehicle class → category icon. Bundled inline (no external dep). */
 export function vehicleIcon(className: string): string {
   switch (className) {
