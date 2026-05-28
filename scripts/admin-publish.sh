@@ -21,14 +21,18 @@
 #     "Server announcement" "Hello from admin"
 #
 # Subcommands:
-#   broadcast <title> <body> [duration_secs]   -- ServiceBroadcast (Generic)
-#   shutdown <type> <lead_secs> [freq_secs]    -- ServerShutdown (Restart|Maintenance|Update)
-#   kick <player_id>                            -- KickPlayer (FLS id or "*" for all online)
-#   give <player_id> <item_fname> [qty] [dura] -- AddItemToInventory
-#   xp <player_id> <amount>                     -- AwardXP
-#   teleport <player_id> <x> <y> <z>            -- TeleportToExact
-#   exec <raw_console_command>                  -- ServerExec (escape hatch)
-#   raw '<inner-json>'                          -- arbitrary ServerCommand JSON
+#   broadcast <title> <body> [duration_secs]    -- ServiceBroadcast (Generic)
+#   shutdown <type> [lead_secs] [freq_secs]     -- ServerShutdown (Restart|Maintenance|Update|cancel)
+#   kick <player_id>                             -- KickPlayer (FLS id or "*" for all online)
+#   give <player_id> <item_fname> [qty] [dura]  -- AddItemToInventory
+#   xp <player_id> <amount>                      -- AwardXP
+#   teleport <player_id> <x> <y> <z>             -- TeleportToExact
+#   exec <raw_console_command>                   -- ServerExec (publishes but no-op on seabass — kept for parity)
+#   raw '<inner-json>'                           -- arbitrary ServerCommand JSON
+#
+# Known no-ops (adainrivers live-tested 2026-05-26): ServerExec, CheatScript,
+# Journey* commands, AwardXP Category field — all publish=ok but the
+# seabass handler doesn't apply state. Keep them off the panel UI.
 #
 # Env:
 #   DUNE_ADMIN_TOKEN   override the auth token (defaults to the known-good
@@ -106,31 +110,62 @@ build_inner() {
     local sub="$1"; shift
     case "$sub" in
         broadcast)
+            # UE5's broadcast renderer requires a LocalizedText[] array with
+            # at least one locale entry. Without it: LogJson "Field
+            # LocalizedText not found" + "Null used as Array" -> banner
+            # dropped (handler logs the dispatch but never shows it
+            # in-game). BroadcastDuration also lives INSIDE BroadcastPayload,
+            # not at the top level. Shape verified against
+            # adainrivers/dune-dedicated-server-manager build.rs.
             local title="${1:?title required}" body="${2:?body required}" dur="${3:-30}"
             python3 -c "
 import json, sys
 print(json.dumps({
     'ServerCommand': 'ServiceBroadcast',
     'BroadcastType': 'Generic',
-    'BroadcastPayload': {'Title': '''$title''', 'Body': '''$body'''},
-    'BroadcastDuration': int('$dur'),
+    'BroadcastPayload': {
+        'BroadcastDuration': int('$dur'),
+        'LocalizedText': [
+            {'Key': 'en',    'Title': '''$title''', 'Body': '''$body'''},
+            {'Key': 'en-US', 'Title': '''$title''', 'Body': '''$body'''},
+        ],
+    },
 }, separators=(',',':')))
 "
             ;;
         shutdown)
-            local stype="${1:?type required (Restart|Maintenance|Update)}"
-            local lead="${2:?lead seconds required}"
+            # Same shape rule as broadcast: BroadcastPayload holds the real
+            # fields; ShutdownTimestamp + DateTimestamp are required by the
+            # ServerShutdown parser. Use 'cancel' as the stype to abort a
+            # pending shutdown without any other metadata.
+            local stype="${1:?type required (Restart|Maintenance|Update|cancel)}"
+            local lead="${2:-600}"
             local freq="${3:-60}"
             python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'ServiceBroadcast',
-    'BroadcastType': 'ServerShutdown',
-    'ShutdownType': '$stype',
-    'ShutdownDuration': int('$lead'),
-    'BroadcastFrequency': int('$freq'),
-    'BroadcastDuration': 30,
-}, separators=(',',':')))
+import json, time
+stype = '$stype'
+if stype.lower() == 'cancel':
+    inner = {
+        'ServerCommand': 'ServiceBroadcast',
+        'BroadcastType': 'ServerShutdown',
+        'BroadcastPayload': {'ShouldCancel': True},
+    }
+else:
+    now = int(time.time())
+    lead = max(1, int('$lead'))
+    inner = {
+        'ServerCommand': 'ServiceBroadcast',
+        'BroadcastType': 'ServerShutdown',
+        'BroadcastPayload': {
+            'ShutdownType': stype,
+            'DateTimestamp': now,
+            'ShutdownDuration': lead,
+            'ShutdownTimestamp': now + lead,
+            'BroadcastFrequency': max(1, int('$freq')),
+            'BroadcastDuration': 30,
+        },
+    }
+print(json.dumps(inner, separators=(',',':')))
 "
             ;;
         kick)
