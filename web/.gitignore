@@ -1,0 +1,8 @@
+node_modules/
+.vite/
+*.local
+
+# We commit the BUILT bundle to ../data/web/dist so the egg installer
+# can ship it without running npm. The dist/ inside the web/ folder
+# is leftover from `npm run preview` and is safe to ignore.
+dist/

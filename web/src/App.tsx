@@ -1,0 +1,188 @@
+import { useEffect, useState } from "react";
+import {
+  BroadcastTab,
+  Dashboard,
+  HistoryTab,
+  ItemsTab,
+  MaintenanceTab,
+  MovementTab,
+  PlayersTab,
+  SkillsTab,
+  VehiclesTab,
+} from "./tabs";
+import { Login, OutputConsole, type ConsoleEntry } from "./components";
+import { api, getToken, me, onUnauthorized, setToken } from "./api";
+
+type TabId =
+  | "dashboard"
+  | "broadcast"
+  | "players"
+  | "items"
+  | "skills"
+  | "vehicles"
+  | "movement"
+  | "maintenance"
+  | "history";
+
+interface TabDef {
+  id: TabId;
+  label: string;
+  icon: string;
+  group: "overview" | "commands" | "system";
+}
+
+const TABS: TabDef[] = [
+  { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
+  { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
+  { id: "players", label: "Players", icon: "👥", group: "commands" },
+  { id: "items", label: "Items", icon: "📦", group: "commands" },
+  { id: "skills", label: "Skills", icon: "✨", group: "commands" },
+  { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
+  { id: "movement", label: "Movement", icon: "🧭", group: "commands" },
+  { id: "maintenance", label: "Maintenance", icon: "🛠", group: "system" },
+  { id: "history", label: "History", icon: "🗒", group: "system" },
+];
+
+export default function App() {
+  const [authState, setAuthState] = useState<"loading" | "out" | "in">("loading");
+  const [tab, setTab] = useState<TabId>("dashboard");
+  const [mode, setMode] = useState<"ui" | "internal" | "?">("?");
+  const [entries, setEntries] = useState<ConsoleEntry[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    onUnauthorized(() => {
+      setToken("");
+      setAuthState("out");
+    });
+    api("GET", "/api/healthz").then((res) => {
+      if (res.ok && (res.body as { mode: "ui" | "internal" }).mode) {
+        setMode((res.body as { mode: "ui" | "internal" }).mode);
+      }
+    });
+    if (!getToken()) {
+      setAuthState("out");
+      return;
+    }
+    me().then((res) => setAuthState(res.ok ? "in" : "out"));
+  }, []);
+
+  function logout() {
+    setToken("");
+    setAuthState("out");
+    setEntries([]);
+  }
+
+  if (authState === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">
+        Loading…
+      </div>
+    );
+  }
+
+  if (authState === "out") {
+    return <Login onAuthed={() => setAuthState("in")} />;
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between bg-slate-950/80 backdrop-blur sticky top-0 z-30">
+        <div className="flex items-center gap-3">
+          <button
+            className="lg:hidden text-slate-400 hover:text-slate-100"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            aria-label="Toggle menu"
+          >
+            ☰
+          </button>
+          <span className="text-xl">🌀</span>
+          <div>
+            <div className="text-spice-300 font-semibold leading-tight">Dune Admin</div>
+            <div className="text-xs text-slate-500">Pelican egg</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={mode === "ui" ? "pill-ok" : "pill-warn"}>
+            mode: {mode}
+          </span>
+          <button onClick={logout} className="btn-ghost text-xs">
+            Log out
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex">
+        {/* Sidebar */}
+        <aside
+          className={
+            "w-60 border-r border-slate-800 bg-slate-950 shrink-0 " +
+            "fixed inset-y-0 left-0 top-[57px] z-20 transform transition-transform lg:static lg:translate-x-0 " +
+            (sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0")
+          }
+        >
+          <nav className="py-4 px-2 space-y-6">
+            {(["overview", "commands", "system"] as const).map((group) => (
+              <div key={group}>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 px-3 mb-2">
+                  {group}
+                </div>
+                <div className="space-y-0.5">
+                  {TABS.filter((t) => t.group === group).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => {
+                        setTab(t.id);
+                        setSidebarOpen(false);
+                      }}
+                      className={
+                        "w-full text-left px-3 py-2 rounded text-sm flex items-center gap-3 transition " +
+                        (tab === t.id ? "bg-spice-900/40 text-spice-200" : "text-slate-300 hover:bg-slate-800")
+                      }
+                    >
+                      <span className="w-5 text-center">{t.icon}</span>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </nav>
+        </aside>
+
+        {sidebarOpen && (
+          <div className="fixed inset-0 bg-slate-950/50 z-10 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        )}
+
+        <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
+          {tab === "dashboard" && <Dashboard setConsoleEntries={setEntries} />}
+          {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
+          {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
+          {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
+          {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
+          {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
+          {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}
+          {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
+          {tab === "history" && <HistoryTab />}
+
+          <OutputConsole entries={entries} onClear={() => setEntries([])} />
+        </main>
+      </div>
+
+      <footer className="border-t border-slate-800 px-4 sm:px-6 py-3 text-xs text-slate-500 flex flex-wrap items-center gap-3 justify-between">
+        <span>
+          Pelican egg admin · protocol via{" "}
+          <a href="https://github.com/adainrivers/dune-dedicated-server-manager" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
+            adainrivers
+          </a>{" "}
+          (MIT)
+        </span>
+        <span>
+          <a href="https://github.com/Sergentval/pelican-egg-dune-awakening" className="text-slate-400 hover:text-slate-200" target="_blank" rel="noreferrer">
+            source
+          </a>
+        </span>
+      </footer>
+    </div>
+  );
+}
