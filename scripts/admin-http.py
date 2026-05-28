@@ -350,6 +350,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        # Static SPA assets must stay public — they're the login page itself,
+        # plus its bundled CSS/JS. The token isn't issued until the user
+        # POSTs /api/login, so we can't gate the HTML that hosts that form.
+        # The history-router fallback inside _serve_static also keeps deep
+        # links like /dashboard working.
+        if UI_ENABLED and not path.startswith("/api/") and not path.startswith("/admin/"):
+            self._serve_static(path)
+            return
+
         # Anything else requires auth.
         if not self._auth_ok():
             self._write(401, {"error": "auth required"})
@@ -404,11 +413,6 @@ class Handler(BaseHTTPRequestHandler):
                 entry["stdout"] + entry["stderr"],
                 content_type="text/plain",
             )
-            return
-
-        # Static file serving (UI mode only).
-        if UI_ENABLED and not path.startswith("/api/") and not path.startswith("/admin/"):
-            self._serve_static(path)
             return
 
         if path == "/":
