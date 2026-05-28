@@ -58,3 +58,33 @@ and re-distribution; this repo also ships under MIT.
 
 If you found this useful, consider checking out [AMP](https://cubecoders.com/AMP)
 for the proprietary version with a wider game catalogue and managed UX.
+
+## adainrivers - dune-dedicated-server-manager
+
+`scripts/admin-publish.sh` is a bash adaptation of the AMQP-based admin
+protocol reverse-engineered and verified by adainrivers in
+<https://github.com/adainrivers/dune-dedicated-server-manager> (MIT,
+Rust + Tauri). All of the following come from their work:
+
+- The envelope shape: base64-encoded
+  `{Version:2, AuthToken, MessageContent}` published to the
+  `heartbeats` exchange with routing key `notifications`, user_id
+  `fls`, app_id `fls_backend`.
+- The Erlang publish snippet executed via `rabbitmqctl eval` on the
+  admin broker pod, byte-equivalent to their `mq.rs` so server-side
+  log lines stay consistent across admin clients.
+- The catalogue of 14 verified ServerCommand names
+  (`AddItemToInventory`, `ServiceBroadcast`, `KickPlayer`, `AwardXP`,
+  `SkillsSetModuleLevel`, `TeleportTo`, `SpawnVehicleAt`, `ServerExec`,
+  and others).
+- The "Funcom-confirmed harmless" built-in fallback AuthToken value.
+- The negative results documented in their source comments (Journey
+  commands silently no-op, XP Category field ignored,
+  AwardXPByEventTag returns "unknown ServerCommand") — saved us
+  reverse-engineering the same dead ends.
+
+If you want a polished desktop GUI for managing a Dune server (item
+grants, vehicle spawns, player lookup, scheduled restarts), check out
+their app directly. Our bash wrapper is intentionally minimal — meant
+for ad-hoc admin from inside the Pelican container, not as a
+replacement for their work.
