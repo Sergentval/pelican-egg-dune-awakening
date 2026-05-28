@@ -194,6 +194,14 @@ if [ -f "$STATE/rmq-secret" ]; then
   DUNE_RMQ_SEC=$(cat "$STATE/rmq-secret")
   export DUNE_RMQ_SEC
 fi
+if [ -f "$STATE/svc-cmd-token" ]; then
+  # ServerCommandsAuthToken — the seabass server-command handler in each
+  # UE5 instance validates inbound admin RMQ messages against this. Feed
+  # it to start-ue5.sh which passes it via -ini:engine: overrides; feed
+  # the same value to scripts/admin-publish.sh for outbound publishes.
+  DUNE_SVC_CMD_TOKEN=$(cat "$STATE/svc-cmd-token")
+  export DUNE_SVC_CMD_TOKEN
+fi
 
 # Mark lib loaded so children can sanity-check
 export DUNE_LIB_LOADED=1

@@ -39,7 +39,30 @@
 
 set -euo pipefail
 
-ADMIN_TOKEN="${DUNE_ADMIN_TOKEN:-Nu6VmPWUMvdPMeB7qErr}"
+resolve_admin_token() {
+    # Operator override always wins.
+    if [ -n "${DUNE_ADMIN_TOKEN:-}" ]; then
+        printf '%s' "$DUNE_ADMIN_TOKEN"
+        return
+    fi
+    # prestart.sh writes the per-boot ServerCommandsAuthToken to this state
+    # file BEFORE start-ue5.sh hands it to the UE5 instances via -ini:engine:
+    # overrides. Using the same value here is what makes the seabass handler
+    # accept the publish (it runs a token check that drops unrecognized
+    # tokens silently — looking like 'publish ok but no dispatch').
+    local state_token="${DUNE_BASE_DIR:-/home/container}/server/state/svc-cmd-token"
+    if [ -f "$state_token" ]; then
+        # Trim any trailing newline/CR.
+        tr -d '\r\n' < "$state_token"
+        return
+    fi
+    # adainrivers' Funcom-confirmed-harmless fallback. Works on Funcom-stock
+    # VM images where the token gate isn't enforced, and during early boot
+    # before our seabass handler initialises its token check. Otherwise
+    # rejected silently.
+    printf '%s' 'Nu6VmPWUMvdPMeB7qErr'
+}
+ADMIN_TOKEN="$(resolve_admin_token)"
 # Default to rabbit-game@localhost: on our Pelican stack only the game
 # broker has consumer queues bound to heartbeats:notifications (one per
 # Sietch). adainrivers' original code defaults to rabbit-admin because

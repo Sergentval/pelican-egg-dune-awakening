@@ -121,6 +121,20 @@ fi
 RMQ_SEC=$(cat "$RMQ_SEC_FILE")
 export DUNE_RMQ_SEC="$RMQ_SEC"
 
+# ServerCommandsAuthToken — the seabass server-command handler in each UE5
+# instance validates inbound admin RMQ messages against this. start-ue5.sh
+# feeds it to the UE5 servers via -ini:engine:[FuncomLiveServices*]:
+# ServerCommandsAuthToken overrides; scripts/admin-publish.sh embeds the
+# same value in the AMQP envelope so the dispatcher accepts the publish.
+# Without this, admin-publish.sh succeeds (publish=ok at the broker) but
+# UE5 silently drops every message.
+SVC_CMD_FILE="$STATE/svc-cmd-token"
+if [ ! -f "$SVC_CMD_FILE" ]; then
+  umask 077
+  openssl rand -hex 16 | tr -d '\n' > "$SVC_CMD_FILE"
+fi
+export DUNE_SVC_CMD_TOKEN="$(cat "$SVC_CMD_FILE")"
+
 # --------------------------------------------------------------------------
 # 2. Self-signed RMQ TLS cert (replaces cert-manager from the k3s build)
 # --------------------------------------------------------------------------

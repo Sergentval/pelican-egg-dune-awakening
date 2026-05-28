@@ -92,6 +92,10 @@ shutdown_all() {
     pkill -KILL -P "$TAIL_PID" 2>/dev/null || true
     kill -KILL "$TAIL_PID" 2>/dev/null || true
   fi
+  # Stop the admin stdin listener too (it'd block on read otherwise)
+  if [ -n "${ADMIN_LISTENER_PID:-}" ]; then
+    kill -TERM "$ADMIN_LISTENER_PID" 2>/dev/null || true
+  fi
   log "Shutdown complete: success"
   exec true   # replace ourselves so AMP sees the process tree truly gone
 }
@@ -166,6 +170,53 @@ done
   wait
 ) &
 TAIL_PID=$!
+
+# --------------------------------------------------------------------------
+# Admin stdin listener: Pelican panel's "Console" tab forwards typed input
+# to the container's stdin. We watch for lines starting with `admin ` (or
+# `/admin `) and pipe them into scripts/admin-publish.sh — that's the
+# AMQP-publish helper that reaches the seabass server-command handler.
+# Anything else is just echoed back with [admin] [INFO] so operators see
+# their input in the panel log.
+#
+# Quoting: shlex.split via python3 so `admin broadcast "My Title" "My Body"`
+# parses correctly. The operator is effectively root in the container, but
+# we still avoid eval'ing arbitrary input.
+# --------------------------------------------------------------------------
+admin_listener() {
+  local line trimmed rest
+  while IFS= read -r line; do
+    # Strip CR (panel may send \r\n)
+    line="${line%$'\r'}"
+    trimmed="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    case "$trimmed" in
+      "")
+        continue ;;
+      /admin|admin)
+        printf '[admin] [INFO] usage: admin <broadcast|shutdown|kick|give|xp|teleport|exec|raw> ...\n' ;;
+      /admin\ *|admin\ *)
+        rest="${trimmed#admin }"
+        rest="${rest#/admin }"
+        printf '[admin] [INFO] > %s\n' "$trimmed"
+        # shlex-parse the argv so quoted strings stay intact.
+        local parsed
+        if ! mapfile -t parsed < <(printf '%s' "$rest" \
+              | python3 -c 'import shlex,sys; [print(t) for t in shlex.split(sys.stdin.read())]' 2>&1); then
+          printf '[admin] [ERROR] could not parse argv: %s\n' "$rest"
+          continue
+        fi
+        "$SCRIPTS/admin-publish.sh" "${parsed[@]}" 2>&1 \
+          | sed 's/^/[admin] /'
+        ;;
+      *)
+        # Unknown input — just echo so the operator sees their typing.
+        printf '[stdin] [INFO] %s\n' "$trimmed"
+        ;;
+    esac
+  done
+}
+admin_listener <&0 &
+ADMIN_LISTENER_PID=$!
 
 # --------------------------------------------------------------------------
 # Watch-and-block: if every backend process dies, exit so AMP restarts us
