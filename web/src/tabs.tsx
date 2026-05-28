@@ -3,8 +3,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  armorSetClass,
+  armorSetLabel,
   detectSkillType,
   detectTier,
+  fetchArmorSets,
   fetchHistory,
   fetchItemCategories,
   fetchItems,
@@ -20,6 +23,7 @@ import {
   skillTypeIcon,
   vehicleIcon,
   vehicleImageFilename,
+  type ArmorSet,
   type HistoryResponse,
   type ItemCategoryBucket,
   type ItemRow,
@@ -1765,9 +1769,23 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
 // the protocol wiki note), so these compose AddItemToInventory calls
 // to achieve the same end result via consumables.
 
+// Build a Kit object from an ArmorSet returned by /api/lookup/armor-sets.
+function kitFromArmorSet(set: ArmorSet): Kit {
+  const cls = armorSetClass(set);
+  return {
+    id: `armor-${set.base}`,
+    name: armorSetLabel(set),
+    emoji: cls.icon,
+    blurb: `${cls.tag} · ${set.pieces.length} pieces`,
+    group: "armor",
+    lines: set.pieces.map((p) => ({ id: p.id, name: p.name, qty: 1 })),
+  };
+}
+
 export function KitsTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [custom, setCustom] = useState<CustomKit[]>(loadCustomKits);
+  const [armorSets, setArmorSets] = useState<ArmorSet[]>([]);
   const [draftName, setDraftName] = useState("");
   const [draftItemId, setDraftItemId] = useState("");
   const [draftQty, setDraftQty] = useState(1);
@@ -1775,35 +1793,50 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   const [running, setRunning] = useState<string | null>(null);
   const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
 
-  // Selected kit + per-line overrides (checkbox + qty). Picking a card
-  // expands an editor below the grid so the operator can tweak before
-  // hitting Grant.
-  const [selectedKitId, setSelectedKitId] = useState<string | null>(null);
+  // Modal-state for per-line customize. When set, a full-screen overlay
+  // opens with the kit's lines as a checklist + qty overrides.
+  const [editingKit, setEditingKit] = useState<Kit | null>(null);
   const [overrides, setOverrides] = useState<Record<string, { include: boolean; qty: number }>>({});
 
-  // Batch-fetch wiki entries for every line in every built-in + custom kit
-  // on first render. Unique-id count is ~120 with the new bundles.
+  // Armor kits are generated from items.json server-side — one kit per
+  // 3+ piece wearable set (57 sets in catalog) — so they stay fresh
+  // when Funcom ships a new armor without us touching the SPA source.
+  useEffect(() => {
+    fetchArmorSets().then((res) => {
+      if (res.ok) setArmorSets((res.body as { sets: ArmorSet[] }).sets);
+    });
+  }, []);
+
+  const armorKits: Kit[] = useMemo(() => armorSets.map(kitFromArmorSet), [armorSets]);
+  const builtInKits: Kit[] = useMemo(() => [...BUILT_IN_KITS, ...armorKits], [armorKits]);
+
+  // Batch-fetch wiki entries for every line across built-in + custom +
+  // dynamic-armor kits. Re-runs when armor data lands; cached after that.
   useEffect(() => {
     const allIds = new Set<string>();
-    for (const k of BUILT_IN_KITS) k.lines.forEach((l) => allIds.add(l.id));
+    for (const k of builtInKits) k.lines.forEach((l) => allIds.add(l.id));
     for (const k of custom) k.lines.forEach((l) => allIds.add(l.id));
     if (allIds.size === 0) return;
     lookupItemIdsBatch(Array.from(allIds)).then((map) =>
       setWiki((prev) => ({ ...prev, ...map })),
     );
-  }, [custom.length]);
+  }, [armorKits.length, custom.length]);
 
-  const allKits: Kit[] = useMemo(() => [...BUILT_IN_KITS, ...custom], [custom]);
-  const selectedKit = useMemo(
-    () => allKits.find((k) => k.id === selectedKitId) || null,
-    [allKits, selectedKitId],
-  );
+  // Close modal on Esc.
+  useEffect(() => {
+    if (!editingKit) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEditingKit(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingKit]);
 
-  // When user picks a kit, seed per-line overrides — every line included,
-  // qty defaults to the kit's authored qty.
-  function selectKit(kit: Kit | null) {
+  // When user opens a kit for customization, seed per-line overrides —
+  // every line included, qty defaults to the kit's authored qty.
+  function openCustomize(kit: Kit | null) {
     if (!kit) {
-      setSelectedKitId(null);
+      setEditingKit(null);
       setOverrides({});
       return;
     }
@@ -1812,7 +1845,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
       next[`${kit.id}#${i}`] = { include: true, qty: l.qty };
     });
     setOverrides(next);
-    setSelectedKitId(kit.id);
+    setEditingKit(kit);
   }
 
   async function runKit(kit: Kit, useOverrides = false) {
@@ -1916,7 +1949,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
       </div>
 
       {KIT_GROUPS.map((g) => {
-        const groupKits = BUILT_IN_KITS.filter((k) => k.group === g.id);
+        const groupKits = builtInKits.filter((k) => k.group === g.id);
         if (groupKits.length === 0) return null;
         return (
           <div key={g.id} className="card">
@@ -1927,161 +1960,164 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
               <span className="text-xs text-slate-500">{groupKits.length} bundles</span>
             </header>
             <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-              {groupKits.map((kit) => {
-                const isSelected = selectedKitId === kit.id;
-                return (
-                  <div
-                    key={kit.id}
-                    className={
-                      "rounded-lg border transition " +
-                      (isSelected
-                        ? "border-spice-500 bg-spice-900/30"
-                        : "border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50")
-                    }
-                  >
+              {groupKits.map((kit) => (
+                <div
+                  key={kit.id}
+                  className="rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition"
+                >
+                  <div className="p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xl" aria-hidden>{kit.emoji}</span>
+                      <span className="font-semibold text-spice-300">{kit.name}</span>
+                      {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+                    </div>
+                    <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
+                    <ul className="text-xs text-slate-500 space-y-1">
+                      {kit.lines.slice(0, 5).map((l, i) => {
+                        const w = wiki[l.id];
+                        const img = awakeningImageUrl(w?.image);
+                        return (
+                          <li key={i} className="flex items-center gap-1.5 truncate">
+                            {img ? (
+                              <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
+                            ) : (
+                              <span className="w-4 h-4 shrink-0" />
+                            )}
+                            <span className="text-slate-400">×{l.qty}</span>
+                            <span className="truncate">{w?.name || l.name}</span>
+                          </li>
+                        );
+                      })}
+                      {kit.lines.length > 5 && (
+                        <li className="text-slate-600 italic">…+{kit.lines.length - 5} more</li>
+                      )}
+                    </ul>
+                  </div>
+                  <div className="px-3 pb-3 flex gap-2">
                     <button
                       type="button"
-                      onClick={() => selectKit(isSelected ? null : kit)}
+                      onClick={() => runKit(kit, false)}
                       disabled={running !== null}
-                      className="w-full text-left p-3 disabled:opacity-40"
+                      className="btn-primary text-xs flex-1"
                     >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xl" aria-hidden>{kit.emoji}</span>
-                        <span className="font-semibold text-spice-300">{kit.name}</span>
-                        {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
-                      </div>
-                      <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
-                      <ul className="text-xs text-slate-500 space-y-1">
-                        {kit.lines.slice(0, 6).map((l, i) => {
-                          const w = wiki[l.id];
-                          const img = awakeningImageUrl(w?.image);
-                          return (
-                            <li key={i} className="flex items-center gap-1.5 truncate">
-                              {img ? (
-                                <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
-                              ) : (
-                                <span className="w-4 h-4 shrink-0" />
-                              )}
-                              <span className="text-slate-400">×{l.qty}</span>
-                              <span className="truncate">{w?.name || l.name}</span>
-                            </li>
-                          );
-                        })}
-                        {kit.lines.length > 6 && (
-                          <li className="text-slate-600 italic">…+{kit.lines.length - 6} more</li>
-                        )}
-                      </ul>
+                      Grant all
                     </button>
-                    {/* Quick "Grant all" without opening the editor */}
-                    <div className="px-3 pb-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => runKit(kit, false)}
-                        disabled={running !== null}
-                        className="btn-primary text-xs flex-1"
-                      >
-                        Grant all
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => selectKit(isSelected ? null : kit)}
-                        className={
-                          "btn-ghost border text-xs " +
-                          (isSelected ? "border-spice-500 text-spice-300" : "border-slate-700")
-                        }
-                      >
-                        {isSelected ? "close" : "customize"}
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCustomize(kit)}
+                      className="btn-ghost border border-slate-700 text-xs"
+                      title="Open customize editor"
+                    >
+                      ⚙ customize
+                    </button>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </div>
         );
       })}
 
-      {/* ── Per-line customization editor for the selected kit ─────── */}
-      {selectedKit && (
-        <div className="card border-spice-700 bg-spice-950/20">
-          <header className="card-header">
-            <h2 className="font-semibold flex items-center gap-2">
-              <span aria-hidden>{selectedKit.emoji}</span>
-              <span>{selectedKit.name}</span>
-              <span className="text-xs text-slate-500 font-normal">customize before granting</span>
-            </h2>
-            <div className="flex items-center gap-2">
-              <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(selectedKit, true)}>
-                check all
-              </button>
-              <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(selectedKit, false)}>
-                uncheck all
-              </button>
-              <button type="button" className="btn-ghost text-xs" onClick={() => selectKit(null)}>
-                close
-              </button>
+      {/* ── Modal: per-line customize editor ─────────────────────── */}
+      {editingKit && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          onClick={() => openCustomize(null)}
+        >
+          <div
+            className="card max-w-2xl w-full max-h-[90vh] flex flex-col border-spice-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="card-header">
+              <h2 className="font-semibold flex items-center gap-2 min-w-0">
+                <span aria-hidden>{editingKit.emoji}</span>
+                <span className="truncate">{editingKit.name}</span>
+              </h2>
+              <div className="flex items-center gap-2 shrink-0">
+                <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(editingKit, true)}>
+                  check all
+                </button>
+                <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(editingKit, false)}>
+                  uncheck all
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost text-xs text-slate-400 hover:text-slate-100"
+                  onClick={() => openCustomize(null)}
+                  title="Close (Esc)"
+                >
+                  ✕
+                </button>
+              </div>
+            </header>
+            <div className="p-4 overflow-y-auto flex-1">
+              <p className="text-xs text-slate-400 mb-3">
+                Uncheck a row to skip it. Adjust the qty to override the bundled default.
+                Only checked rows fire when you hit <span className="text-spice-300">Grant selected</span>.
+              </p>
+              <ul className="space-y-1.5">
+                {editingKit.lines.map((l, i) => {
+                  const w = wiki[l.id];
+                  const img = awakeningImageUrl(w?.image);
+                  const o = overrides[`${editingKit.id}#${i}`] || { include: true, qty: l.qty };
+                  return (
+                    <li
+                      key={i}
+                      className={
+                        "flex items-center gap-3 p-2 rounded border transition " +
+                        (o.include
+                          ? "border-slate-700 bg-slate-900/50"
+                          : "border-slate-800 bg-slate-950/50 opacity-50")
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={o.include}
+                        onChange={(e) => setLineInclude(editingKit, i, e.target.checked)}
+                        className="accent-spice-500 shrink-0"
+                      />
+                      <div className="w-8 h-8 shrink-0 flex items-center justify-center">
+                        {img ? (
+                          <img src={img} alt="" width={32} height={32} loading="lazy" className="w-8 h-8 object-contain" />
+                        ) : (
+                          <span className="text-slate-600">·</span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-slate-200 text-sm truncate">{w?.name || l.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{l.id}</div>
+                      </div>
+                      <input
+                        type="number"
+                        min={1}
+                        value={o.qty}
+                        onChange={(e) => setLineQty(editingKit, i, parseInt(e.target.value) || 1)}
+                        disabled={!o.include}
+                        className="input-field w-20 text-xs font-mono shrink-0"
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
-          </header>
-          <div className="p-4 space-y-3">
-            <p className="text-xs text-slate-400">
-              Uncheck a row to skip it. Adjust the qty to override the bundled default.
-              Only checked rows are sent when you hit <span className="text-spice-300">Grant selected</span>.
-            </p>
-            <ul className="space-y-1.5">
-              {selectedKit.lines.map((l, i) => {
-                const w = wiki[l.id];
-                const img = awakeningImageUrl(w?.image);
-                const o = overrides[`${selectedKit.id}#${i}`] || { include: true, qty: l.qty };
-                return (
-                  <li
-                    key={i}
-                    className={
-                      "flex items-center gap-3 p-2 rounded border transition " +
-                      (o.include
-                        ? "border-slate-700 bg-slate-900/50"
-                        : "border-slate-800 bg-slate-950/50 opacity-50")
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      checked={o.include}
-                      onChange={(e) => setLineInclude(selectedKit, i, e.target.checked)}
-                      className="accent-spice-500 shrink-0"
-                    />
-                    <div className="w-8 h-8 shrink-0 flex items-center justify-center">
-                      {img ? (
-                        <img src={img} alt="" width={32} height={32} loading="lazy" className="w-8 h-8 object-contain" />
-                      ) : (
-                        <span className="text-slate-600">·</span>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-slate-200 text-sm truncate">{w?.name || l.name}</div>
-                      <div className="text-[10px] text-slate-500 font-mono truncate">{l.id}</div>
-                    </div>
-                    <input
-                      type="number"
-                      min={1}
-                      value={o.qty}
-                      onChange={(e) => setLineQty(selectedKit, i, parseInt(e.target.value) || 1)}
-                      disabled={!o.include}
-                      className="input-field w-20 text-xs font-mono shrink-0"
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+            <div className="px-4 py-3 border-t border-slate-800 flex items-center gap-2">
               <span className="text-xs text-slate-500 mr-auto">
-                {Object.values(overrides).filter((o) => o.include).length} of {selectedKit.lines.length} selected · target {target.playerId}
+                {Object.values(overrides).filter((o) => o.include).length} of {editingKit.lines.length} selected · target <span className="font-mono text-slate-300">{target.playerId}</span>
               </span>
               <button
                 type="button"
-                onClick={() => runKit(selectedKit, true)}
+                onClick={() => openCustomize(null)}
+                className="btn-ghost border border-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => { await runKit(editingKit, true); openCustomize(null); }}
                 disabled={running !== null || Object.values(overrides).every((o) => !o.include)}
                 className="btn-primary"
               >
-                {running === selectedKit.id ? "granting…" : "Grant selected"}
+                {running === editingKit.id ? "granting…" : "Grant selected"}
               </button>
             </div>
           </div>
@@ -2138,13 +2174,11 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => selectKit(selectedKitId === k.id ? null : k)}
-                      className={
-                        "btn-ghost border text-xs " +
-                        (selectedKitId === k.id ? "border-spice-500 text-spice-300" : "border-slate-700")
-                      }
+                      onClick={() => openCustomize(k)}
+                      className="btn-ghost border border-slate-700 text-xs"
+                      title="Open customize editor"
                     >
-                      {selectedKitId === k.id ? "close" : "customize"}
+                      ⚙
                     </button>
                   </div>
                 </div>

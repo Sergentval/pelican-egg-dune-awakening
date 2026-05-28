@@ -173,6 +173,54 @@ export const fetchSkills = (q: string, limit = 50, category = "") => {
 export const fetchSkillCategories = () =>
   api<{ categories: ItemCategoryBucket[] }>("GET", "/api/lookup/skill-categories");
 
+export interface ArmorPiece {
+  id: string;
+  name: string;
+  slot: string;
+}
+export interface ArmorSet {
+  base: string;
+  pieces: ArmorPiece[];
+}
+export const fetchArmorSets = () =>
+  api<{ sets: ArmorSet[] }>("GET", "/api/lookup/armor-sets");
+
+/** Heuristic to give an armor set a readable label. We strip the
+ *  shared `Combat_/Stillsuit_` prefixes and `_Unique_*` filler so the
+ *  user sees "Swordmaster" or "AtreidesDeserterUnique01" instead of
+ *  the raw `Combat_Heavy_Unique_Swordmaster`. */
+export function armorSetLabel(set: ArmorSet): string {
+  let base = set.base
+    .replace(/^Combat_/, "")
+    .replace(/^Stillsuit_/, "Stillsuit ")
+    .replace(/^Insulated_Combat_/, "Insulated ")
+    .replace(/^InsulatedCryo_Combat_/, "Cryo ")
+    .replace(/^Social_/, "Social ")
+    .replace(/^ExplorationSuit_/, "Exploration ");
+  base = base.replace(/_/g, " ").trim();
+  return base;
+}
+
+/** Detect the class / armor family from the set base for icon coloring. */
+export function armorSetClass(set: ArmorSet): { icon: string; tag: string } {
+  const b = set.base.toLowerCase();
+  if (b.includes("swordmaster")) return { icon: "⚔️", tag: "Swordmaster" };
+  if (b.includes("benegeserit") || b.includes("benegesserit")) return { icon: "✨", tag: "Bene Gesserit" };
+  if (b.includes("mentat")) return { icon: "🧠", tag: "Mentat" };
+  if (b.includes("trooper")) return { icon: "🪖", tag: "Trooper" };
+  if (b.includes("planetologist")) return { icon: "🌍", tag: "Planetologist" };
+  if (b.includes("stillsuit")) return { icon: "💧", tag: "Stillsuit" };
+  if (b.includes("smuggler") || b.includes("smug_")) return { icon: "🎭", tag: "Smuggler" };
+  if (b.includes("atreides")) return { icon: "🟢", tag: "Atreides" };
+  if (b.includes("hark")) return { icon: "🔴", tag: "Harkonnen" };
+  if (b.includes("choam")) return { icon: "🟡", tag: "Choam" };
+  if (b.includes("nati") || b.includes("native")) return { icon: "🪨", tag: "Native" };
+  if (b.includes("insulated") || b.includes("cryo")) return { icon: "❄️", tag: "Insulated" };
+  if (b.includes("exploration")) return { icon: "🧭", tag: "Exploration" };
+  if (b.includes("social")) return { icon: "👔", tag: "Social" };
+  return { icon: "🛡️", tag: "Armor" };
+}
+
 /** Extract the type segment of a skill id (`Skills.<Type>.<Name>`).
  *  Returns the lowercase type tag — "ability", "attribute", "perk",
  *  "key", "spice", "science" — or empty when the id isn't a Skills.* form. */

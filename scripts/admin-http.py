@@ -343,6 +343,46 @@ def list_categories(name: str) -> list[dict]:
     )
 
 
+def armor_sets() -> list[dict]:
+    """Group every wearable armor piece by its set base. Returns one
+    entry per set with the constituent slot pieces inline, so the SPA
+    can render each as its own kit without round-tripping per piece.
+
+    Set base = item id with the trailing slot suffix stripped (_Top,
+    _Bottom, _Helmet, _Gloves, _Boots, _Mask). Sets with fewer than 3
+    slots are skipped — those are usually accessories or test rows.
+
+    MTX_* and *Schematic rows are filtered out so the SPA never tries
+    to grant a microtransaction skin or a recipe permit by mistake.
+    """
+    SLOTS = ["_Top", "_Bottom", "_Helmet", "_Gloves", "_Boots", "_Mask"]
+    items = _DATA.get("items", [])
+    sets: dict[str, list[dict]] = {}
+    for it in items:
+        if it.get("category") != "clothing":
+            continue
+        iid = it.get("id") or ""
+        low = iid.lower()
+        if "mtx_" in low or "schematic" in low or "recipe" in low:
+            continue
+        for slot in SLOTS:
+            if iid.endswith(slot):
+                base = iid[: -len(slot)]
+                sets.setdefault(base, []).append({
+                    "id": iid,
+                    "name": it.get("name") or iid,
+                    "slot": slot.lstrip("_"),
+                })
+                break
+    out = [
+        {"base": base, "pieces": sorted(pieces, key=lambda p: p["slot"])}
+        for base, pieces in sets.items()
+        if len(pieces) >= 3
+    ]
+    out.sort(key=lambda s: s["base"])
+    return out
+
+
 def search_skills(query: str, limit: int, category: str = "") -> list[dict]:
     """Skill lookup. Same filter shape as search_data but also matches
     the type segment of the skill id (e.g. 'Ability' / 'Attribute' /
@@ -505,6 +545,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/lookup/skill-categories":
             self._write(200, {"categories": list_categories("skills")})
+            return
+        if path == "/api/lookup/armor-sets":
+            self._write(200, {"sets": armor_sets()})
             return
         if path == "/api/lookup/skills":
             q = query.get("q", [""])[0]
