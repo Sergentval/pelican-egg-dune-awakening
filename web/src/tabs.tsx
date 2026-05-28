@@ -1775,20 +1775,58 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   const [running, setRunning] = useState<string | null>(null);
   const [wiki, setWiki] = useState<Record<string, WikiEntry | null>>({});
 
+  // Selected kit + per-line overrides (checkbox + qty). Picking a card
+  // expands an editor below the grid so the operator can tweak before
+  // hitting Grant.
+  const [selectedKitId, setSelectedKitId] = useState<string | null>(null);
+  const [overrides, setOverrides] = useState<Record<string, { include: boolean; qty: number }>>({});
+
   // Batch-fetch wiki entries for every line in every built-in + custom kit
-  // on first render. ~80 unique ids; gets cached, so re-renders are free.
+  // on first render. Unique-id count is ~120 with the new bundles.
   useEffect(() => {
     const allIds = new Set<string>();
     for (const k of BUILT_IN_KITS) k.lines.forEach((l) => allIds.add(l.id));
     for (const k of custom) k.lines.forEach((l) => allIds.add(l.id));
     if (allIds.size === 0) return;
-    lookupItemIdsBatch(Array.from(allIds)).then(setWiki);
+    lookupItemIdsBatch(Array.from(allIds)).then((map) =>
+      setWiki((prev) => ({ ...prev, ...map })),
+    );
   }, [custom.length]);
 
-  async function runKit(kit: Kit) {
+  const allKits: Kit[] = useMemo(() => [...BUILT_IN_KITS, ...custom], [custom]);
+  const selectedKit = useMemo(
+    () => allKits.find((k) => k.id === selectedKitId) || null,
+    [allKits, selectedKitId],
+  );
+
+  // When user picks a kit, seed per-line overrides — every line included,
+  // qty defaults to the kit's authored qty.
+  function selectKit(kit: Kit | null) {
+    if (!kit) {
+      setSelectedKitId(null);
+      setOverrides({});
+      return;
+    }
+    const next: Record<string, { include: boolean; qty: number }> = {};
+    kit.lines.forEach((l, i) => {
+      next[`${kit.id}#${i}`] = { include: true, qty: l.qty };
+    });
+    setOverrides(next);
+    setSelectedKitId(kit.id);
+  }
+
+  async function runKit(kit: Kit, useOverrides = false) {
     setRunning(kit.id);
     try {
-      for (const line of kit.lines) {
+      const lines = useOverrides
+        ? kit.lines
+            .map((l, i) => {
+              const o = overrides[`${kit.id}#${i}`];
+              return o && o.include ? { ...l, qty: Math.max(1, o.qty) } : null;
+            })
+            .filter((x): x is KitLine => x !== null)
+        : kit.lines;
+      for (const line of lines) {
         const body: Record<string, unknown> = {
           player_id: target.playerId,
           item: line.id,
@@ -1806,6 +1844,27 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
     } finally {
       setRunning(null);
     }
+  }
+
+  function toggleAll(kit: Kit, include: boolean) {
+    setOverrides((prev) => {
+      const next = { ...prev };
+      kit.lines.forEach((_, i) => {
+        const k = `${kit.id}#${i}`;
+        if (next[k]) next[k] = { ...next[k], include };
+      });
+      return next;
+    });
+  }
+
+  function setLineQty(kit: Kit, idx: number, qty: number) {
+    const k = `${kit.id}#${idx}`;
+    setOverrides((prev) => ({ ...prev, [k]: { ...(prev[k] || { include: true, qty: 1 }), qty } }));
+  }
+
+  function setLineInclude(kit: Kit, idx: number, include: boolean) {
+    const k = `${kit.id}#${idx}`;
+    setOverrides((prev) => ({ ...prev, [k]: { ...(prev[k] || { include, qty: 1 }), include } }));
   }
 
   function addDraftLine() {
@@ -1868,46 +1927,166 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
               <span className="text-xs text-slate-500">{groupKits.length} bundles</span>
             </header>
             <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-              {groupKits.map((kit) => (
-                <button
-                  key={kit.id}
-                  type="button"
-                  onClick={() => runKit(kit)}
-                  disabled={running !== null}
-                  className="text-left p-3 rounded-lg border border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50 transition disabled:opacity-40"
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xl" aria-hidden>{kit.emoji}</span>
-                    <span className="font-semibold text-spice-300">{kit.name}</span>
-                    {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+              {groupKits.map((kit) => {
+                const isSelected = selectedKitId === kit.id;
+                return (
+                  <div
+                    key={kit.id}
+                    className={
+                      "rounded-lg border transition " +
+                      (isSelected
+                        ? "border-spice-500 bg-spice-900/30"
+                        : "border-slate-800 hover:border-spice-500/50 hover:bg-slate-800/50")
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => selectKit(isSelected ? null : kit)}
+                      disabled={running !== null}
+                      className="w-full text-left p-3 disabled:opacity-40"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xl" aria-hidden>{kit.emoji}</span>
+                        <span className="font-semibold text-spice-300">{kit.name}</span>
+                        {running === kit.id && <span className="text-xs text-slate-500 ml-auto">running…</span>}
+                      </div>
+                      <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
+                      <ul className="text-xs text-slate-500 space-y-1">
+                        {kit.lines.slice(0, 6).map((l, i) => {
+                          const w = wiki[l.id];
+                          const img = awakeningImageUrl(w?.image);
+                          return (
+                            <li key={i} className="flex items-center gap-1.5 truncate">
+                              {img ? (
+                                <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
+                              ) : (
+                                <span className="w-4 h-4 shrink-0" />
+                              )}
+                              <span className="text-slate-400">×{l.qty}</span>
+                              <span className="truncate">{w?.name || l.name}</span>
+                            </li>
+                          );
+                        })}
+                        {kit.lines.length > 6 && (
+                          <li className="text-slate-600 italic">…+{kit.lines.length - 6} more</li>
+                        )}
+                      </ul>
+                    </button>
+                    {/* Quick "Grant all" without opening the editor */}
+                    <div className="px-3 pb-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => runKit(kit, false)}
+                        disabled={running !== null}
+                        className="btn-primary text-xs flex-1"
+                      >
+                        Grant all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectKit(isSelected ? null : kit)}
+                        className={
+                          "btn-ghost border text-xs " +
+                          (isSelected ? "border-spice-500 text-spice-300" : "border-slate-700")
+                        }
+                      >
+                        {isSelected ? "close" : "customize"}
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-400 mb-2">{kit.blurb}</div>
-                  <ul className="text-xs text-slate-500 space-y-1">
-                    {kit.lines.slice(0, 6).map((l, i) => {
-                      const w = wiki[l.id];
-                      const img = awakeningImageUrl(w?.image);
-                      return (
-                        <li key={i} className="flex items-center gap-1.5 truncate">
-                          {img ? (
-                            <img src={img} alt="" width={16} height={16} loading="lazy" className="w-4 h-4 shrink-0 rounded-sm bg-slate-950 object-contain border border-slate-800" />
-                          ) : (
-                            <span className="w-4 h-4 shrink-0" />
-                          )}
-                          <span className="text-slate-400">×{l.qty}</span>
-                          <span className="truncate">{w?.name || l.name}</span>
-                        </li>
-                      );
-                    })}
-                    {kit.lines.length > 6 && (
-                      <li className="text-slate-600 italic">…+{kit.lines.length - 6} more</li>
-                    )}
-                  </ul>
-                </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         );
       })}
+
+      {/* ── Per-line customization editor for the selected kit ─────── */}
+      {selectedKit && (
+        <div className="card border-spice-700 bg-spice-950/20">
+          <header className="card-header">
+            <h2 className="font-semibold flex items-center gap-2">
+              <span aria-hidden>{selectedKit.emoji}</span>
+              <span>{selectedKit.name}</span>
+              <span className="text-xs text-slate-500 font-normal">customize before granting</span>
+            </h2>
+            <div className="flex items-center gap-2">
+              <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(selectedKit, true)}>
+                check all
+              </button>
+              <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => toggleAll(selectedKit, false)}>
+                uncheck all
+              </button>
+              <button type="button" className="btn-ghost text-xs" onClick={() => selectKit(null)}>
+                close
+              </button>
+            </div>
+          </header>
+          <div className="p-4 space-y-3">
+            <p className="text-xs text-slate-400">
+              Uncheck a row to skip it. Adjust the qty to override the bundled default.
+              Only checked rows are sent when you hit <span className="text-spice-300">Grant selected</span>.
+            </p>
+            <ul className="space-y-1.5">
+              {selectedKit.lines.map((l, i) => {
+                const w = wiki[l.id];
+                const img = awakeningImageUrl(w?.image);
+                const o = overrides[`${selectedKit.id}#${i}`] || { include: true, qty: l.qty };
+                return (
+                  <li
+                    key={i}
+                    className={
+                      "flex items-center gap-3 p-2 rounded border transition " +
+                      (o.include
+                        ? "border-slate-700 bg-slate-900/50"
+                        : "border-slate-800 bg-slate-950/50 opacity-50")
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={o.include}
+                      onChange={(e) => setLineInclude(selectedKit, i, e.target.checked)}
+                      className="accent-spice-500 shrink-0"
+                    />
+                    <div className="w-8 h-8 shrink-0 flex items-center justify-center">
+                      {img ? (
+                        <img src={img} alt="" width={32} height={32} loading="lazy" className="w-8 h-8 object-contain" />
+                      ) : (
+                        <span className="text-slate-600">·</span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-slate-200 text-sm truncate">{w?.name || l.name}</div>
+                      <div className="text-[10px] text-slate-500 font-mono truncate">{l.id}</div>
+                    </div>
+                    <input
+                      type="number"
+                      min={1}
+                      value={o.qty}
+                      onChange={(e) => setLineQty(selectedKit, i, parseInt(e.target.value) || 1)}
+                      disabled={!o.include}
+                      className="input-field w-20 text-xs font-mono shrink-0"
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+              <span className="text-xs text-slate-500 mr-auto">
+                {Object.values(overrides).filter((o) => o.include).length} of {selectedKit.lines.length} selected · target {target.playerId}
+              </span>
+              <button
+                type="button"
+                onClick={() => runKit(selectedKit, true)}
+                disabled={running !== null || Object.values(overrides).every((o) => !o.include)}
+                className="btn-primary"
+              >
+                {running === selectedKit.id ? "granting…" : "Grant selected"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <header className="card-header">
@@ -1948,14 +2127,26 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
                       );
                     })}
                   </ul>
-                  <button
-                    type="button"
-                    onClick={() => runKit(k)}
-                    disabled={running !== null}
-                    className="btn-primary w-full text-xs"
-                  >
-                    Grant to {target.playerId}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => runKit(k)}
+                      disabled={running !== null}
+                      className="btn-primary flex-1 text-xs"
+                    >
+                      Grant to {target.playerId}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectKit(selectedKitId === k.id ? null : k)}
+                      className={
+                        "btn-ghost border text-xs " +
+                        (selectedKitId === k.id ? "border-spice-500 text-spice-300" : "border-slate-700")
+                      }
+                    >
+                      {selectedKitId === k.id ? "close" : "customize"}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
