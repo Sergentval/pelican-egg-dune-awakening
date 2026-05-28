@@ -613,6 +613,20 @@
         "max:128"
       ],
       "field_type": "text"
+    },
+    {
+      "name": "Steam Web API Key (optional)",
+      "description": "If set, the admin UI fetches Steam persona names + avatars for known accounts via api.steampowered.com/ISteamUser/GetPlayerSummaries. Free key: https://steamcommunity.com/dev/apikey (any Steam account that owns Dune: Awakening can register one). Leave blank to skip — character names work either way; only the Steam personaname column goes empty.",
+      "env_variable": "STEAM_API_KEY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:64"
+      ],
+      "field_type": "text"
     }
   ]
 }

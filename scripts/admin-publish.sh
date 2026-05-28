@@ -25,12 +25,10 @@
 # PlayerId argument forms (accepted everywhere a <player_id> is documented):
 #   <16-hex>       FLS id, the canonical wire form (e.g. DE0BCCAA2501BF22)
 #   me             single currently-online account (errors if 0 or >1 online)
+#   name:<text>    character name (case-insensitive). Works when Funcom's
+#                  User-data encryption is "As-is" (default for self-host).
 #   steam:<digits> resolved from encrypted_accounts.platform_id
 #   *              all online players (where the seabass handler supports it)
-#
-# In-game character names ("Sergentval", etc.) CANNOT be resolved because
-# Funcom stores them encrypted (encrypted_player_state.encrypted_character_name
-# bytea). Use `admin players` to list accounts with their FLS ids.
 #
 # Lookup helpers (no AMQP publish):
 #   players [all|online]                         -- list accounts + FLS ids + Steam info
@@ -179,6 +177,31 @@ resolve_player_id() {
             fi
             printf '%s' "$resolved"
             ;;
+        name:*)
+            # Character-name lookup. Works when Funcom's User-data encryption
+            # is set to "As-is" (the default for self-host) — encrypted_
+            # character_name is then just raw UTF-8 bytes. Case-insensitive
+            # exact match; if it ever stops returning rows on your stack,
+            # check the migrate-db log for "User-data encryption: ..." and
+            # see if Funcom turned encryption on.
+            local nm="${raw#name:}"
+            if [ -z "$nm" ]; then echo "[admin-publish] ERROR name: requires a character name" >&2; return 1; fi
+            local resolved
+            resolved=$(dune_psql -tAc "
+                SELECT a.\"user\"
+                FROM dune.encrypted_accounts a
+                JOIN dune.encrypted_player_state ps ON ps.account_id=a.id
+                WHERE lower(convert_from(ps.encrypted_character_name, 'UTF8')) = lower('$nm')
+                LIMIT 1
+            " 2>/dev/null | tr -d '\r\n')
+            if [ -z "$resolved" ]; then
+                echo "[admin-publish] ERROR no character named '$nm' (run 'admin players' for the live list)" >&2
+                echo "                Note: only works when User-data encryption is 'As-is'; if Funcom" >&2
+                echo "                turns encryption on a future patch, fall back to the FLS id." >&2
+                return 1
+            fi
+            printf '%s' "$resolved"
+            ;;
         me)
             local online_count online_id
             online_count=$(dune_psql -tAc "SELECT count(*) FROM dune.encrypted_accounts a JOIN dune.encrypted_player_state ps ON ps.account_id=a.id WHERE ps.online_status='Online'" 2>/dev/null | tr -d '\r\n')
@@ -231,8 +254,14 @@ case "$cmd" in
                 exit 2
                 ;;
         esac
+        # The encrypted_character_name column is plain UTF-8 bytes when
+        # Funcom's User-data encryption is set to "As-is" (default for
+        # self-host). convert_from('UTF8') decodes it; on a stack where
+        # encryption is enabled this returns gibberish and the UI just
+        # falls back to the FLS id.
         dune_psql -c "
             SELECT a.\"user\"           AS fls_id,
+                   COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '-') AS character,
                    a.platform_id        AS steam_id,
                    a.platform_name,
                    COALESCE(ps.life_state::text, '-')      AS life,

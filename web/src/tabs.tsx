@@ -8,6 +8,7 @@ import {
   fetchPlayers,
   fetchPos,
   fetchSkills,
+  fetchSteamInfo,
   fetchVehicles,
   parsePlayerTable,
   parsePosOutput,
@@ -17,6 +18,7 @@ import {
   type PlayerRow,
   type PublishResult,
   type SkillRow,
+  type SteamPersona,
   type VehicleClass,
 } from "./api";
 import {
@@ -54,11 +56,28 @@ async function runAndLog(
 export function Dashboard({ setConsoleEntries }: TabProps) {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [steam, setSteam] = useState<Record<string, SteamPersona>>({});
+  const [steamEnabled, setSteamEnabled] = useState<boolean | null>(null);
 
   async function refresh() {
     setLoading(true);
     const res = await fetchPlayers("all");
-    if (res.ok) setPlayers(parsePlayerTable((res.body as PublishResult).stdout));
+    let rows: PlayerRow[] = [];
+    if (res.ok) {
+      rows = parsePlayerTable((res.body as PublishResult).stdout);
+      setPlayers(rows);
+    }
+    // Fetch Steam personas for any Steam id we know about.
+    const steamIds = rows.map((r) => r.steam_id).filter((s): s is string => !!s && /^\d+$/.test(s));
+    if (steamIds.length > 0) {
+      const steamRes = await fetchSteamInfo(steamIds);
+      if (steamRes.ok) {
+        setSteam((steamRes.body as { players: Record<string, SteamPersona> }).players || {});
+        setSteamEnabled((steamRes.body as { enabled: boolean }).enabled);
+      }
+    } else {
+      setSteamEnabled(null);
+    }
     setLoading(false);
   }
 
@@ -87,9 +106,8 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
           <table className="w-full text-xs">
             <thead className="bg-slate-900/50 text-slate-400">
               <tr>
-                <th className="text-left px-4 py-2 font-medium">FLS id</th>
-                <th className="text-left px-4 py-2 font-medium">Steam id</th>
-                <th className="text-left px-4 py-2 font-medium">Life</th>
+                <th className="text-left px-4 py-2 font-medium">Player</th>
+                <th className="text-left px-4 py-2 font-medium">Steam</th>
                 <th className="text-left px-4 py-2 font-medium">Status</th>
                 <th className="text-left px-4 py-2 font-medium">Last activity</th>
                 <th className="text-left px-4 py-2 font-medium"></th>
@@ -98,42 +116,76 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
             <tbody>
               {players.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="text-center text-slate-500 py-8">
+                  <td colSpan={5} className="text-center text-slate-500 py-8">
                     {loading ? "Loading…" : "No players seen yet"}
                   </td>
                 </tr>
               )}
-              {players.map((p) => (
-                <tr key={p.fls_id} className="border-t border-slate-800/50">
-                  <td className="px-4 py-2 font-mono">{p.fls_id}</td>
-                  <td className="px-4 py-2 font-mono text-slate-400">{p.steam_id || "-"}</td>
-                  <td className="px-4 py-2">{p.life}</td>
-                  <td className="px-4 py-2">
-                    <span className={p.online === "Online" ? "pill-ok" : "pill"}>{p.online}</span>
-                  </td>
-                  <td className="px-4 py-2 text-slate-400">
-                    {p.last_avatar_activity ? new Date(p.last_avatar_activity).toLocaleString() : "-"}
-                  </td>
-                  <td className="px-4 py-2">
-                    <button
-                      className="btn-ghost text-xs"
-                      onClick={async () => {
-                        const res = await fetchPos(p.fls_id);
-                        pushToConsole(
-                          setConsoleEntries,
-                          `pos ${p.fls_id}`,
-                          res.body as PublishResult,
-                          res.ok && (res.body as PublishResult).ok,
-                        );
-                      }}
-                    >
-                      pos
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {players.map((p) => {
+                const persona = p.steam_id ? steam[p.steam_id] : undefined;
+                return (
+                  <tr key={p.fls_id} className="border-t border-slate-800/50">
+                    <td className="px-4 py-2">
+                      <div className="text-slate-100">{p.character || <span className="font-mono text-slate-400">{p.fls_id.slice(0, 8)}…</span>}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">FLS {p.fls_id} · {p.life}</div>
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        {persona?.avatar && (
+                          <img src={persona.avatar} alt="" width={20} height={20} className="rounded" />
+                        )}
+                        <div>
+                          {persona?.personaname ? (
+                            <a
+                              href={persona.profileurl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-spice-300 hover:underline"
+                            >
+                              {persona.personaname}
+                            </a>
+                          ) : (
+                            <span className="text-slate-500">{p.steam_id || "-"}</span>
+                          )}
+                          {persona?.personaname && (
+                            <div className="text-[10px] text-slate-500 font-mono">{p.steam_id}</div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={p.online === "Online" ? "pill-ok" : "pill"}>{p.online}</span>
+                    </td>
+                    <td className="px-4 py-2 text-slate-400">
+                      {p.last_avatar_activity ? new Date(p.last_avatar_activity).toLocaleString() : "-"}
+                    </td>
+                    <td className="px-4 py-2">
+                      <button
+                        className="btn-ghost text-xs"
+                        onClick={async () => {
+                          const target = p.character ? `name:${p.character}` : p.fls_id;
+                          const res = await fetchPos(target);
+                          pushToConsole(
+                            setConsoleEntries,
+                            `pos ${target}`,
+                            res.body as PublishResult,
+                            res.ok && (res.body as PublishResult).ok,
+                          );
+                        }}
+                      >
+                        pos
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          {steamEnabled === false && players.some((p) => p.steam_id) && (
+            <div className="px-4 py-2 text-xs text-slate-500 bg-slate-900/50 border-t border-slate-800">
+              💡 Set <span className="font-mono text-slate-400">STEAM_API_KEY</span> in the Pelican egg variables to show Steam persona names and avatars here.
+            </div>
+          )}
         </div>
       </div>
 

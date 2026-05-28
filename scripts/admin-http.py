@@ -35,6 +35,8 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -58,6 +60,13 @@ UI_WEB_ROOT = Path(
     os.environ.get("DUNE_ADMIN_UI_WEB_ROOT", BASE_DIR + "/data/web/dist")
 ).resolve()
 
+# Steam Web API key. Optional. When set, /api/steam-info?ids=... fetches
+# personaname + avatar for a comma-separated list of 64-bit Steam IDs
+# from api.steampowered.com. Results are cached in-memory for an hour
+# to stay under Steam's rate limit (~100k calls/day per key).
+STEAM_API_KEY = os.environ.get("STEAM_API_KEY", "")
+STEAM_CACHE_TTL_SECONDS = 3600
+
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 1 week; renew on each /api/me hit
 HISTORY_BUFFER_SIZE = 200
 
@@ -65,6 +74,9 @@ HISTORY_BUFFER_SIZE = 200
 # GET /api/history. Each entry: {ts, source, argv, ok, exit_code,
 # stdout, stderr}.
 HISTORY: collections.deque = collections.deque(maxlen=HISTORY_BUFFER_SIZE)
+
+# Steam personaname/avatar cache. {steam_id: (cached_at_ts, info_dict)}.
+STEAM_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 def log(msg: str) -> None:
@@ -239,6 +251,57 @@ _DATA = {
 }
 
 
+def fetch_steam_info(steam_ids: list[str]) -> dict[str, dict]:
+    """Look up Steam personanames + avatars for a batch of 64-bit ids.
+
+    Returns {steam_id: {personaname, profileurl, avatar, avatarfull,
+    realname?, lastlogoff?, personastate}} for ids we managed to fetch.
+    Hits the in-memory cache first; only the cache-misses go out to
+    api.steampowered.com (one call per up-to-100-id batch).
+    """
+    if not STEAM_API_KEY or not steam_ids:
+        return {}
+    now = time.time()
+    out: dict[str, dict] = {}
+    misses: list[str] = []
+    for sid in steam_ids:
+        cached = STEAM_CACHE.get(sid)
+        if cached and (now - cached[0]) < STEAM_CACHE_TTL_SECONDS:
+            out[sid] = cached[1]
+        else:
+            misses.append(sid)
+    # Steam allows up to 100 ids per call; chunk for safety.
+    for i in range(0, len(misses), 100):
+        chunk = misses[i:i + 100]
+        url = (
+            "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
+            f"?key={STEAM_API_KEY}&steamids={','.join(chunk)}"
+        )
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                payload = json.loads(resp.read())
+        except (urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+            log(f"WARN Steam API fetch failed for {len(chunk)} ids: {exc}")
+            continue
+        for player in (payload.get("response") or {}).get("players") or []:
+            sid = str(player.get("steamid", ""))
+            if not sid:
+                continue
+            info = {
+                "personaname": player.get("personaname"),
+                "profileurl": player.get("profileurl"),
+                "avatar": player.get("avatar"),
+                "avatarmedium": player.get("avatarmedium"),
+                "avatarfull": player.get("avatarfull"),
+                "realname": player.get("realname"),
+                "personastate": player.get("personastate"),
+                "lastlogoff": player.get("lastlogoff"),
+            }
+            STEAM_CACHE[sid] = (now, info)
+            out[sid] = info
+    return out
+
+
 def search_data(name: str, query: str, limit: int) -> list[dict]:
     rows = _DATA.get(name, [])
     if not query:
@@ -404,6 +467,27 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        if path == "/api/steam-info":
+            # Comma-separated 64-bit Steam IDs.
+            raw_ids = query.get("ids", [""])[0]
+            ids = [s.strip() for s in raw_ids.split(",") if s.strip().isdigit()]
+            if not ids:
+                self._write(400, {"error": "ids query param required (comma-separated SteamIDs)"})
+                return
+            if not STEAM_API_KEY:
+                self._write(
+                    200,
+                    {
+                        "enabled": False,
+                        "players": {},
+                        "hint": "Set STEAM_API_KEY in the Pelican panel to enable Steam persona/avatar lookup.",
+                    },
+                )
+                return
+            players = fetch_steam_info(ids)
+            self._write(200, {"enabled": True, "players": players, "cached_entries": len(STEAM_CACHE)})
+            return
+
         # Legacy text-plain players endpoint (kept for back-compat).
         if path == "/players":
             sub_filter = "online" if query.get("filter", [""])[0] == "online" else "all"
@@ -534,6 +618,7 @@ def main() -> None:
         log(f"  web root: {UI_WEB_ROOT} ({'present' if (UI_WEB_ROOT / 'index.html').is_file() else 'missing — SPA not built yet'})")
         log(f"  domain  : {UI_DOMAIN or '(none — using IP+port directly)'}")
         log(f"  data    : vehicles={len(_DATA['vehicles'])} items={len(_DATA['items'])} skills={len(_DATA['skills'])}")
+        log(f"  steam   : {'STEAM_API_KEY set — persona lookups enabled' if STEAM_API_KEY else 'STEAM_API_KEY blank — persona lookups disabled'}")
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")
     HTTPServer((LISTEN_ADDR, LISTEN_PORT), Handler).serve_forever()

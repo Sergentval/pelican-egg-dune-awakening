@@ -141,6 +141,7 @@ interface PlayerPickerProps {
 
 interface KnownPlayer {
   fls_id: string;
+  character: string | null;
   steam_id: string | null;
   online: boolean;
 }
@@ -157,6 +158,7 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
     if (res.ok && (res.body as PublishResult).stdout) {
       const rows = parsePlayerTable((res.body as PublishResult).stdout).map((r) => ({
         fls_id: r.fls_id,
+        character: r.character,
         steam_id: r.steam_id,
         online: r.online === "Online",
       }));
@@ -182,21 +184,25 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
             all online
           </button>
         )}
-        {players.map((p) => (
-          <button
-            type="button"
-            key={p.fls_id}
-            className="btn-ghost text-xs border border-slate-700 font-mono flex items-center gap-1"
-            onClick={() => onChange(p.fls_id)}
-            title={`Steam: ${p.steam_id || "?"}`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${p.online ? "bg-emerald-400" : "bg-slate-500"}`}
-              aria-label={p.online ? "online" : "offline"}
-            />
-            {p.fls_id.slice(0, 8)}…
-          </button>
-        ))}
+        {players.map((p) => {
+          const label = p.character || `${p.fls_id.slice(0, 8)}…`;
+          const value = p.character ? `name:${p.character}` : p.fls_id;
+          return (
+            <button
+              type="button"
+              key={p.fls_id}
+              className="btn-ghost text-xs border border-slate-700 flex items-center gap-1.5"
+              onClick={() => onChange(value)}
+              title={`FLS ${p.fls_id} · Steam ${p.steam_id || "?"}`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${p.online ? "bg-emerald-400" : "bg-slate-500"}`}
+                aria-label={p.online ? "online" : "offline"}
+              />
+              {p.character ? label : <span className="font-mono">{label}</span>}
+            </button>
+          );
+        })}
         <button type="button" className="btn-ghost text-xs" onClick={refresh} disabled={refreshing}>
           {refreshing ? "…" : "refresh"}
         </button>
@@ -205,7 +211,7 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="me, *, 16-hex FLS id, or steam:76561198..."
+        placeholder="me, *, name:Sergentval, steam:76561198..., or 16-hex FLS id"
         className="input-field font-mono text-xs"
       />
     </div>

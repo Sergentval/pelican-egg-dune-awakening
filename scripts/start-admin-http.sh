@@ -51,6 +51,7 @@ if [ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ]; then
           DUNE_ADMIN_UI_WEB_ROOT="$WEB_ROOT" \
           DUNE_ADMIN_TOKEN="${DUNE_ADMIN_TOKEN:-}" \
           DUNE_ADMIN_NODE="${DUNE_ADMIN_NODE:-rabbit-game@localhost}" \
+          STEAM_API_KEY="${STEAM_API_KEY:-}" \
       "$PY" "$SCRIPT"
     WAIT_HOST="127.0.0.1"
     [ "$BIND" = "0.0.0.0" ] || WAIT_HOST="$BIND"

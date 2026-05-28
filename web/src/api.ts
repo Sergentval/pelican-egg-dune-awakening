@@ -63,11 +63,23 @@ export interface PublishResult {
 
 export interface PlayerRow {
   fls_id: string;
+  character: string | null;
   steam_id: string | null;
   platform_name: string;
   life: string;
   online: string;
   last_avatar_activity: string | null;
+}
+
+export interface SteamPersona {
+  personaname?: string;
+  profileurl?: string;
+  avatar?: string;
+  avatarmedium?: string;
+  avatarfull?: string;
+  realname?: string;
+  personastate?: number;
+  lastlogoff?: number;
 }
 
 export interface VehicleClass {
@@ -118,6 +130,12 @@ export const fetchSkills = (q: string, limit = 50) =>
 export const fetchHistory = (limit = 50) =>
   api<HistoryResponse>("GET", `/api/history?limit=${limit}`);
 
+export const fetchSteamInfo = (ids: string[]) =>
+  api<{ enabled: boolean; players: Record<string, SteamPersona> }>(
+    "GET",
+    `/api/steam-info?ids=${ids.join(",")}`,
+  );
+
 // Generic publish — every per-command form just calls this.
 export const publish = (sub: string, body: Record<string, unknown>) =>
   api<PublishResult>("POST", `/admin/${sub}`, body);
@@ -145,6 +163,7 @@ export function parsePlayerTable(stdout: string): PlayerRow[] {
     });
     out.push({
       fls_id: row["fls_id"] || "",
+      character: row["character"] && row["character"] !== "-" ? row["character"] : null,
       steam_id: row["steam_id"] || null,
       platform_name: row["platform_name"] || "",
       life: row["life"] || "",
