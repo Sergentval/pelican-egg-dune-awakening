@@ -1180,6 +1180,7 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [confirm, setConfirm] = useState<{ sub: string; label: string; warn: string } | null>(null);
   const [waterAmount, setWaterAmount] = useState(1_000_000);
+  const [solariAmount, setSolariAmount] = useState(1000);
 
   function attempt(sub: string, label: string, warn: string) {
     setConfirm({ sub, label, warn });
@@ -1202,6 +1203,17 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
     );
   }
 
+  async function submitSolari(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = Math.max(1, solariAmount);
+    await runAndLog(
+      setConsoleEntries,
+      "give",
+      { player_id: target.playerId, item: "SolarisCoin", qty: amount },
+      `💰 Solari ${target.playerId} +${amount.toLocaleString()}`,
+    );
+  }
+
   return (
     <div className="space-y-6 max-w-2xl">
       <div className="card">
@@ -1211,6 +1223,48 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
         <div className="p-4">
           <PlayerPicker allowStar />
         </div>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Give Solari</h2>
+          <span className="text-xs text-slate-500">currency · non-destructive</span>
+        </header>
+        <form onSubmit={submitSolari} className="p-4 space-y-3">
+          <p className="text-xs text-slate-400">
+            Grants <span className="font-mono text-slate-300">SolarisCoin</span> × N via <span className="font-mono text-slate-300">AddItemToInventory</span> —
+            Funcom doesn't expose a direct wallet-credit command, so we drop coin items into the player's inventory. Each coin counts as 1 Solari toward their wallet.
+          </p>
+          <div>
+            <label className="label" htmlFor="pl-solari">Amount</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                id="pl-solari"
+                type="number"
+                min={1}
+                value={solariAmount}
+                onChange={(e) => setSolariAmount(parseInt(e.target.value) || 0)}
+                className="input-field w-32 font-mono"
+              />
+              <div className="flex gap-1">
+                {[100, 1_000, 10_000, 100_000, 1_000_000].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setSolariAmount(n)}
+                    className={
+                      "btn-ghost text-xs border border-slate-700 " +
+                      (solariAmount === n ? "bg-slate-800 text-spice-300" : "")
+                    }
+                  >
+                    {n >= 1_000_000 ? `${n / 1_000_000}M` : n >= 1_000 ? `${n / 1_000}k` : n}
+                  </button>
+                ))}
+              </div>
+              <button type="submit" className="btn-primary ml-auto">Give 💰</button>
+            </div>
+          </div>
+        </form>
       </div>
 
       <div className="card">
