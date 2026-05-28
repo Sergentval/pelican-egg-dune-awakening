@@ -40,7 +40,12 @@
 set -euo pipefail
 
 ADMIN_TOKEN="${DUNE_ADMIN_TOKEN:-Nu6VmPWUMvdPMeB7qErr}"
-ADMIN_NODE="${DUNE_ADMIN_NODE:-rabbit-admin@localhost}"
+# Default to rabbit-game@localhost: on our Pelican stack only the game
+# broker has consumer queues bound to heartbeats:notifications (one per
+# Sietch). adainrivers' original code defaults to rabbit-admin because
+# their Funcom-installed setup federates both brokers; ours doesn't.
+# Override with DUNE_ADMIN_NODE if you need the admin broker.
+ADMIN_NODE="${DUNE_ADMIN_NODE:-rabbit-game@localhost}"
 
 # --------------------------------------------------------------------------
 # Locate the rabbitmq binaries inside the Funcom OCI extraction. These paths
@@ -228,7 +233,16 @@ fi
 export PATH="$RMQ_SBIN:$ERL_ROOT/erts-14.2.5.12/bin:$ERL_ROOT/bin:$PATH"
 export ERL_LIBS="$ERL_ROOT/lib"
 export LD_LIBRARY_PATH="$MQ_ROOT/usr/lib:$MQ_ROOT/usr/local/lib:${LD_LIBRARY_PATH:-}"
-export HOME="$BASE/runtime/mq-admin-home"
+
+# rabbitmqctl reads its .erlang.cookie from $HOME/.erlang.cookie. The
+# admin broker (rabbit-admin@localhost) and the game broker
+# (rabbit-game@localhost) use DIFFERENT cookies, stored under different
+# runtime directories. Pick the one that matches DUNE_ADMIN_NODE.
+case "$ADMIN_NODE" in
+    rabbit-game@*)  export HOME="$BASE/runtime/mq-game-home" ;;
+    rabbit-admin@*) export HOME="$BASE/runtime/mq-admin-home" ;;
+    *)              export HOME="${DUNE_ADMIN_HOME:-$BASE/runtime/mq-admin-home}" ;;
+esac
 
 OUTPUT=$("$RMQ_SBIN/rabbitmqctl" --node "$ADMIN_NODE" eval "$ERLANG_SRC" 2>&1) || rc=$?
 rc="${rc:-0}"
