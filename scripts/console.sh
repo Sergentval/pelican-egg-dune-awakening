@@ -221,19 +221,59 @@ admin_listener <&0 &
 ADMIN_LISTENER_PID=$!
 
 # --------------------------------------------------------------------------
-# Watch-and-block: if every backend process dies, exit so AMP restarts us
+# Watch-and-block: exit (and let Wings recreate the container) if any of:
+#   1) every backend process is dead — total failure
+#   2) zero UE5 game-server processes are alive for UE5_DEAD_GRACE secs,
+#      while non-UE5 services (mq, pg, director, gateway) are still up.
+#      This is the recurring DuneWorldPartitioner.cpp:1091 crash pattern:
+#      Sietches all segfault, Director keeps polling mock-k8s producing
+#      log spam, but the container looks "healthy" because mq/pg/etc.
+#      are fine. Bail so Wings can power-cycle.
 # --------------------------------------------------------------------------
+UE5_DEAD_GRACE="${UE5_DEAD_GRACE:-90}"   # seconds before declaring UE5-down fatal
+ue5_dead_since=0
 while true; do
   any_alive=0
+  ue5_alive=0
   for svc in "${SERVICES[@]}"; do
     pid=$(read_pid "$svc")
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && any_alive=1
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      any_alive=1
+      case "$svc" in ue5-*) ue5_alive=1 ;; esac
+    fi
   done
+
+  # Total-failure exit (case 1).
   if [ "$any_alive" = 0 ]; then
-    warn "All services have exited: failed — bailing out so AMP can restart"
+    warn "All services have exited: failed — bailing out so Wings can restart"
     [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null || true
     exit 1
   fi
+
+  # Zero-UE5 exit (case 2): only count when EVERY ue5-* PID is dead AND
+  # any of the always-warm Sietches is in SERVICES. The OS-level survey
+  # via pgrep catches lingering UE5 processes the spawner might not have
+  # PID-tracked yet (defensive, prevents flapping during respawn).
+  if [ "$ue5_alive" = 0 ] && \
+     ! pgrep -f DuneSandboxServer-Linux-Shipping > /dev/null 2>&1; then
+    if [ "$ue5_dead_since" = 0 ]; then
+      ue5_dead_since=$(date +%s)
+      warn "All UE5 Sietches dead — starting ${UE5_DEAD_GRACE}s grace before forcing restart"
+    fi
+    elapsed=$(( $(date +%s) - ue5_dead_since ))
+    if [ "$elapsed" -ge "$UE5_DEAD_GRACE" ]; then
+      warn "UE5 dead for ${elapsed}s — bailing out so Wings recreates the container"
+      [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null || true
+      exit 2
+    fi
+  else
+    # UE5 came back (or never went down). Reset the grace counter.
+    if [ "$ue5_dead_since" != 0 ]; then
+      log "UE5 Sietches alive again — cancelling restart grace"
+      ue5_dead_since=0
+    fi
+  fi
+
   sleep 5 &
   wait $!   # `wait` so SIGTERM interrupts us promptly
 done
