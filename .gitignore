@@ -16,3 +16,4 @@ logs/
 .vscode/
 .idea/
 scripts/mock-k8s-go
+scripts/__pycache__/
