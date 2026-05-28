@@ -46,6 +46,28 @@ The trick is twofold:
 
 The egg wires this up against Wings.
 
+## Admin commands
+
+Server-side admin pipeline ships with the egg — bypasses the locked
+in-game console. Type `admin <subcommand>` in the Pelican panel's
+**Console** tab, or POST to the loopback HTTP wrapper:
+
+```text
+admin broadcast "Maintenance" "Restart in 5 minutes" 20
+admin kick A1B2C3D4
+admin give A1B2C3D4 AAR1_Spice 100
+admin xp A1B2C3D4 10000
+admin teleport A1B2C3D4 101000 285000 4300
+admin shutdown Restart 300 60
+```
+
+Full catalogue (16 subcommands), payload schemas, examples,
+no-op caveats, and troubleshooting in
+[`docs/ADMIN-COMMANDS.md`](./docs/ADMIN-COMMANDS.md). Protocol
+reverse-engineering credit:
+[adainrivers/dune-dedicated-server-manager](https://github.com/adainrivers/dune-dedicated-server-manager)
+(MIT). See [`ATTRIBUTION.md`](./ATTRIBUTION.md).
+
 ## Status
 
 The egg has been running a production world end-to-end (real players,

@@ -20,19 +20,30 @@
 #   docker exec <container> bash /home/container/scripts/admin-publish.sh broadcast \
 #     "Server announcement" "Hello from admin"
 #
-# Subcommands:
-#   broadcast <title> <body> [duration_secs]    -- ServiceBroadcast (Generic)
-#   shutdown <type> [lead_secs] [freq_secs]     -- ServerShutdown (Restart|Maintenance|Update|cancel)
-#   kick <player_id>                             -- KickPlayer (FLS id or "*" for all online)
-#   give <player_id> <item_fname> [qty] [dura]  -- AddItemToInventory
-#   xp <player_id> <amount>                      -- AwardXP
-#   teleport <player_id> <x> <y> <z>             -- TeleportToExact
-#   exec <raw_console_command>                   -- ServerExec (publishes but no-op on seabass — kept for parity)
-#   raw '<inner-json>'                           -- arbitrary ServerCommand JSON
+# Subcommands (PlayerId accepts FLS id or "*" for all online unless noted):
+#   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
+#   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
+#                                                            -- ServiceBroadcast (ServerShutdown)
+#   kick <player_id>                                         -- KickPlayer
+#   clean <player_id>                                        -- CleanPlayerInventory (DESTRUCTIVE)
+#   reset <player_id>                                        -- ResetProgression (DESTRUCTIVE: wipes XP+skills)
+#   water <player_id> [amount=1_000_000]                     -- UpdateAllWaterFillables
+#   give <player_id> <ItemFName> [qty=1] [durability=1.0]    -- AddItemToInventory
+#   xp <player_id> <amount>                                  -- AwardXP (Category injected for handler)
+#   skill <player_id> <Module> <Level>                       -- SkillsSetModuleLevel (Module e.g. Swordmaster_T1)
+#   points <player_id> <amount>                              -- SkillsSetUnspentSkillPoints
+#   teleport <player_id> <x> <y> <z> [yaw]                   -- TeleportToExact (exact XYZ, no safe snap)
+#   tpsafe <player_id> <x> <y> <z> [yaw]                     -- TeleportTo (snaps to nearest safe location)
+#   vehicle <player_id> <ClassName> <x> <y> <z> <TemplateName> [rotation] [persistent=1.0]
+#                                                            -- SpawnVehicleAt
+#   cheat <player_id> <ScriptName>                           -- CheatScript (NO-OP on seabass, kept for parity)
+#   exec <exec_command>                                      -- ServerExec   (NO-OP on seabass, kept for parity)
+#   raw '<inner-json>'                                       -- arbitrary ServerCommand JSON
 #
 # Known no-ops (adainrivers live-tested 2026-05-26): ServerExec, CheatScript,
-# Journey* commands, AwardXP Category field — all publish=ok but the
-# seabass handler doesn't apply state. Keep them off the panel UI.
+# Journey*, AwardXP without Category, AwardXPByEventTag — all publish=ok
+# but the seabass handler doesn't apply state. The xp subcommand auto-
+# injects Category="Combat" to work around the known no-op.
 #
 # Env:
 #   DUNE_ADMIN_TOKEN   override the auth token (defaults to the known-good
@@ -169,15 +180,45 @@ print(json.dumps(inner, separators=(',',':')))
 "
             ;;
         kick)
-            local pid="${1:?player id required (or \"*\")}"
+            local pid="${1:?player id required (or \"*\" for all online)}"
             python3 -c "
 import json
 print(json.dumps({'ServerCommand': 'KickPlayer', 'PlayerId': '''$pid'''}, separators=(',',':')))
 "
             ;;
+        clean)
+            # CleanPlayerInventory — DESTRUCTIVE. Wipes the target's inventory.
+            local pid="${1:?player id required (or \"*\" for all online)}"
+            python3 -c "
+import json
+print(json.dumps({'ServerCommand': 'CleanPlayerInventory', 'PlayerId': '''$pid'''}, separators=(',',':')))
+"
+            ;;
+        reset)
+            # ResetProgression — DESTRUCTIVE. Wipes XP/skills/journey for target.
+            local pid="${1:?player id required (or \"*\" for all online)}"
+            python3 -c "
+import json
+print(json.dumps({'ServerCommand': 'ResetProgression', 'PlayerId': '''$pid'''}, separators=(',',':')))
+"
+            ;;
+        water)
+            # UpdateAllWaterFillables — refills water in target's fillable
+            # containers (jerrycans, stills, etc). Default amount is 1 000 000.
+            local pid="${1:?player id required (or \"*\" for all online)}"
+            local amt="${2:-1000000}"
+            python3 -c "
+import json
+print(json.dumps({
+    'ServerCommand': 'UpdateAllWaterFillables',
+    'PlayerId': '''$pid''',
+    'WaterAmount': int('$amt'),
+}, separators=(',',':')))
+"
+            ;;
         give)
             local pid="${1:?player id required}"
-            local item="${2:?item fname required}"
+            local item="${2:?item FName required (case-insensitive)}"
             local qty="${3:-1}"
             local dura="${4:-1.0}"
             python3 -c "
@@ -192,6 +233,10 @@ print(json.dumps({
 "
             ;;
         xp)
+            # AwardXP. CRITICAL: the seabass handler silently no-ops unless
+            # `Category` is present in the payload. The value itself is
+            # ignored (every category lands as generic player XP) but the
+            # field must exist. Injecting "Combat" as a known-accepted value.
             local pid="${1:?player id required}"
             local amt="${2:?xp amount required}"
             python3 -c "
@@ -200,26 +245,127 @@ print(json.dumps({
     'ServerCommand': 'AwardXP',
     'PlayerId': '''$pid''',
     'Experience': int('$amt'),
+    'Category': 'Combat',
+}, separators=(',',':')))
+"
+            ;;
+        skill)
+            # SkillsSetModuleLevel — sets a specific skill module's level.
+            local pid="${1:?player id required}"
+            local module="${2:?module name required (e.g. Swordmaster_T1)}"
+            local lvl="${3:?level required}"
+            python3 -c "
+import json
+print(json.dumps({
+    'ServerCommand': 'SkillsSetModuleLevel',
+    'PlayerId': '''$pid''',
+    'Module': '''$module''',
+    'Level': int('$lvl'),
+}, separators=(',',':')))
+"
+            ;;
+        points)
+            # SkillsSetUnspentSkillPoints — sets the unspent skill point pool.
+            local pid="${1:?player id required}"
+            local pts="${2:?skill points required}"
+            python3 -c "
+import json
+print(json.dumps({
+    'ServerCommand': 'SkillsSetUnspentSkillPoints',
+    'PlayerId': '''$pid''',
+    'SkillPoints': int('$pts'),
 }, separators=(',',':')))
 "
             ;;
         teleport)
+            # TeleportToExact — drops the player at the EXACT XYZ. No safety
+            # snapping. Use tpsafe instead if you want collision/safe-spawn.
+            # Optional yaw rotates the player around vertical axis.
             local pid="${1:?player id required}"
             local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
+            local yaw="${5:-}"
             python3 -c "
 import json
-print(json.dumps({
+inner = {
     'ServerCommand': 'TeleportToExact',
     'PlayerId': '''$pid''',
     'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
+}
+yaw = '$yaw'
+if yaw:
+    inner['Yaw'] = float(yaw)
+print(json.dumps(inner, separators=(',',':')))
+"
+            ;;
+        tpsafe)
+            # TeleportTo — snaps to the nearest safe (non-clipping, on-ground)
+            # location near the requested XYZ. Same field set as teleport.
+            local pid="${1:?player id required}"
+            local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
+            local yaw="${5:-}"
+            python3 -c "
+import json
+inner = {
+    'ServerCommand': 'TeleportTo',
+    'PlayerId': '''$pid''',
+    'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
+}
+yaw = '$yaw'
+if yaw:
+    inner['Yaw'] = float(yaw)
+print(json.dumps(inner, separators=(',',':')))
+"
+            ;;
+        vehicle)
+            # SpawnVehicleAt — spawns a vehicle of <class> with <template>
+            # variant at XYZ. ClassName + TemplateName are DT_VehicleTemplates
+            # row keys. Persistent defaults to 1.0 (persists across restart).
+            local pid="${1:?player id required}"
+            local cls="${2:?vehicle class required (e.g. Sandbike, Buggy)}"
+            local x="${3:?x required}" y="${4:?y required}" z="${5:?z required}"
+            local tpl="${6:?template name required (e.g. T6_Combat)}"
+            local rot="${7:-}"
+            local persist="${8:-1.0}"
+            python3 -c "
+import json
+inner = {
+    'ServerCommand': 'SpawnVehicleAt',
+    'PlayerId': '''$pid''',
+    'ClassName': '''$cls''',
+    'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
+    'TemplateName': '''$tpl''',
+    'Persistent': float('$persist'),
+}
+rot = '$rot'
+if rot:
+    inner['Rotation'] = float(rot)
+print(json.dumps(inner, separators=(',',':')))
+"
+            ;;
+        cheat)
+            # CheatScript — runs a [CheatScript.<name>] block from
+            # DefaultGame.ini. KNOWN NO-OP on seabass servers (handler logs
+            # the call but applies no state). Kept for protocol parity.
+            local pid="${1:?player id required}"
+            local name="${2:?script name required (e.g. PlaytestSetupAdmin)}"
+            python3 -c "
+import json
+print(json.dumps({
+    'ServerCommand': 'CheatScript',
+    'PlayerId': '''$pid''',
+    'ScriptName': '''$name''',
 }, separators=(',',':')))
 "
             ;;
         exec)
-            local raw_cmd="${1:?console command required}"
+            # ServerExec — raw console/exec passthrough. Field name is "Exec"
+            # (NOT "Command" — we had this wrong before commit 4f69d10).
+            # KNOWN NO-OP on seabass servers (publishes but handler doesn't
+            # execute). Kept for protocol parity.
+            local raw_cmd="${1:?exec command required}"
             python3 -c "
 import json
-print(json.dumps({'ServerCommand': 'ServerExec', 'Command': '''$raw_cmd'''}, separators=(',',':')))
+print(json.dumps({'ServerCommand': 'ServerExec', 'Exec': '''$raw_cmd'''}, separators=(',',':')))
 "
             ;;
         raw)

@@ -62,12 +62,20 @@ USAGE = (
     "       -d '{\"ServerCommand\":\"AwardXP\",\"PlayerId\":\"fls-1\",\"Experience\":1000}'\n\n"
     "Subcommands accept the same payloads as scripts/admin-publish.sh:\n"
     "  broadcast {title, body, duration?}\n"
-    "  shutdown  {type, lead_secs, freq_secs?}\n"
-    "  kick      {player_id}\n"
+    "  shutdown  {type, lead_secs?, freq_secs?}     # type: Restart|Maintenance|Update|cancel\n"
+    "  kick      {player_id}                         # player_id '*' = all online\n"
+    "  clean     {player_id}                         # DESTRUCTIVE: wipes inventory\n"
+    "  reset     {player_id}                         # DESTRUCTIVE: wipes XP+skills\n"
+    "  water     {player_id, amount?}\n"
     "  give      {player_id, item, qty?, durability?}\n"
-    "  xp        {player_id, amount}\n"
-    "  teleport  {player_id, x, y, z}\n"
-    "  exec      {command}\n"
+    "  xp        {player_id, amount}                # Category auto-injected\n"
+    "  skill     {player_id, module, level}         # module e.g. Swordmaster_T1\n"
+    "  points    {player_id, amount}\n"
+    "  teleport  {player_id, x, y, z, yaw?}         # exact XYZ\n"
+    "  tpsafe    {player_id, x, y, z, yaw?}         # snaps to safe location\n"
+    "  vehicle   {player_id, class, x, y, z, template, rotation?, persistent?}\n"
+    "  cheat     {player_id, script}                # NO-OP on seabass\n"
+    "  exec      {command}                          # NO-OP on seabass\n"
     "  raw       <inline JSON inner payload>\n"
 )
 
@@ -88,8 +96,13 @@ def build_argv(sub: str, body: dict) -> list[str]:
             str(body["lead_secs"]),
             str(body.get("freq_secs", 60)),
         ]
-    if sub == "kick":
+    if sub in ("kick", "clean", "reset"):
         return [sub, str(body["player_id"])]
+    if sub == "water":
+        argv = [sub, str(body["player_id"])]
+        if "amount" in body:
+            argv.append(str(body["amount"]))
+        return argv
     if sub == "give":
         return [
             sub,
@@ -100,8 +113,39 @@ def build_argv(sub: str, body: dict) -> list[str]:
         ]
     if sub == "xp":
         return [sub, str(body["player_id"]), str(body["amount"])]
-    if sub == "teleport":
-        return [sub, str(body["player_id"]), str(body["x"]), str(body["y"]), str(body["z"])]
+    if sub == "skill":
+        return [sub, str(body["player_id"]), str(body["module"]), str(body["level"])]
+    if sub == "points":
+        return [sub, str(body["player_id"]), str(body["amount"])]
+    if sub in ("teleport", "tpsafe"):
+        argv = [
+            sub,
+            str(body["player_id"]),
+            str(body["x"]),
+            str(body["y"]),
+            str(body["z"]),
+        ]
+        if "yaw" in body:
+            argv.append(str(body["yaw"]))
+        return argv
+    if sub == "vehicle":
+        argv = [
+            sub,
+            str(body["player_id"]),
+            str(body["class"]),
+            str(body["x"]),
+            str(body["y"]),
+            str(body["z"]),
+            str(body["template"]),
+        ]
+        # Rotation and persistent are positional after template; pass empty
+        # placeholder for rotation if persistent is set but rotation isn't.
+        if "rotation" in body or "persistent" in body:
+            argv.append(str(body.get("rotation", "")))
+            argv.append(str(body.get("persistent", 1.0)))
+        return argv
+    if sub == "cheat":
+        return [sub, str(body["player_id"]), str(body["script"])]
     if sub == "exec":
         return [sub, str(body["command"])]
     if sub == "raw":

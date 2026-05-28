@@ -1,0 +1,318 @@
+# Admin commands
+
+This egg ships a server-side admin pipeline that bypasses the locked
+in-game console entirely. Admin actions reach the running UE5 Sietches
+by publishing an AMQP envelope to Funcom's `heartbeats` exchange; the
+`UDuneServerCommandSubsystem` (a.k.a. *seabass*) consumes the envelope
+and executes the command server-side.
+
+The pipeline is fully working end-to-end on this stack (verified
+2026-05-28: in-game banner rendered across all 5 Sietches on first try
+after the `ServerCommandsAuthToken` cmdline override was wired in).
+
+## Two invocation surfaces
+
+### 1. Pelican panel console (recommended)
+
+Type `admin <subcommand> [args]` into the **Console** tab of your
+server's Pelican panel. The `console.sh` stdin listener inside the
+container picks up the line, parses argv via `shlex`, and forwards it
+to `scripts/admin-publish.sh`. Output is prefixed `[admin]` and shows
+up in the same console.
+
+```text
+admin broadcast "Hello" "Server-side admin is live" 15
+```
+
+### 2. HTTP loopback (for tooling / mods)
+
+`scripts/admin-http.py` listens on `127.0.0.1:8089` inside the
+container. Endpoints map 1:1 to subcommands. JSON in, JSON out.
+
+```bash
+docker exec <container> curl -sS -X POST http://127.0.0.1:8089/admin/broadcast \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Hello","body":"Hello from curl","duration":15}'
+```
+
+Set `DUNE_ADMIN_HTTP_AUTH=Bearer <secret>` env if you expose the port
+beyond loopback.
+
+### 3. Direct shell (for ops / debugging)
+
+```bash
+docker exec <container> bash /home/container/scripts/admin-publish.sh broadcast \
+  "Title" "Body" 15
+```
+
+All three paths converge on `admin-publish.sh`, which builds the
+correct `BroadcastPayload` shape per command and publishes via
+`rabbitmqctl eval` on the GAME broker (`rabbit-game@localhost`).
+
+## Token
+
+The seabass handler validates each envelope against a 32-hex token
+embedded into UE5 at boot via the `-ini:engine:` cmdline override.
+`prestart.sh` generates the token (`$STATE/svc-cmd-token`) once per
+install; `lib.sh` exports it to every script; `start-ue5.sh` passes
+it to UE5; `admin-publish.sh` embeds the same value in the AMQP
+envelope so both sides agree.
+
+If your config drifts and dispatch silently fails: regenerate by
+deleting `runtime/state/svc-cmd-token` and restarting the container.
+
+## Command reference
+
+### Player targeting
+
+Every per-player command takes a `PlayerId` argument. Use either:
+
+- An FLS player id (16-char hex, visible in postgres `dune.player_state` table)
+- `"*"` (asterisk) to target every online player on the cluster
+
+### `broadcast` — server-wide notification banner
+
+```text
+admin broadcast <title> <body> [duration_secs=30]
+```
+
+Renders a `Title` + `Body` banner for `duration_secs` seconds on every
+client. Quote args with spaces. Duration is per-pulse, not total.
+
+```text
+admin broadcast "Maintenance" "Restart in 5 minutes" 20
+admin broadcast "Welcome" "Have fun and don't trust the spice" 30
+```
+
+Wire shape: `BroadcastPayload.LocalizedText[]` array with one entry per
+locale (we send `en` and `en-US`). Missing this field is fatal — the
+dispatch logs but the renderer drops the banner.
+
+### `shutdown` — scheduled server restart with countdown
+
+```text
+admin shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
+```
+
+Broadcasts a countdown notice every `freq_secs` and triggers a server
+shutdown of the given type after `lead_secs`. The `cancel` form aborts
+a pending shutdown (no other args needed).
+
+```text
+admin shutdown Restart 300 30      # restart in 5 min, ping every 30 s
+admin shutdown Maintenance 1800    # maintenance in 30 min, default ping
+admin shutdown cancel              # abort the countdown
+```
+
+### `kick` — disconnect a player
+
+```text
+admin kick <player_id_or_*>
+```
+
+```text
+admin kick "*"                     # boot everyone
+admin kick A1B2C3D4E5F60718
+```
+
+### `clean` — wipe a player's inventory
+
+⚠️ **Destructive — there is no undo.**
+
+```text
+admin clean <player_id_or_*>
+```
+
+### `reset` — reset a player's XP and skills
+
+⚠️ **Destructive — wipes XP, skill levels, unspent points.**
+
+```text
+admin reset <player_id_or_*>
+```
+
+### `water` — refill water containers
+
+```text
+admin water <player_id_or_*> [amount=1000000]
+```
+
+Refills jerrycans, stills, and other fillable water containers carried
+by the target. Default `1 000 000` fills everything.
+
+### `give` — grant an item
+
+```text
+admin give <player_id> <ItemFName> [qty=1] [durability=1.0]
+```
+
+`ItemFName` is the internal asset name (case-insensitive). The list of
+valid names lives in `DT_ItemTemplates`; community datasets are at
+<https://github.com/adainrivers/dune-dedicated-server-manager/tree/main/crates/dune-server-data>.
+
+```text
+admin give A1B2C3D4 AAR1_Spice 100
+admin give A1B2C3D4 Weapon_KnifeAssassin 1 0.85
+```
+
+### `xp` — award generic player XP
+
+```text
+admin xp <player_id> <amount>
+```
+
+```text
+admin xp A1B2C3D4 10000
+```
+
+The wrapper injects `Category: "Combat"` automatically — the seabass
+handler silently no-ops without that field. The value is ignored; every
+award lands as generic player XP regardless of category.
+
+### `skill` — set a specific skill module's level
+
+```text
+admin skill <player_id> <Module> <Level>
+```
+
+`Module` is a row key from `DT_SkillModules`. Examples:
+`Swordmaster_T1`, `Planetologist_T2`, etc.
+
+```text
+admin skill A1B2C3D4 Swordmaster_T1 5
+```
+
+### `points` — set unspent skill points
+
+```text
+admin points <player_id> <amount>
+```
+
+### `teleport` — move a player to exact XYZ
+
+```text
+admin teleport <player_id> <x> <y> <z> [yaw]
+```
+
+`TeleportToExact`. Drops the player at the exact coordinates with no
+safety adjustment. Optional `yaw` rotates around the vertical axis.
+
+```text
+admin teleport A1B2C3D4 101000 285000 4300        # Survival_1 spawn-ish
+admin teleport A1B2C3D4 101000 285000 4300 180    # facing south
+```
+
+### `tpsafe` — move a player to nearest safe XYZ
+
+```text
+admin tpsafe <player_id> <x> <y> <z> [yaw]
+```
+
+`TeleportTo` (safe variant). Snaps to the nearest navigable,
+non-clipping, on-ground location near the requested coordinates. Use
+when you don't know the exact terrain height.
+
+### `vehicle` — spawn a vehicle next to a player
+
+```text
+admin vehicle <player_id> <ClassName> <x> <y> <z> <TemplateName> [rotation] [persistent=1.0]
+```
+
+`ClassName` and `TemplateName` are both row keys from
+`DT_VehicleTemplates`. `Persistent=1.0` survives server restart; `0.0`
+is transient. Optional `rotation` controls heading.
+
+```text
+admin vehicle A1B2C3D4 Sandbike 101000 285000 4300 T6_Combat
+admin vehicle A1B2C3D4 Buggy 101000 285000 4300 T6_Combat 90 0.0
+```
+
+### `raw` — arbitrary inline JSON
+
+For commands or shapes not covered above. Body is the *inner* JSON
+(everything inside `MessageContent`); the script wraps the envelope.
+
+```text
+admin raw '{"ServerCommand":"AwardXP","PlayerId":"A1B2C3D4","Experience":1000,"Category":"Combat"}'
+```
+
+## Known no-ops on seabass servers
+
+Per [adainrivers' live-testing](https://github.com/adainrivers/dune-dedicated-server-manager)
+(2026-05-26), the following commands publish successfully but the
+seabass handler does not apply state. They're kept in the script for
+protocol parity:
+
+| Subcommand | ServerCommand | Notes |
+|---|---|---|
+| `exec` | `ServerExec` | Handler logs the call, no execution |
+| `cheat` | `CheatScript` | Same — logs the script name, no state change |
+| (n/a) | `AwardXPByEventTag` | Binary has the method but no MQ handler |
+| (n/a) | `JourneySetCheckpoint` + family | Handlers fire but no DB / gameplay effect |
+
+The `xp` subcommand auto-injects `Category` because that field's
+*absence* (not its value) is the no-op trigger.
+
+## Troubleshooting
+
+### "Dispatch fired but nothing happened in-game"
+
+Look at the per-Sietch UE5 logs immediately after the dispatch:
+
+```bash
+docker exec <container> bash -c '
+  for f in /home/container/logs/ue5-*.log; do
+    echo "=== $(basename $f) ==="
+    grep -A 2 "Now running ServerCommand" "$f" | tail -10
+  done
+'
+```
+
+The marker line is `LogDuneServerCommands: Log: Now running
+ServerCommand '<name>' with parameters '...'`. If you see it, the
+seabass handler accepted the publish. If you also see `LogJson:
+Warning: Field <name> was not found` or `LogJson: Error: Json Value
+of type 'Null' used as a 'Array'` immediately after, the payload
+shape is wrong — see the canonical shapes above.
+
+If the marker is missing, either the publish never reached the
+broker (`admin-publish.sh` would have reported `WARN no publish=ok`)
+or the seabass handler dropped it for a wrong AuthToken — regenerate
+the svc-cmd-token and restart.
+
+### "publish=ok but nothing in any log"
+
+Verify queue bindings on the game broker:
+
+```bash
+docker exec <container> bash -c '
+  source /home/container/scripts/lib.sh /home/container
+  export HOME="$BASE/runtime/mq-game-home"
+  "$BASE/extracted/mq/opt/rabbitmq/sbin/rabbitmqctl" --node rabbit-game@localhost \
+    list_bindings exchange_name routing_key destination_name
+' | grep heartbeats
+```
+
+Expected: one binding per Sietch from `heartbeats` to
+`queue.server.<sid>` with routing key `notifications`. Zero bindings
+= a Sietch race; restart the container to repopulate.
+
+### "Dispatch fires in some Sietches but not others"
+
+Each Sietch declares its own consumer queue at boot. A Sietch that
+crashed mid-init may have skipped the declare. `console.sh`'s
+`UE5_DEAD_GRACE` health check exits the container after 90 s of zero
+live UE5 processes, letting Wings recreate it cleanly.
+
+## Attribution
+
+Protocol shape, ServerCommand catalogue, no-op flags, and the harmless
+fallback token all reverse-engineered + verified by
+[adainrivers](https://github.com/adainrivers) in the
+[dune-dedicated-server-manager](https://github.com/adainrivers/dune-dedicated-server-manager)
+Rust+Tauri admin app (MIT-licensed). Our `admin-publish.sh` ports
+their `crates/dune-server-service/src/admin/commands/build.rs` shape
+to bash + python, and `admin-http.py` wraps it for tool integration.
+
+The full wire-protocol reverse-engineering note lives in the wiki
+under `dune-rmq-admin-protocol`.
