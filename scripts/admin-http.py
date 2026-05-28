@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 
 # --------------------------------------------------------------------------
@@ -462,7 +462,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/pos/"):
-            player = path[len("/api/pos/"):]
+            # URL-decode so `name:Sergentval` survives a fetch() call from
+            # the SPA (which encodeURIComponent's the colon to %3A).
+            player = unquote(path[len("/api/pos/"):])
             entry = run_publish(["pos", player], timeout=10)
             self._write(200 if entry["ok"] else 502, entry)
             return
