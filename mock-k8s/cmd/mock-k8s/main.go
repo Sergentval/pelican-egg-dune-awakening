@@ -46,6 +46,7 @@ import (
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/server"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/spawner"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/stubs"
 )
 
 func main() {
@@ -212,12 +213,25 @@ func run() error {
 
 	sssHandler := serversetscale.Handler(sssStore)
 	bgHandler := battlegroup.Handler(bgStore)
+	statsStore := stubs.NewStatsStore()
+	bgdsHandler := stubs.BattlegroupDirectorStatsHandler(statsStore)
+	ssHandler := stubs.ServerSetsHandler(sssStore)
 	mux.HandleFunc("/apis/igw.funcom.com/v1/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/battlegroups") {
+		// Resource-plural dispatch. Order matters: longer/more-specific
+		// prefixes are checked first so the short ones don't false-match
+		// (e.g. "/serversets" is a substring of "/serversetscales").
+		switch {
+		case strings.Contains(r.URL.Path, "/battlegroupdirectorstats"):
+			bgdsHandler(w, r)
+		case strings.Contains(r.URL.Path, "/serversetscales"):
+			sssHandler(w, r)
+		case strings.Contains(r.URL.Path, "/serversets"):
+			ssHandler(w, r)
+		case strings.Contains(r.URL.Path, "/battlegroups"):
 			bgHandler(w, r)
-			return
+		default:
+			sssHandler(w, r)
 		}
-		sssHandler(w, r)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

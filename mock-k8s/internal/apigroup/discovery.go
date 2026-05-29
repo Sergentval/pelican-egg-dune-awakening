@@ -121,6 +121,22 @@ func HandleIGWv1(w http.ResponseWriter, _ *http.Request) {
 				"verbs":        []string{"get", "list", "watch"},
 				"shortNames":   []string{"bg"},
 			},
+			{
+				"name":         "battlegroupdirectorstats",
+				"singularName": "battlegroupdirectorstat",
+				"namespaced":   true,
+				"kind":         "BattleGroupDirectorStats",
+				"verbs":        []string{"get", "list", "create", "update", "patch", "delete"},
+				"shortNames":   []string{"bgds"},
+			},
+			{
+				"name":         "serversets",
+				"singularName": "serverset",
+				"namespaced":   true,
+				"kind":         "ServerSet",
+				"verbs":        []string{"get", "list", "watch"},
+				"shortNames":   []string{"ss"},
+			},
 		},
 	})
 }
