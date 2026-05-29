@@ -530,7 +530,7 @@
     },
     {
       "name": "Always-Warm Maps",
-      "description": "Comma-separated maps kept running at all times (don't scale on demand). Each kept-warm map consumes a slot from Max Concurrent Instances. Default Survival_1,Overmap,DeepDesert_1.",
+      "description": "Comma-separated maps kept running at all times (don't scale on demand). Each kept-warm map consumes a slot from Max Concurrent Instances. Default Survival_1,Overmap,DeepDesert_1. Add SH_FallenLight here to also keep the third city warm.",
       "env_variable": "DUNE_ALWAYS_WARM_MAPS",
       "default_value": "Survival_1,Overmap,DeepDesert_1",
       "user_viewable": true,
@@ -540,6 +540,56 @@
         "string",
         "max:512"
       ],
+      "field_type": "text"
+    },
+    {
+      "name": "Deep Desert — Dimensional Partitions",
+      "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely.",
+      "env_variable": "DUNE_DD_DIMENSIONS",
+      "default_value": "3",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "integer", "between:0,12"],
+      "field_type": "text"
+    },
+    {
+      "name": "Arrakeen — Dimensional Partitions",
+      "description": "Per-player tunnel instances for Arrakeen city travel. Each one is a full UE5 process. Untested at high counts; recommended 0 (use only the warm shared instance) or 2 (try cross-Sietch entry). Set to 0 to disable dimensional travel to Arrakeen.",
+      "env_variable": "DUNE_ARRAKEEN_DIMENSIONS",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "integer", "between:0,12"],
+      "field_type": "text"
+    },
+    {
+      "name": "Harko Village — Dimensional Partitions",
+      "description": "Per-player tunnel instances for HarkoVillage city travel. Same semantics as Arrakeen dimensions. Default 0.",
+      "env_variable": "DUNE_HARKO_DIMENSIONS",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "integer", "between:0,12"],
+      "field_type": "text"
+    },
+    {
+      "name": "Enable SH_FallenLight (Third City)",
+      "description": "Opt in to the third Sietch city map shipped by Funcom but not included in CubeCoders' AMP module. true|false. When true, the world_partition row + dimensional partitions get seeded; you should ALSO add SH_FallenLight to Always-Warm Maps above so the shared landing zone runs at all times.",
+      "env_variable": "DUNE_ENABLE_FALLEN_LIGHT",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "in:true,false"],
+      "field_type": "text"
+    },
+    {
+      "name": "SH_FallenLight — Dimensional Partitions",
+      "description": "Per-player tunnel count for Fallen Light city. Ignored unless Enable SH_FallenLight is true. Default 0.",
+      "env_variable": "DUNE_FALLEN_LIGHT_DIMENSIONS",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "integer", "between:0,12"],
       "field_type": "text"
     },
     {

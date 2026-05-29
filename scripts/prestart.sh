@@ -400,6 +400,38 @@ SQL
 fi
 
 # --------------------------------------------------------------------------
+# 6b. Seed dimensional partitions for multi-Sietch travel destinations.
+#
+# Per multi-sietch-config.sh, each enabled destination map gets N
+# dimensional partitions (one per concurrent sandstorm tunnel). These
+# rows are what Director's DimensionServerGroup picks from when
+# handling Overland_to_DeepDesert1_S{N}, Overland_to_Arrakeen, etc.
+# Without them, the picker has nothing → Code 17. Counts are
+# configurable via DUNE_DD_DIMENSIONS / DUNE_ARRAKEEN_DIMENSIONS /
+# DUNE_HARKO_DIMENSIONS / DUNE_FALLEN_LIGHT_DIMENSIONS.
+#
+# Idempotent (ON CONFLICT DO NOTHING). Operator-changeable: increase
+# the dim count via panel env vars and the rows append on next boot
+# (decreasing the count does NOT delete rows — operator must DELETE
+# from world_partition manually, otherwise the spawner re-runs but
+# Director still sees the row).
+# --------------------------------------------------------------------------
+source "$(dirname "$(readlink -f "$0")")/multi-sietch-config.sh"
+DIM_VALUES="$(multi_sietch_partition_values)"
+if [ -n "$DIM_VALUES" ]; then
+  log "Seeding dimensional partitions for multi-Sietch travel..."
+  env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
+    "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune <<SQL || warn "dim partition seed failed (non-fatal)"
+SET search_path TO dune,public;
+INSERT INTO dune.world_partition (partition_id, map, partition_definition, dimension_index, blocked, label)
+VALUES
+$DIM_VALUES
+ON CONFLICT (partition_id) DO NOTHING;
+SQL
+  log "  dimensional partitions seeded"
+fi
+
+# --------------------------------------------------------------------------
 # 7. Stop pg if we started it — start-pg.sh will bring it up as the real
 # long-lived background process.
 # --------------------------------------------------------------------------

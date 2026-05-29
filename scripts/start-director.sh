@@ -20,6 +20,7 @@ WORK="$DR/Tools/Battlegroups/Director/BattlegroupDirector"
 cd "$WORK"
 
 launch_bg director "$LOGS/director.log" -- env \
+  IGNORE_IGWO_API_SERVER_CHECK=true \
   KUBECONFIG="$RUNTIME/mock-k8s-kubeconfig.yaml" \
   KUBERNETES_SERVICE_HOST=127.0.0.1 \
   KUBERNETES_SERVICE_PORT="${K8S_MOCK_PORT:-6443}" \

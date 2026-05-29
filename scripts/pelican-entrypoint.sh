@@ -62,14 +62,37 @@ bash scripts/prestart.sh         "$BASE"
 # Full mapping (env → file/section/key) lives in scripts/apply-config.sh.
 bash scripts/apply-config.sh "$BASE"
 
+# Inject dimensional partitions into world-template.yaml so the
+# BattleGroup CR mock-k8s exposes to Director includes them. Must come
+# before start-mock-k8s.sh because mock-k8s reads the YAML once at boot.
+bash scripts/patch-world-template.sh "$BASE"
+
 bash scripts/start-pg.sh         "$BASE"
 bash scripts/migrate-db.sh       "$BASE"
 bash scripts/start-mq-admin.sh   "$BASE"
 bash scripts/start-mq-game.sh    "$BASE"
 bash scripts/start-text-router.sh "$BASE"
+# fls-stub must come before mock-k8s — mock-k8s pre-spawns AlwaysWarmMaps
+# (Survival_1, Overmap, DeepDesert_1) immediately at startup, and those
+# UE5 instances call FLS Battlegroups_IsPlayerAuthorized on first travel
+# attempt. If the stub isn't listening yet they fall back to real FLS,
+# which returns 500 "Invalid JSON" for self-hosted JWTs and blocks travel.
+bash scripts/start-fls-stub.sh   "$BASE"
 bash scripts/start-mock-k8s.sh   "$BASE"
 bash scripts/start-director.sh   "$BASE"
 bash scripts/start-gateway.sh    "$BASE"
 bash scripts/start-admin-http.sh "$BASE"
+
+# Spawn dimensional UE5 partitions for cross-Sietch travel destinations.
+# prestart.sh has already seeded the dim>0 world_partition rows; this
+# script materializes each as a UE5 process and wires server_id back to
+# the row. Backgrounded because the warm partitions are already up by
+# now, and the dimensional ones can finish booting while console.sh
+# starts watching logs. Combined with IGNORE_IGWO_API_SERVER_CHECK on
+# Director (start-director.sh), Sandstorm travel to DD / Arrakeen /
+# HarkoVillage allocates correctly instead of returning Code 17
+# (TravelResponseCode.DestinationTemporarilyUnavailable). See
+# wiki/syntheses/dune-director-ignore-igwo-fix-2026-05-29.md.
+bash scripts/start-ue5-dimensions.sh "$BASE" &
 
 exec bash scripts/console.sh "$BASE"
