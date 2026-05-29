@@ -1827,6 +1827,21 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
   const [confirm, setConfirm] = useState<{ sub: string; label: string; warn: string } | null>(null);
   const [waterAmount, setWaterAmount] = useState(1_000_000);
   const [solariAmount, setSolariAmount] = useState(1000);
+  // Landsraad standing — granted by giving House-specific reputation
+  // items (one item = +1 standing point with that house). Funcom
+  // doesn't expose a direct "AdjustHouseStanding" ServerCommand, so we
+  // route through AddItemToInventory the same way Solari does.
+  type HouseReputationId =
+    | "AtreidesReputation"
+    | "HarkonnenReputation"
+    | "SmugglersReputation";
+  const HOUSES: Array<{ id: HouseReputationId; label: string; emoji: string }> = [
+    { id: "AtreidesReputation",  label: "House Atreides",  emoji: "🦅" },
+    { id: "HarkonnenReputation", label: "House Harkonnen", emoji: "⚔️" },
+    { id: "SmugglersReputation", label: "Smugglers",        emoji: "🥷" },
+  ];
+  const [landsraadHouse, setLandsraadHouse] = useState<HouseReputationId>("AtreidesReputation");
+  const [landsraadAmount, setLandsraadAmount] = useState(100);
 
   function attempt(sub: string, label: string, warn: string) {
     setConfirm({ sub, label, warn });
@@ -1857,6 +1872,19 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
       "give",
       { player_id: target.playerId, item: "SolarisCoin", qty: amount },
       `💰 Solari ${target.playerId} +${amount.toLocaleString()}`,
+    );
+  }
+
+  async function submitLandsraad(e: React.FormEvent): Promise<void> {
+    e.preventDefault();
+    const amount = Math.max(1, landsraadAmount);
+    const house = HOUSES.find((h) => h.id === landsraadHouse);
+    const label = house ? `${house.emoji} ${house.label}` : landsraadHouse;
+    await runAndLog(
+      setConsoleEntries,
+      "give",
+      { player_id: target.playerId, item: landsraadHouse, qty: amount },
+      `🏛️ Landsraad ${label} ${target.playerId} +${amount.toLocaleString()}`,
     );
   }
 
@@ -1908,6 +1936,67 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
                 ))}
               </div>
               <button type="submit" className="btn-primary ml-auto">Give 💰</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Give Landsraad standing</h2>
+          <span className="text-xs text-slate-500">House reputation · non-destructive</span>
+        </header>
+        <form onSubmit={submitLandsraad} className="p-4 space-y-3">
+          <p className="text-xs text-slate-400">
+            Grants one of the House Reputation items via <span className="font-mono text-slate-300">AddItemToInventory</span>.
+            Each item = +1 standing point with that House (same item-based mechanism as Solari).
+            Items: <span className="font-mono text-slate-300">AtreidesReputation</span>, <span className="font-mono text-slate-300">HarkonnenReputation</span>, <span className="font-mono text-slate-300">SmugglersReputation</span>.
+          </p>
+          <div>
+            <label className="label">House</label>
+            <div className="flex gap-2 flex-wrap">
+              {HOUSES.map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  onClick={() => setLandsraadHouse(h.id)}
+                  className={
+                    "btn-ghost text-sm border border-slate-700 " +
+                    (landsraadHouse === h.id ? "bg-slate-800 text-spice-300" : "")
+                  }
+                >
+                  {h.emoji} {h.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="label" htmlFor="pl-landsraad">Amount</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                id="pl-landsraad"
+                type="number"
+                min={1}
+                value={landsraadAmount}
+                onChange={(e) => setLandsraadAmount(parseInt(e.target.value) || 0)}
+                className="input-field w-32 font-mono"
+              />
+              <div className="flex gap-1">
+                {[10, 100, 1_000, 10_000, 100_000].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setLandsraadAmount(n)}
+                    className={
+                      "btn-ghost text-xs border border-slate-700 " +
+                      (landsraadAmount === n ? "bg-slate-800 text-spice-300" : "")
+                    }
+                  >
+                    {n >= 1_000 ? `${n / 1_000}k` : n}
+                  </button>
+                ))}
+              </div>
+              <button type="submit" className="btn-primary ml-auto">Give 🏛️</button>
             </div>
           </div>
         </form>
