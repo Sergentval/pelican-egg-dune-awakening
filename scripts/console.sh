@@ -24,7 +24,7 @@ export SOURCE="console"
 source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
 
 # Dependency order — services started in this order; stopped in reverse
-SERVICES=(postgres mq-admin mq-game text-router mock-k8s director gateway admin-http ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1)
+SERVICES=(postgres mq-admin mq-game text-router fls-stub mock-k8s director gateway admin-http ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1)
 
 # --------------------------------------------------------------------------
 # Shutdown handler

@@ -62,6 +62,36 @@ if [ -d "$UE5_USER_CFG" ] && [ ! -L "$UE5_USER_CFG" ]; then
 fi
 ln -sfn "$UE5_HOME/UserSettings" "$UE5_USER_CFG"
 
+# --------------------------------------------------------------------------
+# FLS stub redirection. Only enabled when start-fls-stub.sh has produced its
+# CA bundle (the absence is a noisy startup failure, not silent skip — but
+# we tolerate it here to keep the warm-only path functional during
+# development of the stub itself).
+#
+# Director still talks to real FLS; only UE5's calls flow through us, and
+# of those only Battlegroups_IsPlayerAuthorized is stubbed (everything else
+# is reverse-proxied to real FLS so heartbeats and char-data keep working).
+FLS_STUB_CA="$STATE/fls-stub/ca-bundle.pem"
+FLS_STUB_PORT="${DUNE_FLS_STUB_PORT:-8443}"
+FLS_URL_OVERRIDES=()
+FLS_ENV_OVERRIDES=()
+if [ -s "$FLS_STUB_CA" ]; then
+  # PLAINTEXT redirection — UE5 is statically linked (only libc.so loaded
+  # at runtime), so LD_PRELOAD shims to disable CURLOPT_SSL_VERIFYPEER
+  # don't reach the call site. And UE5's libcurl ignores SSL_CERT_FILE +
+  # CURL_CA_BUNDLE env vars (CURLOPT_CAINFO hardcoded). Pelican's
+  # ReadonlyRootfs:true also blocks appending our cert to the system bundle.
+  # Loopback HTTP eliminates the TLS trust problem entirely — the stub
+  # still reverse-proxies upstream over verified TLS, so we don't expose
+  # plaintext credentials to the network. If UE5 strictly enforces https://
+  # for FLS, fall back to bind-mounting the system CA bundle via egg JSON.
+  FLS_URL_OVERRIDES=(
+    "-ini:engine:[FuncomLiveServices_$DUNE_FLS_ENV]:FlsHostUrl=http://127.0.0.1:$FLS_STUB_PORT/"
+  )
+  FLS_ENV_OVERRIDES=()
+  log "  FLS redirection: -> http://127.0.0.1:$FLS_STUB_PORT/ (plaintext loopback)"
+fi
+
 launch_bg "$INSTANCE_ID" "$LOGS/$INSTANCE_ID.log" -- env \
   HOME="$STATE/ue5-saved" \
   POD_IP="$DUNE_BIND_IP" \
@@ -76,6 +106,7 @@ launch_bg "$INSTANCE_ID" "$LOGS/$INSTANCE_ID.log" -- env \
   FuncomLiveServices__ServiceAuthToken="$DUNE_JWT" \
   RMQ_HTTP_TOKEN_AUTH_SECRET="$DUNE_RMQ_SEC" \
   TZ=Etc/UTC \
+  "${FLS_ENV_OVERRIDES[@]}" \
   "$SERVER_SH" "$MAP" \
     -log -unattended -stdout -FullStdOutLogOutput \
     -FarmRegion="$DUNE_REGION" \
@@ -83,6 +114,7 @@ launch_bg "$INSTANCE_ID" "$LOGS/$INSTANCE_ID.log" -- env \
     "-ini:engine:[FuncomLiveServices]:DefaultFlsEnvironment=$DUNE_FLS_ENV" \
     "-ini:engine:[FuncomLiveServices]:ServerCommandsAuthToken=${DUNE_SVC_CMD_TOKEN:-}" \
     "-ini:engine:[FuncomLiveServices_$DUNE_FLS_ENV]:ServerCommandsAuthToken=${DUNE_SVC_CMD_TOKEN:-}" \
+    "${FLS_URL_OVERRIDES[@]}" \
     "-ini:engine:[OnlineSubsystem]:ServerName=$DUNE_WORLD_NAME" \
     "-ini:engine:[OnlineSubsystem]:DatacenterId=$DUNE_REGION" \
     -RMQGameTlsEnabled=true \
