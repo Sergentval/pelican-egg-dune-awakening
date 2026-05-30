@@ -125,6 +125,12 @@ func run() error {
 		baseDir)
 	sssStore.OnSpecChange = spw.OnSpecChange
 
+	// 5a. Re-adopt UE5 instances that survived a mock-k8s restart (same
+	// ports, same pids) BEFORE the AlwaysWarm pre-spawn below, so a map
+	// that is already running is not double-spawned and its ports stay
+	// stable across the restart.
+	spw.Restore()
+
 	// 5b. BattleGroup store: pre-populated from world-template.yaml (the
 	// Director GETs this at startup to learn world layout). Soft-failure
 	// path: if the template is missing we still serve discovery so the

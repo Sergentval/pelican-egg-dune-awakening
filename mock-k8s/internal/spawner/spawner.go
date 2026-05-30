@@ -8,6 +8,10 @@
 // $BASE/runtime/pids/ue5-<map>-<suffix>.pid. We read that pidfile to learn
 // the pid (for state persistence) and to terminate the instance on
 // scale-down.
+//
+// The spawner persists its instance ledger to $BASE/server/state via the
+// state package after every change, so Restore can re-adopt still-live UE5
+// processes on their original ports after a mock-k8s restart.
 package spawner
 
 import (
@@ -24,6 +28,7 @@ import (
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/pool"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/state"
 )
 
 const (
@@ -46,9 +51,14 @@ type Spawner struct {
 	pool       *pool.Pool
 	scriptPath string // absolute path to scripts/start-ue5.sh
 	baseDir    string // $BASE for the script (also roots runtime/pids)
+	statePath  string // on-disk instance ledger (empty disables persistence)
 
 	mu        sync.Mutex
 	instances map[string][]instance // key: namespace/name → instance list
+
+	// saveMu serializes ledger writes so concurrent persist() calls (e.g. a
+	// spawn and a teardown finishing at once) can't interleave file writes.
+	saveMu sync.Mutex
 
 	// bg tracks background goroutines (pid capture + scale-down teardown)
 	// so tests — and a future graceful shutdown — can wait for them.
@@ -69,13 +79,14 @@ type instance struct {
 
 // New constructs a Spawner. scriptPath should be absolute (e.g.
 // /home/container/scripts/start-ue5.sh). baseDir is passed as $1 to the
-// script and is the root of runtime/pids.
+// script and roots both runtime/pids and the server/state ledger.
 func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir string) *Spawner {
 	return &Spawner{
 		store:      store,
 		pool:       pool,
 		scriptPath: scriptPath,
 		baseDir:    baseDir,
+		statePath:  filepath.Join(baseDir, "server", "state", "mock-k8s-state.json"),
 		instances:  make(map[string][]instance),
 		terminate:  proc.Terminate,
 	}
@@ -84,6 +95,63 @@ func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir strin
 // Wait blocks until all in-flight background goroutines (pid capture and
 // scale-down teardown) finish. Primarily a test seam.
 func (s *Spawner) Wait() { s.bg.Wait() }
+
+// Restore re-adopts UE5 instances recorded in the on-disk ledger that are
+// still alive, reserving their original port slots so game/IGW ports stay
+// stable across a mock-k8s restart. Dead entries are dropped (their maps
+// respawn through normal reconciliation). MUST run before the AlwaysWarm
+// pre-spawn so a re-adopted map's OnSpecChange sees desired == current and
+// does not double-spawn a process that is already running.
+func (s *Spawner) Restore() {
+	if s.statePath == "" {
+		return
+	}
+	prev, err := state.Load(s.statePath)
+	if err != nil {
+		slog.Warn("spawner: state load failed; starting fresh", "path", s.statePath, "err", err)
+		return
+	}
+	if len(prev.Instances) == 0 {
+		return
+	}
+	adopted := 0
+	for _, pi := range prev.Instances {
+		pidPath := s.pidPath(pi.MapName, pi.Suffix)
+		// The pidfile on disk is the source of truth (start-ue5.sh wrote
+		// it); fall back to the ledger's recorded pid if it's gone.
+		pid := proc.ReadPidFile(pidPath)
+		if pid == 0 {
+			pid = pi.PID
+		}
+		if !proc.Alive(pid) {
+			slog.Info("spawner: dropping dead instance from prior state",
+				"key", pi.Key, "map", pi.MapName, "suffix", pi.Suffix)
+			_ = os.Remove(pidPath)
+			continue
+		}
+		alloc, err := s.pool.AcquireSpecific(pi.PoolIndex)
+		if err != nil {
+			slog.Warn("spawner: cannot reserve slot for re-adopted instance; leaving it orphaned",
+				"key", pi.Key, "index", pi.PoolIndex, "err", err)
+			continue
+		}
+		s.mu.Lock()
+		s.instances[pi.Key] = append(s.instances[pi.Key], instance{
+			Suffix:      pi.Suffix,
+			MapName:     pi.MapName,
+			PartitionID: pi.PartitionID,
+			Allocation:  alloc,
+			PID:         pid,
+		})
+		s.mu.Unlock()
+		adopted++
+		slog.Info("spawner: re-adopted live UE5 across restart",
+			"key", pi.Key, "map", pi.MapName, "pid", pid, "game_port", alloc.GamePort)
+	}
+	slog.Info("spawner: state restore complete", "adopted", adopted, "of", len(prev.Instances))
+	// Rewrite the ledger so it reflects only the instances we kept.
+	s.persist()
+}
 
 // OnSpecChange is assigned to store.OnSpecChange. It diffs the desired
 // replica count against current instances and starts / stops as needed.
@@ -132,6 +200,10 @@ func (s *Spawner) scaleDown(key string, desired int) {
 	s.instances[key] = append([]instance(nil), list[:desired]...)
 	s.mu.Unlock()
 
+	// Record the reduced ledger immediately; teardown persists again once
+	// each slot is actually freed.
+	s.persist()
+
 	for _, inst := range removed {
 		s.bg.Add(1)
 		go func(inst instance) {
@@ -143,7 +215,7 @@ func (s *Spawner) scaleDown(key string, desired int) {
 
 // teardown terminates one instance's UE5 process and releases its slot.
 func (s *Spawner) teardown(key string, inst instance) {
-	pidPath := s.pidPath(inst)
+	pidPath := s.pidPath(inst.MapName, inst.Suffix)
 	pid := proc.ReadPidFile(pidPath)
 	if pid == 0 {
 		pid = inst.PID
@@ -160,6 +232,7 @@ func (s *Spawner) teardown(key string, inst instance) {
 	}
 	// Release the slot only now that the port is actually free.
 	s.pool.Release(inst.Allocation.Index)
+	s.persist()
 }
 
 func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionID, indexInSet int) {
@@ -199,19 +272,20 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 	s.mu.Lock()
 	s.instances[key] = append(s.instances[key], inst)
 	s.mu.Unlock()
+	s.persist()
 
 	// Learn the real UE5 pid from the pidfile start-ue5.sh writes.
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
-		s.capturePID(key, alloc.Index, s.pidPath(inst))
+		s.capturePID(key, alloc.Index, s.pidPath(inst.MapName, inst.Suffix))
 	}()
 }
 
 // capturePID polls for the pidfile start-ue5.sh writes and records the pid
-// onto the matching tracked instance. Best-effort: if the pidfile never
-// appears within pidWaitTimeout we log and move on (teardown re-reads the
-// pidfile directly, so a missed capture is not fatal).
+// onto the matching tracked instance, then persists. Best-effort: if the
+// pidfile never appears within pidWaitTimeout we log and move on (teardown
+// re-reads the pidfile directly, so a missed capture is not fatal).
 func (s *Spawner) capturePID(key string, index int, pidPath string) {
 	deadline := time.Now().Add(pidWaitTimeout)
 	for {
@@ -224,6 +298,7 @@ func (s *Spawner) capturePID(key string, index int, pidPath string) {
 				}
 			}
 			s.mu.Unlock()
+			s.persist()
 			return
 		}
 		if time.Now().After(deadline) {
@@ -234,10 +309,43 @@ func (s *Spawner) capturePID(key string, index int, pidPath string) {
 	}
 }
 
-// pidPath returns the pidfile path start-ue5.sh writes for this instance,
+// persist snapshots the current instance ledger to disk so a later Restore
+// can re-adopt still-live UE5 processes on their original ports. No-op when
+// statePath is empty. The snapshot is taken under s.mu but the file write
+// happens under saveMu only, so a slow disk never stalls reconciliation.
+func (s *Spawner) persist() {
+	if s.statePath == "" {
+		return
+	}
+	s.mu.Lock()
+	st := state.State{Version: 1}
+	for key, list := range s.instances {
+		for _, in := range list {
+			st.Instances = append(st.Instances, state.Instance{
+				Key:         key,
+				MapName:     in.MapName,
+				PartitionID: in.PartitionID,
+				PoolIndex:   in.Allocation.Index,
+				GamePort:    in.Allocation.GamePort,
+				IGWPort:     in.Allocation.IGWPort,
+				Suffix:      in.Suffix,
+				PID:         in.PID,
+			})
+		}
+	}
+	s.mu.Unlock()
+
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if err := state.Save(s.statePath, st); err != nil {
+		slog.Error("spawner: persist state failed", "path", s.statePath, "err", err)
+	}
+}
+
+// pidPath returns the pidfile path start-ue5.sh writes for an instance,
 // matching scripts/lib.sh's pid_file() + start-ue5.sh's INSTANCE_ID.
-func (s *Spawner) pidPath(inst instance) string {
-	return filepath.Join(s.baseDir, "runtime", "pids", "ue5-"+inst.MapName+"-"+inst.Suffix+".pid")
+func (s *Spawner) pidPath(mapName, suffix string) string {
+	return filepath.Join(s.baseDir, "runtime", "pids", "ue5-"+mapName+"-"+suffix+".pid")
 }
 
 // mockChildEnv returns the env vars start-ue5.sh's preamble reads to
