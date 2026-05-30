@@ -174,8 +174,13 @@ resolve_player_id() {
         steam:*)
             local sid="${raw#steam:}"
             case "$sid" in *[!0-9]*|'') echo "[admin-publish] ERROR steam: requires numeric SteamID, got '$sid'" >&2; return 1 ;; esac
+            # psql variable binding via --set + :'var' — properly escapes
+            # SQL even though the regex above already restricts to digits.
+            # Defence in depth.
             local resolved
-            resolved=$(dune_psql -tAc "SELECT \"user\" FROM dune.encrypted_accounts WHERE platform_id='$sid' AND platform_name='Steam' LIMIT 1" 2>/dev/null | tr -d '\r\n')
+            resolved=$(dune_psql --set=sid="$sid" -tAc \
+                "SELECT \"user\" FROM dune.encrypted_accounts WHERE platform_id=:'sid' AND platform_name='Steam' LIMIT 1" \
+                2>/dev/null | tr -d '\r\n')
             if [ -z "$resolved" ]; then
                 echo "[admin-publish] ERROR no FLS account for Steam id $sid (run 'admin players' to list)" >&2
                 return 1
@@ -191,12 +196,21 @@ resolve_player_id() {
             # see if Funcom turned encryption on.
             local nm="${raw#name:}"
             if [ -z "$nm" ]; then echo "[admin-publish] ERROR name: requires a character name" >&2; return 1; fi
+            # Length cap: Dune character names are <= 32 chars in the
+            # client UI; anything larger is malformed.
+            if [ "${#nm}" -gt 64 ]; then
+                echo "[admin-publish] ERROR name: too long (${#nm} chars, max 64)" >&2
+                return 1
+            fi
+            # psql variable binding (:'nm') escapes the value safely
+            # regardless of content. Closes the shell-interpolation SQL
+            # injection that existed when this query used '$nm'.
             local resolved
-            resolved=$(dune_psql -tAc "
+            resolved=$(dune_psql --set=nm="$nm" -tAc "
                 SELECT a.\"user\"
                 FROM dune.encrypted_accounts a
                 JOIN dune.encrypted_player_state ps ON ps.account_id=a.id
-                WHERE lower(convert_from(ps.encrypted_character_name, 'UTF8')) = lower('$nm')
+                WHERE lower(convert_from(ps.encrypted_character_name, 'UTF8')) = lower(:'nm')
                 LIMIT 1
             " 2>/dev/null | tr -d '\r\n')
             if [ -z "$resolved" ]; then
@@ -302,11 +316,14 @@ case "$cmd" in
             echo "[admin-publish] ERROR pos: cannot look up '*' — pass a single player" >&2
             exit 2
         fi
-        row=$(dune_psql -tAF $'\t' -c "
+        # Parameterised via psql --set + :'fls' to keep the resolver
+        # contract (16-hex or DB-fetched account.user) honest even if
+        # a future account row gets seeded with weird characters.
+        row=$(dune_psql --set=fls="$fls_id" -tAF $'\t' -c "
             SELECT ac.map, ac.partition_id, ac.transform::text
             FROM dune.actors ac
             JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
-            WHERE a.\"user\" = '$fls_id'
+            WHERE a.\"user\" = :'fls'
               AND ac.class LIKE '%BP_DunePlayerCharacter%'
             ORDER BY ac.id DESC
             LIMIT 1
@@ -317,28 +334,34 @@ case "$cmd" in
             exit 1
         fi
         # row is "map<TAB>partition_id<TAB>("(x,y,z)","(qx,qy,qz,qw)")"
-        python3 -c "
-import re, sys
-row = sys.stdin.read().strip()
-parts = row.split('\t')
+        # Pass $fls_id, $raw, and $row via env vars — NEVER interpolate
+        # them into the Python source. The previous form let a player-id
+        # like `'''+__import__('os').system(...)+'''` become live Python
+        # code at shell-expansion time.
+        FLS_ID="$fls_id" RAW_INPUT="$raw" ROW_DATA="$row" python3 - <<'PYEOF'
+import os, re, sys
+fls_id = os.environ.get("FLS_ID", "")
+raw_input = os.environ.get("RAW_INPUT", "")
+row = os.environ.get("ROW_DATA", "").strip()
+parts = row.split("\t")
 if len(parts) < 3:
-    sys.stderr.write(f'unexpected row: {row}\n'); sys.exit(1)
-mapname, partition, tform = parts[0], parts[1], '\t'.join(parts[2:])
-m = re.search(r'\((-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)\)', tform)
+    sys.stderr.write(f"unexpected row: {row}\n"); sys.exit(1)
+mapname, partition, tform = parts[0], parts[1], "\t".join(parts[2:])
+m = re.search(r"\((-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)\)", tform)
 if not m:
-    sys.stderr.write(f'could not parse transform: {tform}\n'); sys.exit(1)
+    sys.stderr.write(f"could not parse transform: {tform}\n"); sys.exit(1)
 x, y, z = (float(g) for g in m.groups())
-print(f'FLS:        $fls_id')
-print(f'Map:        {mapname}  (partition {partition})')
-print(f'Position:   X={x:.2f}  Y={y:.2f}  Z={z:.2f}')
+print(f"FLS:        {fls_id}")
+print(f"Map:        {mapname}  (partition {partition})")
+print(f"Position:   X={x:.2f}  Y={y:.2f}  Z={z:.2f}")
 print()
-print('Ready-to-paste commands:')
-print(f'  admin teleport $raw {x:.0f} {y:.0f} {z:.0f}')
-print(f'  admin vehicle  $raw Sandbike {x:.0f} {y:.0f} {z:.0f} T3_Boost')
-print(f'  admin vehicle  $raw OrnithopterLight {x:.0f} {y:.0f} {int(z+200)} T6_Combat')
+print("Ready-to-paste commands:")
+print(f"  admin teleport {raw_input} {x:.0f} {y:.0f} {z:.0f}")
+print(f"  admin vehicle  {raw_input} Sandbike {x:.0f} {y:.0f} {z:.0f} T3_Boost")
+print(f"  admin vehicle  {raw_input} OrnithopterLight {x:.0f} {y:.0f} {int(z+200)} T6_Combat")
 print()
-print(f'Raw transform: {tform}')
-" <<< "$row"
+print(f"Raw transform: {tform}")
+PYEOF
         exit 0
         ;;
     vehicles|items|skills|items-json)
@@ -410,115 +433,50 @@ print(f'Raw transform: {tform}')
 esac
 
 # --------------------------------------------------------------------------
-# Build the inner JSON payload based on the subcommand. Each subcommand
-# emits a single line of compact JSON to stdout via python3.
+# Build the outer envelope by delegating to admin-payload.py, which takes
+# every value via argv (NOT via shell-interpolated source) and emits the
+# base64-encoded {Version, AuthToken, MessageContent} envelope.
+#
+# This replaces the previous build_inner() that constructed Python source
+# code with shell-interpolated heredocs. A single triple-quote in any
+# attacker-controllable field (item name, broadcast title, etc.) closed
+# the Python string literal and let the rest of the value become live
+# Python — pre-auth-RCE-grade vulnerability. See security audit notes.
 # --------------------------------------------------------------------------
-build_inner() {
+PAYLOAD_PY="$BASE/scripts/admin-payload.py"
+if [ ! -f "$PAYLOAD_PY" ]; then
+    echo "[admin-publish] ERROR admin-payload.py missing at $PAYLOAD_PY" >&2
+    exit 1
+fi
+
+build_outer() {
     local sub="$1"; shift
     case "$sub" in
         broadcast)
-            # UE5's broadcast renderer requires a LocalizedText[] array with
-            # at least one locale entry. Without it: LogJson "Field
-            # LocalizedText not found" + "Null used as Array" -> banner
-            # dropped (handler logs the dispatch but never shows it
-            # in-game). BroadcastDuration also lives INSIDE BroadcastPayload,
-            # not at the top level. Shape verified against
-            # adainrivers/dune-dedicated-server-manager build.rs.
             local title="${1:?title required}" body="${2:?body required}" dur="${3:-30}"
-            python3 -c "
-import json, sys
-print(json.dumps({
-    'ServerCommand': 'ServiceBroadcast',
-    'BroadcastType': 'Generic',
-    'BroadcastPayload': {
-        'BroadcastDuration': int('$dur'),
-        'LocalizedText': [
-            {'Key': 'en',    'Title': '''$title''', 'Body': '''$body'''},
-            {'Key': 'en-US', 'Title': '''$title''', 'Body': '''$body'''},
-        ],
-    },
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" broadcast \
+                --title "$title" --body "$body" --duration "$dur"
             ;;
         shutdown)
-            # Same shape rule as broadcast: BroadcastPayload holds the real
-            # fields; ShutdownTimestamp + DateTimestamp are required by the
-            # ServerShutdown parser. Use 'cancel' as the stype to abort a
-            # pending shutdown without any other metadata.
             local stype="${1:?type required (Restart|Maintenance|Update|cancel)}"
             local lead="${2:-600}"
             local freq="${3:-60}"
-            python3 -c "
-import json, time
-stype = '$stype'
-if stype.lower() == 'cancel':
-    inner = {
-        'ServerCommand': 'ServiceBroadcast',
-        'BroadcastType': 'ServerShutdown',
-        'BroadcastPayload': {'ShouldCancel': True},
-    }
-else:
-    now = int(time.time())
-    lead = max(1, int('$lead'))
-    inner = {
-        'ServerCommand': 'ServiceBroadcast',
-        'BroadcastType': 'ServerShutdown',
-        'BroadcastPayload': {
-            'ShutdownType': stype,
-            'DateTimestamp': now,
-            'ShutdownDuration': lead,
-            'ShutdownTimestamp': now + lead,
-            'BroadcastFrequency': max(1, int('$freq')),
-            'BroadcastDuration': 30,
-        },
-    }
-print(json.dumps(inner, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" shutdown \
+                --type "$stype" --lead-secs "$lead" --freq-secs "$freq"
             ;;
-        kick)
+        kick|clean|reset)
             local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
-            python3 -c "
-import json
-print(json.dumps({'ServerCommand': 'KickPlayer', 'PlayerId': '''$pid'''}, separators=(',',':')))
-"
-            ;;
-        clean)
-            # CleanPlayerInventory — DESTRUCTIVE. Wipes the target's inventory.
-            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
-            local pid
-            pid=$(resolve_player_id "$pid_raw") || exit 1
-            python3 -c "
-import json
-print(json.dumps({'ServerCommand': 'CleanPlayerInventory', 'PlayerId': '''$pid'''}, separators=(',',':')))
-"
-            ;;
-        reset)
-            # ResetProgression — DESTRUCTIVE. Wipes XP/skills/journey for target.
-            local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
-            local pid
-            pid=$(resolve_player_id "$pid_raw") || exit 1
-            python3 -c "
-import json
-print(json.dumps({'ServerCommand': 'ResetProgression', 'PlayerId': '''$pid'''}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" "$sub" --player-id "$pid"
             ;;
         water)
-            # UpdateAllWaterFillables — refills water in target's fillable
-            # containers (jerrycans, stills, etc). Default amount is 1 000 000.
             local pid_raw="${1:?player id required — pass FLS id, me, steam:<id>, or *}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local amt="${2:-1000000}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'UpdateAllWaterFillables',
-    'PlayerId': '''$pid''',
-    'WaterAmount': int('$amt'),
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" water \
+                --player-id "$pid" --amount "$amt"
             ;;
         give)
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
@@ -527,117 +485,48 @@ print(json.dumps({
             local item="${2:?item FName required (case-insensitive)}"
             local qty="${3:-1}"
             local dura="${4:-1.0}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'AddItemToInventory',
-    'PlayerId': '''$pid''',
-    'ItemName': '''$item''',
-    'Quantity': int('$qty'),
-    'Durability': float('$dura'),
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" give \
+                --player-id "$pid" --item "$item" --qty "$qty" --durability "$dura"
             ;;
         xp)
-            # AwardXP. CRITICAL: the seabass handler silently no-ops unless
-            # `Category` is present in the payload. The value itself is
-            # ignored (every category lands as generic player XP) but the
-            # field must exist. Injecting "Combat" as a known-accepted value.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local amt="${2:?xp amount required}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'AwardXP',
-    'PlayerId': '''$pid''',
-    'Experience': int('$amt'),
-    'Category': 'Combat',
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" xp \
+                --player-id "$pid" --amount "$amt"
             ;;
         skill)
-            # SkillsSetModuleLevel — sets a specific skill module's level.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local module="${2:?module name required (e.g. Swordmaster_T1)}"
             local lvl="${3:?level required}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'SkillsSetModuleLevel',
-    'PlayerId': '''$pid''',
-    'Module': '''$module''',
-    'Level': int('$lvl'),
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" skill \
+                --player-id "$pid" --module "$module" --level "$lvl"
             ;;
         points)
-            # SkillsSetUnspentSkillPoints — sets the unspent skill point pool.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local pts="${2:?skill points required}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'SkillsSetUnspentSkillPoints',
-    'PlayerId': '''$pid''',
-    'SkillPoints': int('$pts'),
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" points \
+                --player-id "$pid" --amount "$pts"
             ;;
-        teleport)
-            # TeleportToExact — drops the player at the EXACT XYZ. No safety
-            # snapping. Use tpsafe instead if you want collision/safe-spawn.
-            # Optional yaw rotates the player around vertical axis.
+        teleport|tpsafe)
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
             local yaw="${5:-}"
-            python3 -c "
-import json
-inner = {
-    'ServerCommand': 'TeleportToExact',
-    'PlayerId': '''$pid''',
-    'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
-}
-yaw = '$yaw'
-if yaw:
-    inner['Yaw'] = float(yaw)
-print(json.dumps(inner, separators=(',',':')))
-"
-            ;;
-        tpsafe)
-            # TeleportTo — snaps to the nearest safe (non-clipping, on-ground)
-            # location near the requested XYZ. Same field set as teleport.
-            local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
-            local pid
-            pid=$(resolve_player_id "$pid_raw") || exit 1
-            local x="${2:?x required}" y="${3:?y required}" z="${4:?z required}"
-            local yaw="${5:-}"
-            python3 -c "
-import json
-inner = {
-    'ServerCommand': 'TeleportTo',
-    'PlayerId': '''$pid''',
-    'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
-}
-yaw = '$yaw'
-if yaw:
-    inner['Yaw'] = float(yaw)
-print(json.dumps(inner, separators=(',',':')))
-"
+            local -a args=(--token "$ADMIN_TOKEN" "$sub" \
+                --player-id "$pid" --x "$x" --y "$y" --z "$z")
+            if [ -n "$yaw" ]; then
+                args+=(--yaw "$yaw")
+            fi
+            python3 "$PAYLOAD_PY" "${args[@]}"
             ;;
         vehicle)
-            # SpawnVehicleAt — spawns a vehicle of <class> with <template>
-            # variant at XYZ. ClassName + TemplateName are DT_VehicleTemplates
-            # row keys. Persistent defaults to 1.0 (persists across restart).
-            # Optional Faction (free-text) overrides the default CHOAM skin —
-            # try Atreides / Harkonnen / Choam / Smuggler / faction tag.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
@@ -647,71 +536,42 @@ print(json.dumps(inner, separators=(',',':')))
             local rot="${7:-}"
             local persist="${8:-1.0}"
             local faction="${9:-}"
-            python3 -c "
-import json
-inner = {
-    'ServerCommand': 'SpawnVehicleAt',
-    'PlayerId': '''$pid''',
-    'ClassName': '''$cls''',
-    'X': float('$x'), 'Y': float('$y'), 'Z': float('$z'),
-    'TemplateName': '''$tpl''',
-    'Persistent': float('$persist'),
-}
-rot = '$rot'
-if rot:
-    inner['Rotation'] = float(rot)
-faction = '''$faction'''
-if faction:
-    inner['Faction'] = faction
-print(json.dumps(inner, separators=(',',':')))
-"
+            local -a args=(--token "$ADMIN_TOKEN" vehicle \
+                --player-id "$pid" --class "$cls" \
+                --x "$x" --y "$y" --z "$z" \
+                --template "$tpl" --persistent "$persist")
+            if [ -n "$rot" ]; then
+                args+=(--rotation "$rot")
+            fi
+            if [ -n "$faction" ]; then
+                args+=(--faction "$faction")
+            fi
+            python3 "$PAYLOAD_PY" "${args[@]}"
             ;;
         cheat)
-            # CheatScript — runs a [CheatScript.<name>] block from
-            # DefaultGame.ini. KNOWN NO-OP on seabass servers (handler logs
-            # the call but applies no state). Kept for protocol parity.
             local pid_raw="${1:?player id required — pass FLS id, me, or steam:<id>}"
             local pid
             pid=$(resolve_player_id "$pid_raw") || exit 1
             local name="${2:?script name required (e.g. PlaytestSetupAdmin)}"
-            python3 -c "
-import json
-print(json.dumps({
-    'ServerCommand': 'CheatScript',
-    'PlayerId': '''$pid''',
-    'ScriptName': '''$name''',
-}, separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" cheat \
+                --player-id "$pid" --script "$name"
             ;;
         exec)
-            # ServerExec — raw console/exec passthrough. Field name is "Exec"
-            # (NOT "Command" — we had this wrong before commit 4f69d10).
-            # KNOWN NO-OP on seabass servers (publishes but handler doesn't
-            # execute). Kept for protocol parity.
             local raw_cmd="${1:?exec command required}"
-            python3 -c "
-import json
-print(json.dumps({'ServerCommand': 'ServerExec', 'Exec': '''$raw_cmd'''}, separators=(',',':')))
-"
-            ;;
-        raw)
-            local inner="${1:?inline JSON required}"
-            # Round-trip through python to validate it's parseable JSON.
-            python3 -c "
-import json, sys
-s = '''$inner'''
-print(json.dumps(json.loads(s), separators=(',',':')))
-"
+            python3 "$PAYLOAD_PY" --token "$ADMIN_TOKEN" serverexec \
+                --command "$raw_cmd"
             ;;
         *)
+            # NOTE: the `raw` subcommand was deliberately removed — it
+            # accepted arbitrary JSON and round-tripped it through a
+            # python -c heredoc, giving any HTTP-reachable caller an
+            # avenue for Python code execution.
             echo "[admin-publish] ERROR unknown subcommand: $sub" >&2
             usage
             exit 2
             ;;
     esac
 }
-
-INNER_JSON=$(build_inner "$cmd" "$@")
 
 # rabbitmqctl is only required for the actual publish. Lookup
 # subcommands exited above; only publish paths reach this far.
@@ -721,15 +581,7 @@ if [ "${DUNE_ADMIN_DRY_RUN:-0}" != "1" ] && [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; th
     exit 1
 fi
 
-# --------------------------------------------------------------------------
-# Build the outer envelope: {Version: 2, AuthToken: <token>, MessageContent: <inner-as-string>}
-# Note MessageContent is a STRING containing JSON, not a nested object.
-# --------------------------------------------------------------------------
-OUTER_B64=$(python3 -c "
-import base64, json
-outer = {'Version': 2, 'AuthToken': '''$ADMIN_TOKEN''', 'MessageContent': '''$INNER_JSON'''}
-print(base64.standard_b64encode(json.dumps(outer, separators=(',',':')).encode()).decode())
-")
+OUTER_B64=$(build_outer "$cmd" "$@")
 
 # Sanitise the label (used in the Erlang io:format and the MsgId prefix —
 # only ASCII letters/digits/underscore/dash, max 64 chars).
@@ -756,7 +608,10 @@ EOF
 if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then
     echo "=== DRY RUN (DUNE_ADMIN_DRY_RUN=1) ==="
     echo "Subcommand:  $cmd $*"
-    echo "Inner JSON:  $INNER_JSON"
+    # Decode the outer envelope back to the inner JSON for diagnostics.
+    DECODED_OUTER=$(printf '%s' "$OUTER_B64" | base64 -d 2>/dev/null || echo "<base64 decode failed>")
+    echo "Outer JSON:  $DECODED_OUTER"
+    echo "Outer base64: $OUTER_B64"
     echo "Token:       $ADMIN_TOKEN"
     echo "Node:        $ADMIN_NODE"
     echo "Erlang publish snippet:"
