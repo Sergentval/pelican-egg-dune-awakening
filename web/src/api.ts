@@ -1,12 +1,34 @@
 // Thin fetch wrapper + types. All endpoints share-origin with the SPA
 // when served by admin-http.py, so no base URL is needed.
+//
+// Auth is via HttpOnly session cookie (dune_session) that the backend
+// sets on /api/login. The browser auto-attaches it; JS cannot read it,
+// so any future XSS cannot steal the credential. CSRF protection uses
+// a paired non-HttpOnly cookie (dune_csrf) that we copy into the
+// X-CSRF-Token header on mutating requests — the backend rejects a
+// cookie-authenticated request that doesn't echo the cookie value back
+// in the header, which a cross-origin attacker cannot read or forge.
 
-const TOKEN_KEY = "dune-admin-token";
+function getCsrfToken(): string {
+  // document.cookie is a string of "name=value; name=value; …".
+  // Match the dune_csrf cookie regardless of position (start-of-string
+  // or after "; ").
+  const m = document.cookie.match(/(?:^|; )dune_csrf=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
 
-export const getToken = (): string => localStorage.getItem(TOKEN_KEY) || "";
-export const setToken = (token: string): void => {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
+// Back-compat shims: older callers imported setToken/getToken. The SPA
+// no longer stores any session token in JS — the cookie is authoritative.
+// These are no-ops so we don't break the public surface mid-rollout.
+export const getToken = (): string => "";
+export const setToken = (_token: string): void => {
+  // Old localStorage cleanup: drop any token left over from before this
+  // migration so an attacker who steals the same key later finds nothing.
+  try {
+    localStorage.removeItem("dune-admin-token");
+  } catch {
+    // ignore quota / privacy-mode errors
+  }
 };
 
 export interface ApiResponse<T = unknown> {
@@ -27,11 +49,20 @@ export async function api<T = unknown>(
   body?: unknown,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const tok = getToken();
-  if (tok) headers["Authorization"] = "Bearer " + tok;
+  // CSRF token attached on every mutating request. The browser sends
+  // the matching cookie automatically; the backend cross-checks them.
+  if (method !== "GET") {
+    const csrf = getCsrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
   const res = await fetch(path, {
     method,
     headers,
+    // credentials: 'include' ensures the HttpOnly session cookie is
+    // sent. With same-origin SPA + same-origin API this is the default,
+    // but being explicit guards against future deployments that put
+    // the API on a different origin.
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -41,10 +72,10 @@ export async function api<T = unknown>(
   } catch {
     parsed = text;
   }
-  // 401 on an authenticated route means the token is dead (expired or invalid).
-  // /api/login itself returns 401 on bad password — handler doesn't fire there
-  // because we don't carry a token to that call.
-  if (res.status === 401 && tok && unauthorizedHandler && path !== "/api/login") {
+  // 401 on an authenticated route means the cookie is dead (expired,
+  // revoked, or never present). /api/login itself returns 401 on bad
+  // password — skip the global handler there.
+  if (res.status === 401 && unauthorizedHandler && path !== "/api/login") {
     unauthorizedHandler();
   }
   return { ok: res.ok, status: res.status, body: parsed as T };
@@ -109,8 +140,15 @@ export interface HistoryResponse {
 
 // ---- convenience wrappers ----
 
-export const login = (password: string): Promise<ApiResponse<{ token: string; expires_in: number; type: string }>> =>
+export const login = (
+  password: string,
+): Promise<ApiResponse<{ token: string; csrf: string; expires_in: number; type: string }>> =>
   api("POST", "/api/login", { password });
+
+// Tells the backend to revoke the current session jti and clear cookies.
+// Always treated as success on the client — even a 401 from a dead cookie
+// is fine, we just transition the UI to the login screen either way.
+export const logout = () => api("POST", "/api/logout");
 
 export const me = () => api<{ authenticated: boolean; session: { exp: number; iat: number; sub: string } }>("GET", "/api/me");
 

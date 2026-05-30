@@ -73,6 +73,22 @@ STEAM_CACHE_TTL_SECONDS = 3600
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 1 week; renew on each /api/me hit
 HISTORY_BUFFER_SIZE = 200
 
+# Cookie names + flags. We emit two cookies on login:
+#   SESSION_COOKIE_NAME — HttpOnly so JS (and any XSS) can't read it.
+#       Carries the HMAC session token. SameSite=Strict prevents
+#       cross-origin browsers from attaching it.
+#   CSRF_COOKIE_NAME    — NOT HttpOnly. The SPA reads this and echoes
+#       it back as X-CSRF-Token on mutating requests. Cookie value is
+#       also embedded in the session token's payload so the server can
+#       validate without any server-side CSRF storage.
+#
+# `Secure` is auto-applied when we believe TLS is fronting the panel
+# (UI_DOMAIN set + non-loopback bind). Operators on plain HTTP loopback
+# dev would otherwise be locked out — browsers refuse Secure cookies
+# over http://.
+SESSION_COOKIE_NAME = "dune_session"
+CSRF_COOKIE_NAME = "dune_csrf"
+
 # Hard cap on POST body size. Admin payloads are tiny — even the largest
 # legitimate request (broadcast title+body) is well under 4 KiB. 64 KiB
 # leaves headroom for future fields without letting a hostile client
@@ -161,10 +177,16 @@ def _b64u_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + padding)
 
 
-def issue_session_token(subject: str = "admin") -> str:
+def issue_session_token(subject: str = "admin") -> tuple[str, str]:
+    """Returns (token, csrf). The csrf value is also embedded in the
+    token payload — for cookie-based callers, the server validates
+    `X-CSRF-Token` header against the payload field. For Bearer-header
+    callers the csrf field is unused (header-auth is CSRF-safe by
+    construction)."""
     if not UI_SESSION_SECRET:
         raise RuntimeError("DUNE_ADMIN_UI_SESSION_SECRET not set — prestart.sh failed to generate it")
     now = int(time.time())
+    csrf = secrets.token_urlsafe(16)
     payload = {
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
@@ -173,6 +195,7 @@ def issue_session_token(subject: str = "admin") -> str:
         # THIS token without rotating the secret (which would invalidate
         # every session at once). 128 bits of entropy via secrets.
         "jti": secrets.token_urlsafe(16),
+        "csrf": csrf,
     }
     payload_b64 = _b64u(json.dumps(payload, separators=(",", ":")).encode())
     sig = hmac.new(
@@ -180,7 +203,7 @@ def issue_session_token(subject: str = "admin") -> str:
         payload_b64.encode(),
         hashlib.sha256,
     ).digest()
-    return f"{payload_b64}.{_b64u(sig)}"
+    return f"{payload_b64}.{_b64u(sig)}", csrf
 
 
 def verify_session_token(token: str) -> dict | None:
@@ -603,8 +626,36 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         return header[7:].strip()
 
+    def _cookie_value(self, name: str) -> str:
+        """Parse a single cookie value out of the Cookie header. No
+        external dep on http.cookies — that module mutates state and
+        we want a pure read."""
+        raw = self.headers.get("Cookie", "")
+        if not raw:
+            return ""
+        for piece in raw.split(";"):
+            piece = piece.strip()
+            if "=" not in piece:
+                continue
+            k, v = piece.split("=", 1)
+            if k.strip() == name:
+                return v.strip()
+        return ""
+
+    def _session_token_from_request(self) -> tuple[str, str]:
+        """Returns (token, source) where source is 'cookie' or 'bearer'
+        depending on which path supplied the session. The source matters
+        for CSRF — cookie-borne sessions need the X-CSRF-Token header
+        check; Bearer-borne sessions are inherently CSRF-safe (cross-
+        origin JS can't set Authorization headers on credentialed
+        fetches that the browser would attach automatically)."""
+        cookie_tok = self._cookie_value(SESSION_COOKIE_NAME)
+        if cookie_tok:
+            return cookie_tok, "cookie"
+        return self._bearer(), "bearer"
+
     def _auth_ok(self) -> bool:
-        token = self._bearer()
+        token, _ = self._session_token_from_request()
         # UI mode: session token issued by /api/login
         if UI_ENABLED:
             return verify_session_token(token) is not None
@@ -612,6 +663,31 @@ class Handler(BaseHTTPRequestHandler):
         if not SHARED_AUTH:
             return True
         return token == SHARED_AUTH
+
+    def _csrf_ok(self) -> bool:
+        """Validate CSRF for cookie-based callers. Returns True if:
+          - request is Bearer-authenticated (no CSRF needed)
+          - OR request is cookie-authenticated AND X-CSRF-Token header
+            matches the csrf field embedded in the session payload.
+        Internal mode (non-UI) is always OK — its auth surface is
+        either loopback-only or a shared-secret Bearer.
+        """
+        if not UI_ENABLED:
+            return True
+        token, source = self._session_token_from_request()
+        if source == "bearer":
+            return True
+        payload = verify_session_token(token)
+        if not payload:
+            return False
+        expected = payload.get("csrf")
+        if not isinstance(expected, str) or not expected:
+            # Legacy token without csrf field. Reject mutating cookie-
+            # auth requests so an attacker can't ride a pre-rollout
+            # session past the CSRF gate.
+            return False
+        supplied = self.headers.get("X-CSRF-Token", "").strip()
+        return bool(supplied) and hmac.compare_digest(supplied, expected)
 
     def _client_ip(self) -> str:
         """Source IP for rate-limit bucketing. Trusts the socket peer —
@@ -651,6 +727,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def _record_login_failure(self, ip: str) -> None:
         LOGIN_ATTEMPTS[ip].append(time.time())
+
+    def _cookie_flags(self) -> str:
+        """Cookie attribute string shared by session + csrf cookies."""
+        secure = UI_DOMAIN and LISTEN_ADDR not in _LOOPBACK_ADDRS
+        bits = [
+            "Path=/",
+            f"Max-Age={SESSION_TTL_SECONDS}",
+            "SameSite=Strict",
+        ]
+        if secure:
+            bits.append("Secure")
+        return "; ".join(bits)
+
+    def _session_cookies(self, token: str, csrf: str) -> list[tuple[str, str]]:
+        """Two Set-Cookie headers to emit on /api/login success."""
+        common = self._cookie_flags()
+        return [
+            ("Set-Cookie", f"{SESSION_COOKIE_NAME}={token}; HttpOnly; {common}"),
+            ("Set-Cookie", f"{CSRF_COOKIE_NAME}={csrf}; {common}"),
+        ]
+
+    def _clear_session_cookies(self) -> list[tuple[str, str]]:
+        """Set-Cookie headers that expire the session + csrf cookies."""
+        secure = UI_DOMAIN and LISTEN_ADDR not in _LOOPBACK_ADDRS
+        bits = ["Path=/", "Max-Age=0", "SameSite=Strict"]
+        if secure:
+            bits.append("Secure")
+        common = "; ".join(bits)
+        return [
+            ("Set-Cookie", f"{SESSION_COOKIE_NAME}=; HttpOnly; {common}"),
+            ("Set-Cookie", f"{CSRF_COOKIE_NAME}=; {common}"),
+        ]
 
     # ------ OPTIONS preflight --------------------------------------------
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -700,8 +808,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/me":
-            token = self._bearer()
-            payload = verify_session_token(token) if UI_ENABLED else {"sub": "internal"}
+            if UI_ENABLED:
+                token, _ = self._session_token_from_request()
+                payload = verify_session_token(token)
+            else:
+                payload = {"sub": "internal"}
+            # Strip the csrf field from the response — the SPA reads
+            # csrf from its own cookie, and we don't want to broadcast
+            # the value in every /api/me poll.
+            if isinstance(payload, dict):
+                payload = {k: v for k, v in payload.items() if k != "csrf"}
             self._write(200, {"authenticated": True, "session": payload})
             return
 
@@ -859,6 +975,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self._auth_ok():
                 self._write(401, {"error": "auth required"})
                 return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
             actor_id = body.get("actor_id") if isinstance(body, dict) else None
             if not isinstance(actor_id, int) or actor_id <= 0:
                 self._write(400, {"error": "actor_id (positive int) required"})
@@ -903,32 +1022,47 @@ class Handler(BaseHTTPRequestHandler):
             # IP so a legitimate operator who fat-fingered a few times
             # isn't punished for the next 15 minutes.
             LOGIN_ATTEMPTS.pop(client_ip, None)
-            token = issue_session_token()
+            token, csrf = issue_session_token()
             self._write(
                 200,
                 {
+                    # Token returned in body for legacy Bearer-header
+                    # callers (internal scripts, debug curl). The SPA
+                    # ignores this and uses the session cookie below.
                     "token": token,
+                    "csrf": csrf,
                     "expires_in": SESSION_TTL_SECONDS,
                     "type": "Bearer",
                 },
+                extra_headers=self._session_cookies(token, csrf),
             )
             return
 
-        # POST /api/logout revokes the current session's jti. Idempotent:
-        # repeated calls or unauthenticated calls succeed without effect,
-        # to avoid leaking whether a token was valid.
+        # POST /api/logout revokes the current session's jti and clears
+        # the cookies. Idempotent: repeated calls or unauthenticated
+        # calls succeed without effect, to avoid leaking whether a
+        # token was valid.
         if path == "/api/logout":
             if UI_ENABLED:
-                token = self._bearer()
+                # Cookie-auth callers must clear CSRF — otherwise a
+                # stale cross-origin link could trigger logout. But
+                # legacy Bearer callers don't need CSRF.
+                if not self._csrf_ok():
+                    self._write(403, {"error": "csrf token missing or invalid"})
+                    return
+                token, _ = self._session_token_from_request()
                 payload = verify_session_token(token) if token else None
                 if payload:
                     if revoke_token(payload):
                         log(f"INFO session revoked jti={payload.get('jti')}")
-            self._write(200, {"ok": True})
+            self._write(200, {"ok": True}, extra_headers=self._clear_session_cookies())
             return
 
         if not self._auth_ok():
             self._write(401, {"error": "auth required"})
+            return
+        if not self._csrf_ok():
+            self._write(403, {"error": "csrf token missing or invalid"})
             return
 
         if not path.startswith("/admin/"):

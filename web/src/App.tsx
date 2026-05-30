@@ -12,7 +12,7 @@ import {
   VehiclesTab,
 } from "./tabs";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
-import { api, getToken, me, onUnauthorized, setToken } from "./api";
+import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 
 type TabId =
@@ -56,7 +56,7 @@ export default function App() {
 
   useEffect(() => {
     onUnauthorized(() => {
-      setToken("");
+      setToken(""); // legacy localStorage cleanup
       setAuthState("out");
     });
     api("GET", "/api/healthz").then((res) => {
@@ -64,15 +64,22 @@ export default function App() {
         setMode((res.body as { mode: "ui" | "internal" }).mode);
       }
     });
-    if (!getToken()) {
-      setAuthState("out");
-      return;
-    }
+    // No localStorage check anymore — auth is determined entirely by
+    // whether the HttpOnly session cookie is present and valid. /api/me
+    // returns 200 + session info when the cookie is good; 401 otherwise.
     me().then((res) => setAuthState(res.ok ? "in" : "out"));
   }, []);
 
-  function logout() {
-    setToken("");
+  async function logout() {
+    // Tell the backend to revoke this session's jti and clear cookies.
+    // Even if the request fails (e.g. the cookie is already dead) we
+    // still flip the UI to the login screen.
+    try {
+      await apiLogout();
+    } catch {
+      // ignore — the UI transition below is the visible behaviour
+    }
+    setToken(""); // legacy localStorage cleanup
     setAuthState("out");
     setEntries([]);
   }

@@ -18,8 +18,12 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
     setPending(true);
     const res = await login(password);
     setPending(false);
-    if (res.ok && "token" in (res.body as object)) {
-      setToken((res.body as { token: string }).token);
+    if (res.ok) {
+      // Session is established via HttpOnly cookie that the backend set
+      // on the /api/login response. Nothing for the SPA to stash — the
+      // browser handles it. setToken("") is called once to clear any
+      // pre-migration localStorage entry.
+      setToken("");
       onAuthed();
     } else {
       setError(("body" in res && (res.body as { error?: string }).error) || "Login failed");
