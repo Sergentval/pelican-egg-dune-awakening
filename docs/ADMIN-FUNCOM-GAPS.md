@@ -1,386 +1,324 @@
-# Admin command gaps — what Funcom hasn't shipped + what works partially
+# Self-host admin surface — feedback for Funcom
 
-Companion to [`ADMIN-COMMANDS.md`](./ADMIN-COMMANDS.md) (full reference of
-working commands). This doc catalogues:
+A focused list of admin actions the self-host server-command surface
+(`UDuneServerCommandSubsystem` over the `heartbeats:notifications`
+AMQP exchange) does not currently expose, plus commands that publish
+successfully but only half-apply state due to server-side hardcoded
+fields. Intended as constructive feedback for the Dune: Awakening
+team — every item below maps to a concrete one-or-two-line change in
+the seabass dispatch table or the relevant command handler.
 
-1. **Missing commands** — server actions admins routinely want that
-   Funcom did not expose via the AMQP `UDuneServerCommandSubsystem`
-   (seabass) handler. We tested 35 plausible names against a live
-   server on 2026-05-28; none matched.
-2. **Partially-working commands** — handlers that publish successfully
-   but the seabass implementation drops, ignores, or only half-applies
-   the state change.
-3. **Workarounds** — postgres-direct paths or composite item grants
-   that achieve the intent through a different surface.
+The full set of accepted commands today is 14
+(`AddItemToInventory`, `ServiceBroadcast`, `KickPlayer`,
+`CleanPlayerInventory`, `ResetProgression`,
+`UpdateAllWaterFillables`, `AwardXP`, `SkillsSetModuleLevel`,
+`SkillsSetUnspentSkillPoints`, `TeleportTo`, `TeleportToExact`,
+`SpawnVehicleAt`, `CheatScript`, `ServerExec`). Everything below
+either does not exist or does not behave the way self-host admins
+would reasonably expect from the command name.
 
-If you're a Funcom engineer reading this: the items in section 1 are
-**candidates worth wiring into seabass**, since the underlying UE5
-C++ methods already exist (`ADuneCharacter::HealPlayer`,
-`ADuneCharacter::AwardXPByEventTag`, etc. — confirmed by binary
-strings). Most are one new case in the `UDuneServerCommandSubsystem`
-dispatch + the standard FLS auth check away from being live.
+## How this list was built
 
-## How we know this list is exhaustive
+For each candidate `ServerCommand` name, a minimal envelope was
+published via the working `heartbeats:notifications` route. The
+per-Sietch `LogDuneServerCommands` log was inspected within five
+seconds for one of:
 
-The audit (2026-05-28) ran in two batches:
+- `Now running ServerCommand '<name>'` → accepted
+- `Deserialized message has unknown Server Command '<name>'` → rejected
 
-1. **Strings-mine** the UE5 dedicated-server binary
-   (`DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping`)
-   for PascalCase identifiers matching `<verb><Noun>` patterns
-   plausible as ServerCommand names.
-2. For each candidate, publish a minimal
-   `{ServerCommand: "<name>", PlayerId: "<test-fls-id>"}` envelope
-   via the working `heartbeats:notifications` exchange.
-3. Grep each Sietch's UE5 log within 5 seconds of publish for
-   either `Now running ServerCommand 'X'` (accepted) or
-   `Deserialized message has unknown Server Command 'X'` (rejected).
+35 plausible names were tested on the 2026-05-28 Early Access build;
+the 14-entry accepted list above is the complete whitelist. Candidate
+names came from `strings` over the UE5 dedicated-server binary
+(`DuneSandbox/Binaries/Linux/DuneSandboxServer-Linux-Shipping`),
+filtered for PascalCase `<verb><Noun>` patterns plausible as
+admin actions.
 
-All 35 candidates landed in the "unknown" bucket. The accepted set is
-the 14-entry whitelist in
-[`ADMIN-COMMANDS.md`](./ADMIN-COMMANDS.md).
+The underlying C++ UFUNCTIONs for most of the missing commands are
+already present in the binary — the dispatch wiring is the gap, not
+the implementation.
 
 ---
 
-## 1. Missing commands (no AMQP path exists today)
+# Section 1 — Commands that don't exist (please add)
 
-### Player health / life cycle
+## 1.1 Player health / life cycle
 
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | Existing C++ underpinning | What it would do |
+|---|---|---|
+| `HealPlayer` / `RestoreHealth` | `DamageableActorComponent::m_CurrentMaxHealth`, `ADuneCharacter` health getters | Restore a player's HP without consumables |
+| `SetCharacterHealth` / `SetPlayerHealth` | same | Set HP to an exact value |
+| `ReviveCharacter` | `ADuneCharacter::Revive` (UFUNCTION present) | Revive a downed/dead player at their last position |
+| `KillCharacter` | `ADuneCharacter::KillCharacter` (UFUNCTION present) | Force-kill a target (e.g. unstuck from an invalid state) |
+| `Respawn` | character respawn path | Force-respawn at the player's bound bed/Sietch |
+| `AddBuff` | `UGameplayEffect` / Gameplay Ability System | Apply a temporary status effect or gameplay tag |
+
+**Why this matters**: when a player is stuck (clipped into terrain,
+ragdolled in an unrecoverable pose, or HP-drained but not dead),
+admins currently have no surgical fix. The only available path is
+"give them consumables and hope they can use them", which fails if
+the player is in a state where they can't open the inventory wheel.
+
+## 1.2 Player hydration meter
+
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `HealPlayer`, `RestoreHealth`, `SetCharacterHealth`, `SetPlayerHealth` | Restore a player's HP bar without consumables |
-| `ReviveCharacter` | Revive a downed / dead player at their last position |
-| `KillCharacter` | Kill a target (e.g. unstuck them from invalid state) |
-| `Respawn` | Force-respawn at the player's bound bed / Sietch |
-| `AddBuff` | Apply a temporary status effect / gameplay tag |
+| `RestoreHydration` / `SetHydration` / `FullHydration` | Refill the player's own hydration meter directly |
 
-**Workaround**: hand the player a healing consumable and ask them to
-use it. The egg's web UI ships a "Heal" kit (Healkits Mk1-Mk6 +
-Bloodsacks) in the Kits tab.
+The existing `UpdateAllWaterFillables` is **not** a substitute — it
+refills jerrycans and stills the player is carrying, but the
+player's own hydration bar is unaffected. A player about to die of
+dehydration on a server-wide event start (e.g. operator just teleported
+everyone to the Deep Desert for a PvP event) has no admin-recoverable
+path other than killing them and hoping they respawn elsewhere.
 
-```text
-admin give me HealthPack_Channeled 5
-admin give me Bloodsack_T6 3
-```
+## 1.3 Currency / Solari wallet
 
-### Hydration bar (player's own water level)
-
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `RestoreHydration`, `SetHydration`, `FullHydration` | Refill the player's own hydration bar |
+| `AwardCurrency` / `AwardSolari` / `SetSolari` | Credit or set a player's Solari wallet balance |
 
-Note: `UpdateAllWaterFillables` exists and works, but it only refills
-**jerrycans and stills the player is carrying** — it does NOT touch
-the player's own hydration meter.
+Today the only way to grant Solari via the admin surface is to drop
+`SolarisCoin` item tokens into the player's inventory via
+`AddItemToInventory`, then have them pick the tokens up — clumsy for
+bulk grants and inconsistent UX for event prize pools. A proper
+wallet-credit command would also avoid the inventory-slot pressure
+that comes from dropping 100k+ coin tokens.
 
-**Workaround**: grant a drinkable item. The "Hydrate" preset kit in
-the web UI does this.
+## 1.4 Faction / Landsraad reputation
 
-```text
-admin give me WaterPack_Consumable 5
-admin give me Literjon 1
-```
-
-### Currency / Solari
-
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `AwardCurrency`, `AwardSolari`, `SetSolari` | Credit a player's Solari wallet directly |
+| `AddFactionReputation` | Increment a player's standing with a specific House |
+| `SetFaction` | Set the player's primary faction outright |
 
-**Workaround**: grant `SolarisCoin` items via `AddItemToInventory`.
-Note that this drops coin **tokens** into inventory — they convert
-to wallet balance on pickup but the UX is clumsy for bulk grants.
+The current workaround is to grant `AtreidesReputation` /
+`HarkonnenReputation` / `SmugglersReputation` items via the `give`
+command, which works because the reputation system happens to
+consume those items as standing-grant fuel. A direct command would
+remove the indirection and let admins set absolute values rather
+than incrementing.
 
-```text
-admin give me SolarisCoin 100000        # 100k coin tokens
-```
+## 1.5 Vehicle / actor cleanup
 
-A more elegant fix would be a postgres-direct `UPDATE` on whatever
-column stores the Solari balance. We have not yet located that
-column — see the **Schema-survey-needed** appendix at the bottom.
-
-### Faction / Landsraad reputation
-
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `AddFactionReputation`, `SetFaction` | Change a player's standing with Atreides / Harkonnen / Smugglers |
+| `DespawnVehicle` / `RemoveVehicle` | Despawn an abandoned, stuck, or unrecoverable vehicle by actor id |
+| `DespawnActor` / `DeleteActor` | More general actor cleanup (for placeables, dropped items, etc.) |
+| `KillActor` / `DestroyActor` | Same intent — different verbs in case the chosen name conflicts internally |
 
-**Workaround**: grant the FactionReputation item FNames via
-`AddItemToInventory`. The seabass `give` handler accepts these and
-the in-game reputation system picks up the item as standing-grant
-fuel:
+**Why this matters**: `SpawnVehicleAt` exists and works, which means
+admins regularly spawn vehicles. But there is no inverse. Vehicles
+pile up over the lifetime of a server — failed event setups, players
+who quit mid-drive, vehicles clipped into rock, etc. Currently the
+only way to clean them up is to edit the `dune.actors` postgres
+table directly, which is risky and not something every operator
+can do safely.
 
-```text
-admin give me AtreidesReputation 1000
-admin give me HarkonnenReputation 1000
-admin give me SmugglersReputation 1000
-```
+## 1.6 Schematics / unlocks
 
-The egg's web UI surfaces this as a dedicated "Give Landsraad
-standing" form with House selector + quick amount buttons.
-
-### Vehicle / actor cleanup
-
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `DespawnVehicle`, `DespawnActor`, `DeleteActor`, `RemoveVehicle`, `KillActor`, `DestroyActor`, `VehicleDespawn`, `RemoveSpawnedVehicle`, `KillVehicle`, `AdminDespawn` | Remove an abandoned / stuck spawned vehicle |
+| `AddSchematic` | Unlock a specific schematic by name |
+| `AddAllAvailableSchematics` | Unlock every schematic appropriate for the player's progression |
+| `AddCharacterUnlockedCustomizationAll` | Unlock cosmetics / customisation entries |
 
-**Workaround**: postgres-direct delete on `dune.actors` with a
-class-name whitelist for safety. FK cascades clean
-`actor_state` / `inventories` / `base_backup_linked_actors`;
-`overmap_players.vehicle_id` is `SET NULL` so the last driver keeps
-their overmap row.
+The current workaround is to grant `<Item>_Schematic` items via
+`AddItemToInventory`, which works but requires admins to know every
+schematic name. A bulk unlock command would help with character
+testing, event setups, and "give the new player a fair starting
+loadout" workflows.
 
-```sql
-DELETE FROM dune.actors
-WHERE id = <actor_id>
-  AND class ILIKE ANY (ARRAY[
-    '%BP_Sandbike%', '%BP_Buggy%', '%BP_Tank%',
-    '%BP_SandCrawler%', '%BP_LightOrnithopter%',
-    '%BP_MediumOrnithopter%', '%BP_TransportOrnithopter%',
-    '%BP_TreadWheel%', '%BP_ContainerVehicle%'
-  ]);
-```
+## 1.7 Skills
 
-Already shipped as `admin vehicle-delete <actor_id>` in the egg.
-
-### Items / schematics
-
-| Candidate name(s) tested | What it would do |
-|---|---|
-| `AddSchematic`, `AddAllAvailableSchematics` | Unlock a single schematic or every schematic |
-| `AddBasicInventoryToCharacter` | Restore a player's starter loadout |
-| `AddItemsToInventory` (plural) | Batch grant multiple items in one call |
-| `AddWeaponToInventory` | Specialised weapon grant (perhaps with proper Quality) |
-| `AddCharacterUnlockedCustomizationAll` | Unlock every cosmetic skin / customisation |
-
-**Workaround for schematics**: grant the schematic items directly:
-
-```text
-admin items "Schematic"                          # browse
-admin give me B1C4_Unique_Dirk2_Schematic 1
-```
-
-**Workaround for batch grants**: loop `give` per item (the egg's
-"Kits" tab handles this UX layer).
-
-### Skills
-
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
 | `SkillsUnlockAll` | Max every skill module in one call |
-| `SkillsRespec`, `SkillsResetRespecTimer` | Trigger a respec / clear the cooldown |
+| `SkillsRespec` / `SkillsResetRespecTimer` | Trigger a player respec / clear the respec cooldown |
+| `UnlockAllAbilities` | Unlock every ability node |
+| `ResetCooldowns` | Clear all active ability cooldowns |
 | `SkillsToggleCheatProgression` | Toggle dev-test progression mode |
-| `UnlockAllAbilities` | Unlock all ability nodes |
-| `ResetCooldowns` | Clear all ability cooldowns |
 
-**Workaround**: the working `SkillsSetModuleLevel` and
-`SkillsSetUnspentSkillPoints` cover most of the use case. For
-"unlock everything", you'd loop `admin skill me <module> <max>` per
-module — tedious but possible. The egg's skills lookup
-(`admin skills <category>`) lists the modules so you can script the
-loop.
+`SkillsSetModuleLevel` and `SkillsSetUnspentSkillPoints` cover most
+of the slot, but bulk operations require admins to loop over every
+module — currently a 100+ command session for a full unlock.
 
-### Story / journey
+## 1.8 Story / journey
 
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `CompleteStoryNodeByName`, `JourneyCompleteStoryNode` | Mark a story node complete |
+| `CompleteStoryNodeByName` | Mark a specific story node complete |
 | `ChangeSpiceAddictionStatus` | Cure or apply spice addiction debuff |
-| `Wormify` | Force-trigger a sandworm encounter |
+| `Wormify` | Force-trigger a sandworm encounter at a location |
 
-**No workaround** at this time — story-progression state lives in
-`dune.player_state` columns we haven't fully mapped. See the
-**Schema-survey-needed** appendix.
+`Journey*` family commands exist in the seabass dispatch table (see
+Section 2), but the handlers don't actually change state. A working
+`CompleteStoryNodeByName` would unstick players whose contracts are
+broken (a recurring support issue) without database surgery.
 
-### Character state mods
+## 1.9 Character state mods
 
-| Candidate name(s) tested | What it would do |
+| Suggested `ServerCommand` | What it would do |
 |---|---|
-| `AddCharacterStatModifierFloat` | Apply a temporary stat buff (speed, damage, etc.) |
-| `AddCharacterGameplayTag` | Set/clear a gameplay tag on the character |
+| `AddCharacterStatModifierFloat` | Apply a temporary stat buff (movement speed, damage, etc.) |
+| `AddCharacterGameplayTag` | Set or clear a gameplay tag on the character |
 | `ServerSetCheats` | Toggle dev-test cheat flags |
 
-**No workaround** — these are transient runtime state on the live UE5
-character actor. Persisting them requires either Funcom adding the
-ServerCommand OR finding the persistence column (likely doesn't
-exist — most of these are non-persistent dev tools).
+These are useful for testing balance changes, running custom events,
+or temporarily granting an effect for narrative purposes.
 
 ---
 
-## 2. Partially-working commands
+# Section 2 — Commands that publish but only partially work
 
-These reach the seabass handler successfully (`publish=ok` AND
-`Now running ServerCommand` lines fire in the per-Sietch UE5 log)
-but the in-game effect is incomplete, conditional, or absent.
+## 2.1 `AddItemToInventory` — `Quality` is hardcoded to 0
 
-### `AddItemToInventory` — Quality field hardcoded to 0
+**Symptom**: the payload accepts `ItemName` / `Quantity` / `Durability`
+fields. There is no accepted `Quality` field, and the server-side
+handler appears to hardcode the persisted `quality_level` to 0
+regardless of what the payload contains.
 
-The payload accepts an `ItemName` + `Quantity` + `Durability`, but
-the seabass handler **discards any `Quality` field** in favour of a
-hardcoded `0`. Players who want a graded T1-T5 item end up with an
-ungraded item.
+**Result**: admins cannot grant graded T1-T5 items. A
+`{ItemName: "AtreLMG5", Quality: 5}` payload still produces an
+ungraded T5 weapon.
 
-| What the AMQP path does | What you actually want |
-|---|---|
-| Grant `AtreLMG5` quantity 1, Quality=0 (ungraded T5 LMG) | Grant `AtreLMG5` quantity 1, Quality=3 (graded T3 of T5 LMG) |
+**What we'd suggest**: extend the handler to read an optional
+`Quality` field (default 0 for back-compat), validate to the
+documented 0-5 range, and pass it through to the `dune.items`
+INSERT. The schema already has the `quality_level` column —
+direct database edits with values 0-5 do work in-game and 6+
+clamps to 5 (verified by a community report on adainrivers'
+manager, issue #12).
 
-**Workaround (verified by adainrivers issue #12 reporter)**: skip
-the AMQP path and `INSERT` directly into `dune.items` with the
-`quality_level` column set:
+## 2.2 `AwardXP` — `Category` field required but value ignored
 
-```sql
-INSERT INTO dune.items (
-    inventory_id, stack_size, position_index, template_id,
-    is_new, acquisition_time, stats, quality_level
-) VALUES (
-    <backpack_inventory_id>, <qty>, <free_slot>, '<ItemFName>',
-    TRUE, EXTRACT(EPOCH FROM now())::int8, '{}'::jsonb, <0-5>
-);
-```
+**Symptom**: the seabass handler does a presence check on `Category`
+before applying the XP grant. Without the field, the dispatch fires
+(`LogDuneServerCommands: Now running ServerCommand 'AwardXP'`) but
+the player receives no XP. With the field present, the player
+receives generic XP regardless of which category value was sent.
 
-Where `backpack_inventory_id` is obtained by joining
-`dune.player_state.player_pawn_id → dune.inventories.actor_id
-WHERE inventory_type = 0`. The reporter confirmed values 0-5 work;
-the game clamps higher values to 5.
-
-Not yet shipped in the egg — would need a new `give-graded`
-subcommand. Tracked in the issue #12 thread upstream.
-
-### `AwardXP` — `Category` field required but value ignored
-
-The seabass handler does `if payload.has("Category")` as a presence
-check. **Without** the field: silent no-op (logs `Now running`,
-applies nothing). **With** the field: always grants generic player
-XP regardless of what the value says.
-
-| Sent | Received | Applied |
+| Payload | Dispatch logged? | XP applied? |
 |---|---|---|
-| `{Experience: 1000}` | dispatch logged | NOTHING (silent no-op) |
-| `{Experience: 1000, Category: "Combat"}` | dispatch logged | +1000 generic XP |
-| `{Experience: 1000, Category: "Trading"}` | dispatch logged | +1000 generic XP (Trading ignored) |
+| `{Experience: 1000}` | yes | no (silent no-op) |
+| `{Experience: 1000, Category: "Combat"}` | yes | yes, generic XP |
+| `{Experience: 1000, Category: "Trading"}` | yes | yes, generic XP (Trading ignored) |
 
-Our wrapper auto-injects `Category: "Combat"` so operators never have
-to think about it.
+**What we'd suggest**: either route XP into the actual named category
+(if that's the intent), or drop the `Category` field as a required
+guard and document that AwardXP always grants generic XP.
 
-### `UpdateAllWaterFillables` — refills containers, not the bar
+## 2.3 `UpdateAllWaterFillables` — narrower than the name implies
 
-Refills jerrycans, stills, and similar carried containers. The
-**player's own hydration meter** is unaffected. If the player is
-about to dehydrate, this command alone won't save them — they have
-to manually drink from a refilled container, OR consume a water item
-directly.
+**Symptom**: refills jerrycans, stills, and other carried fillable
+containers. The player's own hydration meter is unaffected.
 
-Workaround: grant `WaterPack_Consumable` (drinks immediately) +
-the fillable refill.
+**What we'd suggest**: either rename to `RefillCarriedContainers`
+(matches the actual behaviour), or extend to also restore the
+hydration meter. A combined `Hydrate` command (refills containers AND
+restores hydration bar to full) would cover the operator intent that
+the current name implies.
 
-### `CheatScript` — accepted, never executes
+## 2.4 `CheatScript` — accepted, never executes
 
-```text
-admin cheat me PlaytestSetupAdmin
-```
+**Symptom**: `LogDuneServerCommands: Now running ServerCommand 'CheatScript'`
+fires on dispatch, but the named `[CheatScript.<name>]` block from
+`DefaultGame.ini` is never resolved or executed.
 
-The seabass handler logs `Now running ServerCommand 'CheatScript'`
-but the script body is never resolved. Kept in our wrapper for
-protocol parity in case a future EA patch wires it up.
+**What we'd suggest**: either wire the handler to resolve and execute
+the named script block, or remove the command from the accepted list
+so operators get a clean rejection rather than a silent success.
 
-### `ServerExec` — accepted, never executes
+## 2.5 `ServerExec` — accepted, never executes
 
-Same shape as `CheatScript`. The `Exec` field accepts arbitrary
-strings; the handler logs the dispatch and discards the body.
+**Symptom**: same shape as `CheatScript`. The `Exec` field accepts
+arbitrary strings; the handler logs the dispatch but discards the
+body. No console command is executed.
 
-### `Journey*` family — handlers fire, no state change
+**What we'd suggest**: same as 2.4 — wire or remove. A working
+`ServerExec` would be very useful (it covers the gap for most of
+the missing commands in Section 1), but a non-working accepted
+command is worse than a clean rejection because it hides the gap.
 
-`JourneySetCheckpoint`, `JourneyCompleteStep`, etc. The handlers
-exist in the seabass dispatch table (so they're not in the "unknown"
-bucket) but they don't update any visible journey / story state.
-adainrivers retired their UI exposure of these on 2026-05-26 after
-live testing.
+## 2.6 `Journey*` family — handlers fire, no state change
 
-### `AwardXPByEventTag` — half-existent
+**Symptom**: `JourneySetCheckpoint`, `JourneyCompleteStep`, and
+related commands appear in the seabass dispatch (so they're not in
+the "unknown" bucket), but they don't update any visible journey or
+story state. Affected community manager tools (adainrivers'
+`dune-dedicated-server-manager`) retired these from their UI on
+2026-05-26 after live-testing confirmed the no-op.
 
-The binary has `ADuneCharacter::AwardXPByEventTag` as a C++
-UFUNCTION, but the seabass dispatch returns `unknown Server Command`.
-So the implementation exists but no MQ handler is wired. A potential
-"fix in one line" on Funcom's side.
+**What we'd suggest**: same wire-or-remove principle.
 
----
+## 2.7 `AwardXPByEventTag` — half-implemented
 
-## 3. The full negative-result list
+**Symptom**: the binary has `ADuneCharacter::AwardXPByEventTag` as a
+C++ UFUNCTION, but the seabass dispatch returns
+`unknown Server Command 'AwardXPByEventTag'`. The implementation
+exists; the dispatch entry is missing.
 
-For future contributors who want to retry these on new game versions —
-each one was tested and returned `unknown Server Command` on EA build
-as of 2026-05-28:
-
-```
-HealPlayer                  RestoreHealth               SetCharacterHealth
-SetPlayerHealth             ReviveCharacter             KillCharacter
-RestoreHydration            SetHydration                FullHydration
-AwardCurrency               AwardSolari                 SetSolari
-AddFactionReputation        SetFaction                  AddBuff
-Respawn                     ResetCooldowns              UnlockAllAbilities
-SkillsUnlockAll             SkillsRespec                SkillsResetRespecTimer
-SkillsToggleCheatProgression AddSchematic               AddAllAvailableSchematics
-AddBasicInventoryToCharacter AddItemsToInventory        AddWeaponToInventory
-AddCharacterUnlockedCustomizationAll ChangeSpiceAddictionStatus
-AddCharacterStatModifierFloat AddCharacterGameplayTag    Wormify
-CompleteStoryNodeByName     JourneyCompleteStoryNode     ServerSetCheats
-```
-
-If any of these start being accepted on a new game patch, please
-update this list and the [`ADMIN-COMMANDS.md`](./ADMIN-COMMANDS.md)
-catalogue.
+**What we'd suggest**: add the dispatch entry. Appears to be a
+one-line fix on Funcom's side.
 
 ---
 
-## Appendix — Schema survey still needed
+# Section 3 — Full negative-result list
 
-Three workaround paths exist *in theory* via postgres direct write,
-but we haven't located the columns:
+For future game-version retests — each of these returned
+`unknown Server Command` on the 2026-05-28 Early Access build. If any
+start being accepted on a future patch, that's a signal Funcom has
+expanded the dispatch table and this document should be updated.
 
-1. **Player health bar** — UE5 has
-   `DamageableActorComponent::m_CurrentMaxHealth` as a per-actor
-   field, but we haven't found the persisted postgres column. May
-   live in `dune.actor_state` (snapshot at logoff) or a sibling
-   table. Worth a `\d+` on a live database to confirm.
-2. **Player hydration meter** — same situation; Funcom must persist
-   it somewhere for character resume across logout.
-3. **Solari wallet balance** — likely a column on `dune.player_state`
-   or `dune.encrypted_player_state`. Upstream's `queries.rs` reads
-   only a subset of `player_state` columns; the wallet column is not
-   yet referenced anywhere we've audited.
-
-A focused schema survey command (run against the live container's
-postgres) would resolve all three:
-
-```bash
-docker exec <container> bash -c '
-  source /home/container/scripts/lib.sh /home/container
-  "$EXTRACTED/postgres/usr/local/bin/psql" -h "$RUNTIME/postgresql" \
-    -p 15432 -U dune -d dune -c "
-SELECT table_name, column_name, data_type
-FROM information_schema.columns
-WHERE table_schema = '\''dune'\''
-  AND (column_name ILIKE '\''%health%'\''
-    OR column_name ILIKE '\''%hydration%'\''
-    OR column_name ILIKE '\''%solari%'\''
-    OR column_name ILIKE '\''%currency%'\''
-    OR column_name ILIKE '\''%spice_addiction%'\''
-    OR column_name ILIKE '\''%reputation%'\''
-    OR column_name ILIKE '\''%journey%'\''
-    OR column_name ILIKE '\''%story_node%'\'')
-ORDER BY table_name, column_name;
-"'
+```
+HealPlayer                            RestoreHealth
+SetCharacterHealth                    SetPlayerHealth
+ReviveCharacter                       KillCharacter
+RestoreHydration                      SetHydration
+FullHydration                         AwardCurrency
+AwardSolari                           SetSolari
+AddFactionReputation                  SetFaction
+AddBuff                               Respawn
+ResetCooldowns                        UnlockAllAbilities
+SkillsUnlockAll                       SkillsRespec
+SkillsResetRespecTimer                SkillsToggleCheatProgression
+AddSchematic                          AddAllAvailableSchematics
+AddBasicInventoryToCharacter          AddItemsToInventory
+AddWeaponToInventory                  AddCharacterUnlockedCustomizationAll
+ChangeSpiceAddictionStatus            AddCharacterStatModifierFloat
+AddCharacterGameplayTag               Wormify
+CompleteStoryNodeByName               JourneyCompleteStoryNode
+ServerSetCheats                       AwardXPByEventTag
 ```
 
-When the schema survey lands, this doc should grow a section listing
-which fields are writable + which UPDATE statements safely persist
-through a player relog.
+---
 
-## Attribution
+# Why this matters for the community
 
-Negative-result list, partial-command flags, and the protocol shape
-all reverse-engineered with help from
-[adainrivers/dune-dedicated-server-manager](https://github.com/adainrivers/dune-dedicated-server-manager)
-(MIT). The 2026-05-28 35-candidate sweep was performed locally; the
-14-entry accepted catalogue matches adainrivers'
-`commands/specs.rs` byte-for-byte. See [`ATTRIBUTION.md`](../ATTRIBUTION.md).
+Self-host server operators are running events, supporting players
+who get stuck, and stewarding small-population community servers.
+The commands above are not "cheat the official game" requests —
+they're the operational toolkit any private-server admin team needs
+to keep a community running smoothly. The biggest single ask in
+Section 1 is the vehicle-cleanup family (1.5); the biggest fix in
+Section 2 is the hardcoded `Quality=0` on `AddItemToInventory` (2.1),
+since it blocks a feature class players can already see in the game
+(graded gear) from being grantable.
+
+Most of the suggested commands map to UFUNCTIONs the binary already
+exports. The work on Funcom's side is primarily dispatch-table
+wiring plus standard FLS auth checks — not new gameplay code.
+
+If any of the partially-working commands are intentional design
+choices that aren't documented externally, a public note (e.g. on a
+self-host wiki page) would also be welcome — admins are currently
+guessing at intent from binary strings.
+
+## Reference
+
+Protocol shape and the original 14-command accepted catalogue are
+documented in the open-source admin tool from adainrivers
+(`dune-dedicated-server-manager`, MIT licensed,
+<https://github.com/adainrivers/dune-dedicated-server-manager>).
+The 35-candidate sweep above expands on their work to confirm the
+boundaries of the accepted whitelist.

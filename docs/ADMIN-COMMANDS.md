@@ -322,15 +322,18 @@ weapons), see [`ADMIN-TIER-ITEMS.md`](./ADMIN-TIER-ITEMS.md). The full
 2 558-row item table lives in `data/admin/items.json`; the admin web
 UI's Items tab exposes the same dataset with category filters.
 
-### What's missing or only partially working
+### What's missing or only partially working — feedback for Funcom
 
-See [`ADMIN-FUNCOM-GAPS.md`](./ADMIN-FUNCOM-GAPS.md) for the catalogue
-of admin actions Funcom hasn't shipped via the seabass handler (no
-heal / hydrate / direct-Solari / despawn-vehicle / etc. — 35 candidate
-names tested, all rejected), commands that publish OK but only half-
-apply state (`AwardXP` `Category` quirk, `AddItemToInventory` hardcoded
-`Quality=0`, `Journey*` family no-ops), and the postgres-direct
-workarounds that close some of the gaps.
+See [`ADMIN-FUNCOM-GAPS.md`](./ADMIN-FUNCOM-GAPS.md) for a Funcom-
+facing catalogue of admin actions the seabass handler doesn't expose
+(no heal / hydrate / direct-Solari / despawn-vehicle / faction-rep
+/ schematic-unlock, plus story and skill bulk-ops — 35 candidate
+names tested, all rejected) and commands that publish OK but only
+half-apply state (`AwardXP` `Category` quirk, `AddItemToInventory`
+hardcoded `Quality=0`, `Journey*` family no-ops,
+`CheatScript`/`ServerExec` accepted but never executed,
+`AwardXPByEventTag` C++ function exists but no MQ dispatch entry).
+Suitable for sharing as constructive feedback with the game team.
 
 > The `raw` subcommand that accepted arbitrary `ServerCommand` JSON
 > was removed in the Phase 1 / Phase 2 security pass. It accepted any

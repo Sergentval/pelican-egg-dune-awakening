@@ -82,9 +82,9 @@ prep, scheduled restart) in
 catalogue grouped by faction and tier (Atreides / Harkonnen /
 Smuggler weapon families, armor sets, augments, B1C4 unique drops)
 in [`docs/ADMIN-TIER-ITEMS.md`](./docs/ADMIN-TIER-ITEMS.md).
-What Funcom hasn't shipped + commands that only work partially +
-postgres-direct workarounds in
-[`docs/ADMIN-FUNCOM-GAPS.md`](./docs/ADMIN-FUNCOM-GAPS.md).
+Self-host admin-surface feedback for Funcom (missing commands,
+partial implementations, the 35-candidate negative-result list)
+in [`docs/ADMIN-FUNCOM-GAPS.md`](./docs/ADMIN-FUNCOM-GAPS.md).
 Protocol reverse-engineering credit:
 [adainrivers/dune-dedicated-server-manager](https://github.com/adainrivers/dune-dedicated-server-manager)
 (MIT). See [`ATTRIBUTION.md`](./ATTRIBUTION.md).
