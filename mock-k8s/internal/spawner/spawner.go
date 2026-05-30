@@ -1,47 +1,75 @@
 // Package spawner reconciles ServerSetScale spec.replicas → running UE5
 // processes by shelling out to scripts/start-ue5.sh.
 //
-// This is the only place where mock-k8s actually touches the host: we
-// fork start-ue5.sh with the per-instance env (DUNE_PARTITION, GAME_PORT,
-// IGW_PORT) the script's preamble expects (see scripts/start-ue5.sh line
-// 26-31). Process lifetime is owned by start-ue5.sh's launch_bg — we get
-// just an "exec returned 0" once the script has backgrounded the
-// UE5 process and written its pid file.
+// This is the only place where mock-k8s actually touches the host: we fork
+// start-ue5.sh with the per-instance env (DUNE_PARTITION, GAME_PORT,
+// IGW_PORT) the script's preamble expects. start-ue5.sh launches the UE5
+// process via lib.sh's launch_bg, which setsid's it and records the pid at
+// $BASE/runtime/pids/ue5-<map>-<suffix>.pid. We read that pidfile to learn
+// the pid (for state persistence) and to terminate the instance on
+// scale-down.
 package spawner
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/pool"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
 )
 
-// Spawner ties the ServerSetScale store, the port Pool, and the
-// start-ue5.sh script together.
+const (
+	// terminateGrace is how long a UE5 instance gets to exit on SIGTERM
+	// during scale-down before mock-k8s escalates to SIGKILL.
+	terminateGrace = 15 * time.Second
+
+	// pidWaitTimeout bounds how long capturePID waits for start-ue5.sh to
+	// write the instance pidfile after we launch the script.
+	pidWaitTimeout = 20 * time.Second
+
+	// pidPollInterval is how often capturePID re-checks for the pidfile.
+	pidPollInterval = 250 * time.Millisecond
+)
+
+// Spawner ties the ServerSetScale store, the port Pool, and start-ue5.sh
+// together.
 type Spawner struct {
 	store      *serversetscale.Store
 	pool       *pool.Pool
 	scriptPath string // absolute path to scripts/start-ue5.sh
-	baseDir    string // $BASE for the script
+	baseDir    string // $BASE for the script (also roots runtime/pids)
 
 	mu        sync.Mutex
 	instances map[string][]instance // key: namespace/name → instance list
+
+	// bg tracks background goroutines (pid capture + scale-down teardown)
+	// so tests — and a future graceful shutdown — can wait for them.
+	bg sync.WaitGroup
+
+	// terminate is the process-termination seam; defaults to proc.Terminate.
+	// Swappable so tests can assert teardown behaviour without real signals.
+	terminate func(pid int, grace time.Duration) error
 }
 
 type instance struct {
-	Suffix     string
+	Suffix      string
+	MapName     string
 	PartitionID int
-	Allocation pool.Allocation
+	Allocation  pool.Allocation
+	PID         int // 0 until capturePID reads the pidfile
 }
 
 // New constructs a Spawner. scriptPath should be absolute (e.g.
-// /home/container/scripts/start-ue5.sh). baseDir is what we pass as $1
-// to the script.
+// /home/container/scripts/start-ue5.sh). baseDir is passed as $1 to the
+// script and is the root of runtime/pids.
 func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir string) *Spawner {
 	return &Spawner{
 		store:      store,
@@ -49,12 +77,16 @@ func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir strin
 		scriptPath: scriptPath,
 		baseDir:    baseDir,
 		instances:  make(map[string][]instance),
+		terminate:  proc.Terminate,
 	}
 }
 
-// OnSpecChange is meant to be assigned to store.OnSpecChange. It diffs
-// the desired replica count against current instances and starts /
-// stops as needed.
+// Wait blocks until all in-flight background goroutines (pid capture and
+// scale-down teardown) finish. Primarily a test seam.
+func (s *Spawner) Wait() { s.bg.Wait() }
+
+// OnSpecChange is assigned to store.OnSpecChange. It diffs the desired
+// replica count against current instances and starts / stops as needed.
 func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
 	mapName, _ := obj.Spec["mapName"].(string)
@@ -65,31 +97,16 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	partitionID := readPartitionID(obj.Spec)
 
 	s.mu.Lock()
-	current := s.instances[key]
+	current := len(s.instances[key])
 	s.mu.Unlock()
 
-	if desired == len(current) {
-		return
-	}
-	if desired > len(current) {
-		for i := len(current); i < desired; i++ {
+	switch {
+	case desired > current:
+		for i := current; i < desired; i++ {
 			s.spawnOne(obj, mapName, partitionID, i)
 		}
-	} else {
-		// scale-down: just remove tracking entries; start-ue5.sh's
-		// child process lifetime is owned by the parent script. A
-		// proper implementation would SIGTERM the recorded pid here;
-		// for first-boot parity we accept the leak and rely on
-		// container restart to clean up.
-		s.mu.Lock()
-		removed := s.instances[key][desired:]
-		s.instances[key] = s.instances[key][:desired]
-		s.mu.Unlock()
-		for _, inst := range removed {
-			s.pool.Release(inst.Allocation.Index)
-			slog.Info("spawner: scale-down (leak warning, no SIGTERM yet)",
-				"key", key, "suffix", inst.Suffix, "index", inst.Allocation.Index)
-		}
+	case desired < current:
+		s.scaleDown(key, desired)
 	}
 
 	// Reflect spec change into status.
@@ -99,6 +116,52 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	})
 }
 
+// scaleDown removes instances above the desired count and tears each one
+// down asynchronously: SIGTERM (then SIGKILL after grace) the UE5 process,
+// and only release its port slot once the process is gone — releasing
+// earlier would let a concurrent scale-up grab the same UDP port while the
+// dying UE5 still holds it.
+func (s *Spawner) scaleDown(key string, desired int) {
+	s.mu.Lock()
+	list := s.instances[key]
+	if desired >= len(list) {
+		s.mu.Unlock()
+		return
+	}
+	removed := append([]instance(nil), list[desired:]...)
+	s.instances[key] = append([]instance(nil), list[:desired]...)
+	s.mu.Unlock()
+
+	for _, inst := range removed {
+		s.bg.Add(1)
+		go func(inst instance) {
+			defer s.bg.Done()
+			s.teardown(key, inst)
+		}(inst)
+	}
+}
+
+// teardown terminates one instance's UE5 process and releases its slot.
+func (s *Spawner) teardown(key string, inst instance) {
+	pidPath := s.pidPath(inst)
+	pid := proc.ReadPidFile(pidPath)
+	if pid == 0 {
+		pid = inst.PID
+	}
+	if pid > 0 {
+		if err := s.terminate(pid, terminateGrace); err != nil {
+			slog.Error("spawner: terminate failed", "key", key, "suffix", inst.Suffix, "pid", pid, "err", err)
+		} else {
+			slog.Info("spawner: terminated UE5 on scale-down", "key", key, "suffix", inst.Suffix, "pid", pid)
+		}
+		_ = os.Remove(pidPath)
+	} else {
+		slog.Warn("spawner: scale-down with no pid to terminate", "key", key, "suffix", inst.Suffix)
+	}
+	// Release the slot only now that the port is actually free.
+	s.pool.Release(inst.Allocation.Index)
+}
+
 func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionID, indexInSet int) {
 	alloc, err := s.pool.Acquire()
 	if err != nil {
@@ -106,15 +169,19 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 		return
 	}
 	suffix := fmt.Sprintf("p%d", alloc.Index)
+	inst := instance{
+		Suffix:      suffix,
+		MapName:     mapName,
+		PartitionID: partitionID,
+		Allocation:  alloc,
+	}
 
 	cmd := exec.CommandContext(context.Background(),
 		"bash", s.scriptPath, s.baseDir, mapName, suffix)
 	cmd.Env = append([]string{}, mockChildEnv(partitionID, alloc)...)
-	// Inherit existing process env so things like $PATH, $HOME, $DUNE_*
-	// (set by pelican-entrypoint.sh) flow through.
-	for _, e := range cmdEnviron() {
-		cmd.Env = append(cmd.Env, e)
-	}
+	// Inherit existing process env so $PATH, $HOME, $DUNE_* (set by
+	// pelican-entrypoint.sh) flow through.
+	cmd.Env = append(cmd.Env, cmdEnviron()...)
 	slog.Info("spawner: starting UE5", "map", mapName, "suffix", suffix,
 		"partition", partitionID, "game_port", alloc.GamePort, "igw_port", alloc.IGWPort)
 
@@ -123,25 +190,58 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 		s.pool.Release(alloc.Index)
 		return
 	}
-	// We deliberately don't Wait() — start-ue5.sh backgrounds the real
-	// UE5 process via launch_bg and exits itself; Wait would block on
-	// the script's lifecycle, not the UE5 process.
-	go func() {
-		_ = cmd.Wait()
-	}()
+	// Don't Wait() on the foreground script's result — start-ue5.sh
+	// backgrounds the real UE5 process via launch_bg and blocks on the
+	// UDP-bind handshake; reap it so it doesn't become a zombie.
+	go func() { _ = cmd.Wait() }()
 
-	s.mu.Lock()
 	key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
-	s.instances[key] = append(s.instances[key], instance{
-		Suffix:      suffix,
-		PartitionID: partitionID,
-		Allocation:  alloc,
-	})
+	s.mu.Lock()
+	s.instances[key] = append(s.instances[key], inst)
 	s.mu.Unlock()
+
+	// Learn the real UE5 pid from the pidfile start-ue5.sh writes.
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		s.capturePID(key, alloc.Index, s.pidPath(inst))
+	}()
+}
+
+// capturePID polls for the pidfile start-ue5.sh writes and records the pid
+// onto the matching tracked instance. Best-effort: if the pidfile never
+// appears within pidWaitTimeout we log and move on (teardown re-reads the
+// pidfile directly, so a missed capture is not fatal).
+func (s *Spawner) capturePID(key string, index int, pidPath string) {
+	deadline := time.Now().Add(pidWaitTimeout)
+	for {
+		if pid := proc.ReadPidFile(pidPath); pid > 0 {
+			s.mu.Lock()
+			for i := range s.instances[key] {
+				if s.instances[key][i].Allocation.Index == index {
+					s.instances[key][i].PID = pid
+					break
+				}
+			}
+			s.mu.Unlock()
+			return
+		}
+		if time.Now().After(deadline) {
+			slog.Warn("spawner: pidfile not seen before timeout", "key", key, "path", pidPath)
+			return
+		}
+		time.Sleep(pidPollInterval)
+	}
+}
+
+// pidPath returns the pidfile path start-ue5.sh writes for this instance,
+// matching scripts/lib.sh's pid_file() + start-ue5.sh's INSTANCE_ID.
+func (s *Spawner) pidPath(inst instance) string {
+	return filepath.Join(s.baseDir, "runtime", "pids", "ue5-"+inst.MapName+"-"+inst.Suffix+".pid")
 }
 
 // mockChildEnv returns the env vars start-ue5.sh's preamble reads to
-// override the per-map env file (lines 26-31 of the script).
+// override the per-map env file.
 func mockChildEnv(partitionID int, alloc pool.Allocation) []string {
 	return []string{
 		"DUNE_PARTITION=" + strconv.Itoa(partitionID),
