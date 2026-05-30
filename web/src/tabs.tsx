@@ -6,6 +6,7 @@ import {
   armorSetClass,
   armorSetLabel,
   armorSetTier,
+  clampNum,
   deleteVehicleActor,
   detectSkillType,
   detectTier,
@@ -25,6 +26,8 @@ import {
   parsePlayerTable,
   parseVehicleListOutput,
   publish,
+  sanitizeIdent,
+  sanitizeText,
   skillCategoryStyle,
   skillTypeIcon,
   vehicleActorToClass,
@@ -260,6 +263,9 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
 
 // ---- Broadcast --------------------------------------------------------
 
+const BROADCAST_TITLE_MAX = 120;
+const BROADCAST_BODY_MAX = 1000;
+
 export function BroadcastTab({ setConsoleEntries }: TabProps) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -267,7 +273,18 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    await runAndLog(setConsoleEntries, "broadcast", { title, body, duration }, `broadcast "${title}"`);
+    // Strip control chars one last time before submit — the on-change
+    // sanitiser handles typing but a paste-then-submit could slip
+    // through if the user paste-edits before we re-render.
+    const safeTitle = sanitizeText(title, BROADCAST_TITLE_MAX);
+    const safeBody = sanitizeText(body, BROADCAST_BODY_MAX);
+    if (!safeTitle || !safeBody) return;
+    await runAndLog(
+      setConsoleEntries,
+      "broadcast",
+      { title: safeTitle, body: safeBody, duration },
+      `broadcast "${safeTitle}"`,
+    );
   }
 
   return (
@@ -278,16 +295,43 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
       <form onSubmit={submit} className="p-4 space-y-4">
         <div>
           <label className="label" htmlFor="bcast-title">Title</label>
-          <input id="bcast-title" required value={title} onChange={(e) => setTitle(e.target.value)} className="input-field" placeholder="Maintenance" />
+          <input
+            id="bcast-title"
+            required
+            value={title}
+            maxLength={BROADCAST_TITLE_MAX}
+            onChange={(e) => setTitle(sanitizeText(e.target.value, BROADCAST_TITLE_MAX))}
+            className="input-field"
+            placeholder="Maintenance"
+          />
         </div>
         <div>
           <label className="label" htmlFor="bcast-body">Body</label>
-          <textarea id="bcast-body" required value={body} onChange={(e) => setBody(e.target.value)} className="input-field min-h-[80px]" placeholder="Restart in 5 minutes — save your work" />
+          <textarea
+            id="bcast-body"
+            required
+            value={body}
+            maxLength={BROADCAST_BODY_MAX}
+            onChange={(e) => setBody(sanitizeText(e.target.value, BROADCAST_BODY_MAX))}
+            className="input-field min-h-[80px]"
+            placeholder="Restart in 5 minutes — save your work"
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            {body.length}/{BROADCAST_BODY_MAX}
+          </p>
         </div>
         <div>
           <label className="label" htmlFor="bcast-dur">Display duration</label>
           <div className="flex items-center gap-2">
-            <input id="bcast-dur" type="number" min={1} max={300} value={duration} onChange={(e) => setDuration(parseInt(e.target.value) || 20)} className="input-field w-32" />
+            <input
+              id="bcast-dur"
+              type="number"
+              min={1}
+              max={300}
+              value={duration}
+              onChange={(e) => setDuration(clampNum(e.target.value, 1, 300, 20))}
+              className="input-field w-32"
+            />
             <span className="text-xs text-slate-500">seconds</span>
           </div>
         </div>
@@ -2242,9 +2286,15 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
   }
 
   function addDraftLine() {
-    const id = draftItemId.trim();
+    // Funcom item FNames match [A-Za-z0-9_]+; reject anything that
+    // doesn't so a paste of "; rm -rf /" can't enter the draft list.
+    // The backend already JSON-escapes the value, but client-side
+    // rejection gives the operator immediate feedback instead of a
+    // silent backend error.
+    const id = sanitizeIdent(draftItemId);
     if (!id) return;
-    setDraftLines((prev) => [...prev, { id, name: id, qty: Math.max(1, draftQty) }]);
+    const qty = clampNum(String(draftQty), 1, 9999, 1);
+    setDraftLines((prev) => [...prev, { id, name: id, qty }]);
     setDraftItemId("");
     setDraftQty(1);
   }

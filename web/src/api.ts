@@ -9,6 +9,62 @@
 // cookie-authenticated request that doesn't echo the cookie value back
 // in the header, which a cross-origin attacker cannot read or forge.
 
+// ---- input sanitisers --------------------------------------------------
+//
+// Defence-in-depth client-side validation. The backend already escapes
+// everything via JSON encoding (no shell interpolation since Phase 2),
+// so these are NOT the primary security layer — but they prevent
+// obviously-malformed inputs from reaching the wire, give the operator
+// instant feedback, and strip ASCII control characters that would log
+// strangely or break the broadcast renderer.
+
+// Strip control characters (NUL, BEL, BS, vertical-tab, FF, etc) and
+// cap to `max` chars. Used for broadcast title/body and similar
+// free-text fields. Newlines + tab are kept since multi-line broadcasts
+// are legitimate.
+export function sanitizeText(s: string, max: number): string {
+  return s
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .slice(0, max);
+}
+
+// Validate a Funcom FName-style identifier (used for item ids, vehicle
+// class/template, skill modules). Letters, digits, underscore only,
+// 1-64 chars. Returns "" on rejection so callers can show an error.
+export function sanitizeIdent(s: string, max = 64): string {
+  const trimmed = s.trim();
+  if (!trimmed || trimmed.length > max) return "";
+  return /^[A-Za-z0-9_]+$/.test(trimmed) ? trimmed : "";
+}
+
+// Validate a player-id input against the four documented forms:
+//   *                          all online
+//   me                         single online shortcut
+//   name:<character>           up to 32 chars, common name characters
+//   steam:<digits>             17-digit Steam id
+//   <16-hex>                   FLS canonical
+// Returns "" on rejection. Backend validates again; this just keeps
+// shell-meta from leaving the SPA.
+export function sanitizePlayerId(s: string): string {
+  const v = s.trim();
+  if (!v) return "";
+  if (v === "*" || v === "me") return v;
+  if (/^name:[A-Za-z0-9 _'.\-]{1,32}$/.test(v)) return v;
+  if (/^steam:\d{17}$/.test(v)) return v;
+  if (/^[0-9a-fA-F]{16}$/.test(v)) return v.toUpperCase();
+  return "";
+}
+
+// Clamp + parse a numeric input. Returns `fallback` on NaN/missing,
+// otherwise bounds to [min, max]. Used to prevent absurd values like
+// "999999999999999999" from being submitted to backend.
+export function clampNum(s: string, min: number, max: number, fallback: number): number {
+  const n = parseInt(s, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 function getCsrfToken(): string {
   // document.cookie is a string of "name=value; name=value; …".
   // Match the dune_csrf cookie regardless of position (start-of-string

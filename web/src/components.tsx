@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PublishResult } from "./api";
-import { fetchPlayers, login, parsePlayerTable, setToken } from "./api";
+import { fetchPlayers, login, parsePlayerTable, sanitizePlayerId, setToken } from "./api";
 import { useTarget } from "./target";
 
 // ---- Login -------------------------------------------------------------
@@ -223,7 +223,15 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
       <input
         type="text"
         value={effectiveValue}
+        maxLength={64}
         onChange={(e) => effectiveChange(e.target.value)}
+        onBlur={(e) => {
+          // Validate on blur — don't fight the operator mid-keystroke,
+          // but clamp once focus leaves so any garbage that doesn't
+          // match one of the four accepted forms gets reset.
+          const cleaned = sanitizePlayerId(e.target.value);
+          if (cleaned !== e.target.value) effectiveChange(cleaned);
+        }}
         placeholder="me, *, name:Sergentval, steam:76561198..., or 16-hex FLS id"
         className="input-field font-mono text-xs"
       />
