@@ -186,9 +186,9 @@ ungraded T5 weapon.
 `Quality` field (default 0 for back-compat), validate to the
 documented 0-5 range, and pass it through to the `dune.items`
 INSERT. The schema already has the `quality_level` column —
-direct database edits with values 0-5 do work in-game and 6+
-clamps to 5 (verified by a community report on adainrivers'
-manager, issue #12).
+direct database edits with values 0-5 do work in-game and the
+game clamps anything above 5 to 5, so the underlying gameplay
+range is already what the suggested command would emit.
 
 ## 2.2 `AwardXP` — `Category` field required but value ignored
 
@@ -245,9 +245,8 @@ command is worse than a clean rejection because it hides the gap.
 **Symptom**: `JourneySetCheckpoint`, `JourneyCompleteStep`, and
 related commands appear in the seabass dispatch (so they're not in
 the "unknown" bucket), but they don't update any visible journey or
-story state. Affected community manager tools (adainrivers'
-`dune-dedicated-server-manager`) retired these from their UI on
-2026-05-26 after live-testing confirmed the no-op.
+story state. Live-testing on the 2026-05-26 Early Access build
+confirmed the no-op across multiple journey nodes.
 
 **What we'd suggest**: same wire-or-remove principle.
 
@@ -314,11 +313,3 @@ choices that aren't documented externally, a public note (e.g. on a
 self-host wiki page) would also be welcome — admins are currently
 guessing at intent from binary strings.
 
-## Reference
-
-Protocol shape and the original 14-command accepted catalogue are
-documented in the open-source admin tool from adainrivers
-(`dune-dedicated-server-manager`, MIT licensed,
-<https://github.com/adainrivers/dune-dedicated-server-manager>).
-The 35-candidate sweep above expands on their work to confirm the
-boundaries of the accepted whitelist.
