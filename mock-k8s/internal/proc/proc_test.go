@@ -32,7 +32,12 @@ func TestMain(m *testing.M) {
 		if ready := os.Getenv("PROC_TEST_READY"); ready != "" {
 			_ = os.WriteFile(ready, []byte("ok"), 0o644)
 		}
-		select {}
+		// Block until the parent SIGKILLs us. NOT select{}: with no other
+		// goroutines, an empty select trips Go's "all goroutines are asleep"
+		// deadlock detector when the suite runs without -race, which would
+		// crash the child the instant it starts.
+		time.Sleep(time.Hour)
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
