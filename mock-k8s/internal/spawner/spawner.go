@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +117,11 @@ func (s *Spawner) Restore() {
 	}
 	adopted := 0
 	for _, pi := range prev.Instances {
+		if !safeInstanceName(pi.MapName) || !safeInstanceName(pi.Suffix) {
+			slog.Warn("spawner: skipping restored instance with unsafe name",
+				"key", pi.Key, "map", pi.MapName, "suffix", pi.Suffix)
+			continue
+		}
 		pidPath := s.pidPath(pi.MapName, pi.Suffix)
 		// The pidfile on disk is the source of truth (start-ue5.sh wrote
 		// it); fall back to the ledger's recorded pid if it's gone.
@@ -160,6 +166,11 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	mapName, _ := obj.Spec["mapName"].(string)
 	if mapName == "" {
 		mapName, _ = obj.Spec["map"].(string) // tolerate alt field name
+	}
+	if !safeInstanceName(mapName) {
+		slog.Error("spawner: refusing ServerSetScale with unsafe map name",
+			"key", key, "map", mapName)
+		return
 	}
 	desired := readReplicas(obj.Spec)
 	partitionID := readPartitionID(obj.Spec)
@@ -342,10 +353,28 @@ func (s *Spawner) persist() {
 	}
 }
 
+// safeInstanceName reports whether a map name or suffix is safe to embed in
+// a pidfile path: non-empty and free of path separators or "..", so a
+// crafted ServerSetScale spec cannot make the spawner read, write, or
+// delete files outside runtime/pids.
+func safeInstanceName(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, "/\\") {
+		return false
+	}
+	return !strings.Contains(s, "..")
+}
+
 // pidPath returns the pidfile path start-ue5.sh writes for an instance,
-// matching scripts/lib.sh's pid_file() + start-ue5.sh's INSTANCE_ID.
+// matching scripts/lib.sh's pid_file() + start-ue5.sh's INSTANCE_ID. Names
+// are validated upstream by safeInstanceName; filepath.Base on the filename
+// is defence-in-depth so even a crafted map/suffix can never resolve
+// outside runtime/pids.
 func (s *Spawner) pidPath(mapName, suffix string) string {
-	return filepath.Join(s.baseDir, "runtime", "pids", "ue5-"+mapName+"-"+suffix+".pid")
+	name := filepath.Base("ue5-" + mapName + "-" + suffix + ".pid")
+	return filepath.Join(s.baseDir, "runtime", "pids", name)
 }
 
 // mockChildEnv returns the env vars start-ue5.sh's preamble reads to
