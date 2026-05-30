@@ -70,6 +70,12 @@ STEAM_CACHE_TTL_SECONDS = 3600
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 1 week; renew on each /api/me hit
 HISTORY_BUFFER_SIZE = 200
 
+# Hard cap on POST body size. Admin payloads are tiny — even the largest
+# legitimate request (broadcast title+body) is well under 4 KiB. 64 KiB
+# leaves headroom for future fields without letting a hostile client
+# allocate gigabytes via a forged Content-Length.
+MAX_BODY_BYTES = 64 * 1024
+
 # In-memory ring buffer of recent command invocations. Surfaced via
 # GET /api/history. Each entry: {ts, source, argv, ok, exit_code,
 # stdout, stderr}.
@@ -205,8 +211,13 @@ def build_argv(sub: str, body: dict) -> list[str]:
         return [sub, str(body["player_id"]), str(body["script"])]
     if sub == "exec":
         return [sub, str(body["command"])]
-    if sub == "raw":
-        return [sub, json.dumps(body, separators=(",", ":"))]
+    # NOTE: the `raw` subcommand was deliberately removed. It accepted an
+    # arbitrary ServerCommand JSON body and forwarded it untouched to
+    # admin-publish.sh, which itself fed the value into a python -c
+    # heredoc. That round-tripped attacker control into Python source —
+    # any operator session compromise became container-root RCE. No
+    # legitimate operator workflow needs this; protocol-debug callers
+    # can still use DUNE_ADMIN_DRY_RUN=1 from a shell.
     raise ValueError(f"unknown subcommand: {sub}")
 
 
@@ -422,18 +433,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------ low-level write helpers --------------------------------------
     def _cors_headers(self) -> None:
+        # CORS is OPT-IN by DUNE_ADMIN_UI_DOMAIN. The previous behaviour of
+        # reflecting any Origin with Access-Control-Allow-Credentials: true
+        # was a classic open-CORS bug — any malicious site the operator
+        # visited could read /api/* responses cross-origin. We now ONLY
+        # echo the origin when it matches one of the operator-declared
+        # domains, and the same-origin SPA needs no CORS headers anyway.
         origin = self.headers.get("Origin", "")
-        allowed = ""
-        if UI_DOMAIN:
+        if UI_DOMAIN and origin:
             wanted = {f"https://{UI_DOMAIN}", f"http://{UI_DOMAIN}"}
             if origin in wanted:
-                allowed = origin
-        elif origin:
-            allowed = origin
-        if allowed:
-            self.send_header("Access-Control-Allow-Origin", allowed)
-            self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Credentials", "true")
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
@@ -653,7 +665,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         url = urlparse(self.path)
         path = url.path
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._write(400, {"error": "invalid Content-Length"})
+            return
+        if length < 0:
+            self._write(400, {"error": "invalid Content-Length"})
+            return
+        if length > MAX_BODY_BYTES:
+            self._write(413, {"error": "request body too large", "max_bytes": MAX_BODY_BYTES})
+            return
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw) if raw else {}
@@ -727,6 +749,9 @@ class Handler(BaseHTTPRequestHandler):
 # --------------------------------------------------------------------------
 # Main.
 # --------------------------------------------------------------------------
+_LOOPBACK_ADDRS = {"127.0.0.1", "::1", "localhost"}
+
+
 def main() -> None:
     if not os.access(PUBLISH_SH, os.X_OK):
         print(f"[admin-http] [ERROR] admin-publish.sh not executable at {PUBLISH_SH}", file=sys.stderr)
@@ -737,6 +762,25 @@ def main() -> None:
     if UI_ENABLED and not UI_SESSION_SECRET:
         print("[admin-http] [ERROR] DUNE_ADMIN_UI_SESSION_SECRET missing — prestart.sh should generate it", file=sys.stderr)
         sys.exit(1)
+    # Refuse the dangerous internal-mode + non-loopback + no-auth combo.
+    # Internal mode does not require a session token; an open bind with
+    # no SHARED_AUTH would let any network neighbour invoke admin-publish.sh.
+    if not UI_ENABLED and LISTEN_ADDR not in _LOOPBACK_ADDRS and not SHARED_AUTH:
+        print(
+            f"[admin-http] [ERROR] internal mode bound to {LISTEN_ADDR} without DUNE_ADMIN_HTTP_AUTH — "
+            "either bind 127.0.0.1, set DUNE_ADMIN_HTTP_AUTH, or enable UI mode",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # UI mode publicly served without a DUNE_ADMIN_UI_DOMAIN means CORS is
+    # locked to same-origin (good) BUT the operator probably misconfigured.
+    # Warn loudly; don't refuse — a same-origin deployment is legitimate.
+    if UI_ENABLED and LISTEN_ADDR not in _LOOPBACK_ADDRS and not UI_DOMAIN:
+        print(
+            f"[admin-http] [WARN] UI mode bound to {LISTEN_ADDR} without DUNE_ADMIN_UI_DOMAIN — "
+            "browser must access the panel from the same origin as the API",
+            file=sys.stderr,
+        )
     mode = "UI" if UI_ENABLED else "internal"
     log(f"mode={mode} bind={LISTEN_ADDR}:{LISTEN_PORT} scripts={SCRIPTS_DIR}")
     if UI_ENABLED:
