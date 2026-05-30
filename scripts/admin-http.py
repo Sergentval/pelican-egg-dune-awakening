@@ -31,6 +31,7 @@ import hmac
 import json
 import mimetypes
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -50,7 +51,9 @@ LISTEN_PORT = int(os.environ.get("DUNE_ADMIN_HTTP_PORT", "8089"))
 SHARED_AUTH = os.environ.get("DUNE_ADMIN_HTTP_AUTH", "")
 BASE_DIR = os.environ.get("DUNE_BASE_DIR", "/home/container")
 SCRIPTS_DIR = BASE_DIR + "/scripts"
+STATE_DIR = BASE_DIR + "/state"
 PUBLISH_SH = SCRIPTS_DIR + "/admin-publish.sh"
+REVOCATION_FILE = STATE_DIR + "/admin-ui-revoked-jtis.json"
 
 UI_ENABLED = os.environ.get("DUNE_ADMIN_UI_ENABLED", "0") == "1"
 UI_PASSWORD = os.environ.get("DUNE_ADMIN_UI_PASSWORD", "")
@@ -76,6 +79,17 @@ HISTORY_BUFFER_SIZE = 200
 # allocate gigabytes via a forged Content-Length.
 MAX_BODY_BYTES = 64 * 1024
 
+# Login rate-limit. Sliding window per source IP: when N failed attempts
+# land within W seconds, subsequent /api/login requests from that IP get
+# 429 + Retry-After until the oldest attempt ages out. The deque has a
+# fixed maxlen — older entries auto-evict, so we never grow unbounded
+# per-IP. A successful login clears the bucket.
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_WINDOW_SECONDS = int(os.environ.get("DUNE_ADMIN_UI_LOGIN_WINDOW_SECS", "900"))
+LOGIN_ATTEMPTS: dict[str, collections.deque] = collections.defaultdict(
+    lambda: collections.deque(maxlen=LOGIN_MAX_ATTEMPTS)
+)
+
 # In-memory ring buffer of recent command invocations. Surfaced via
 # GET /api/history. Each entry: {ts, source, argv, ok, exit_code,
 # stdout, stderr}.
@@ -83,6 +97,50 @@ HISTORY: collections.deque = collections.deque(maxlen=HISTORY_BUFFER_SIZE)
 
 # Steam personaname/avatar cache. {steam_id: (cached_at_ts, info_dict)}.
 STEAM_CACHE: dict[str, tuple[float, dict]] = {}
+
+# Revoked session token JTIs (HMAC tokens are stateless — without this
+# set, a stolen / logged-out token stays valid until its exp). Each entry
+# is (jti, exp_unix). We persist to REVOCATION_FILE so revocations
+# survive a process restart, prune expired entries on every load, and
+# write atomically (temp file + rename) to avoid corruption on crash.
+REVOCATIONS: dict[str, int] = {}
+
+
+def _load_revocations() -> None:
+    """Read REVOCATIONS from disk and drop expired entries."""
+    REVOCATIONS.clear()
+    try:
+        with open(REVOCATION_FILE) as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError) as exc:
+        log(f"WARN failed to load {REVOCATION_FILE}: {exc} — starting with empty revocation list")
+        return
+    if not isinstance(raw, dict):
+        log(f"WARN {REVOCATION_FILE} has unexpected shape; resetting")
+        return
+    now = int(time.time())
+    for jti, exp in raw.items():
+        try:
+            exp_int = int(exp)
+        except (TypeError, ValueError):
+            continue
+        if exp_int > now:
+            REVOCATIONS[str(jti)] = exp_int
+
+
+def _save_revocations() -> None:
+    """Atomic write of REVOCATIONS to disk. Best-effort — failures only
+    log; in-memory revocations still apply for the current process."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = REVOCATION_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(REVOCATIONS, fh, separators=(",", ":"))
+        os.replace(tmp, REVOCATION_FILE)
+    except OSError as exc:
+        log(f"WARN failed to persist {REVOCATION_FILE}: {exc}")
 
 
 def log(msg: str) -> None:
@@ -107,7 +165,15 @@ def issue_session_token(subject: str = "admin") -> str:
     if not UI_SESSION_SECRET:
         raise RuntimeError("DUNE_ADMIN_UI_SESSION_SECRET not set — prestart.sh failed to generate it")
     now = int(time.time())
-    payload = {"iat": now, "exp": now + SESSION_TTL_SECONDS, "sub": subject}
+    payload = {
+        "iat": now,
+        "exp": now + SESSION_TTL_SECONDS,
+        "sub": subject,
+        # Random per-session id so /api/logout can selectively revoke
+        # THIS token without rotating the secret (which would invalidate
+        # every session at once). 128 bits of entropy via secrets.
+        "jti": secrets.token_urlsafe(16),
+    }
     payload_b64 = _b64u(json.dumps(payload, separators=(",", ":")).encode())
     sig = hmac.new(
         UI_SESSION_SECRET.encode(),
@@ -118,7 +184,8 @@ def issue_session_token(subject: str = "admin") -> str:
 
 
 def verify_session_token(token: str) -> dict | None:
-    """Returns the decoded payload if the token is valid + unexpired, else None."""
+    """Returns the decoded payload if the token is valid + unexpired and
+    not in the revocation list, else None."""
     if not UI_SESSION_SECRET or not token or "." not in token:
         return None
     try:
@@ -133,9 +200,25 @@ def verify_session_token(token: str) -> dict | None:
         payload = json.loads(_b64u_decode(payload_b64))
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
+        jti = payload.get("jti")
+        if isinstance(jti, str) and jti in REVOCATIONS:
+            return None
         return payload
     except (ValueError, KeyError, json.JSONDecodeError):
         return None
+
+
+def revoke_token(payload: dict) -> bool:
+    """Add the token's jti to the revocation list and persist. Returns
+    True if revocation was recorded, False if the payload had no jti
+    (legacy tokens issued before this field was added)."""
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not isinstance(jti, str) or not isinstance(exp, int):
+        return False
+    REVOCATIONS[jti] = exp
+    _save_revocations()
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -449,16 +532,66 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-    def _write(self, status: int, payload, content_type: str = "application/json") -> None:
+    def _write(
+        self,
+        status: int,
+        payload,
+        content_type: str = "application/json",
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         body = payload if isinstance(payload, (bytes, str)) else json.dumps(payload, indent=2)
         if isinstance(body, str):
             body = body.encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers(content_type)
         self._cors_headers()
+        if extra_headers:
+            for k, v in extra_headers:
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _security_headers(self, content_type: str) -> None:
+        """Attach OWASP-recommended response headers to every reply.
+
+        CSP applies to HTML responses (the SPA); JSON / static assets
+        get the cheaper subset of headers since CSP on them is moot.
+        HSTS is only set when we believe TLS is terminating in front
+        (UI_DOMAIN set + non-loopback bind) — browsers would otherwise
+        pin a plain-HTTP loopback to HTTPS and lock the operator out.
+        """
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Permissions-Policy",
+            "geolocation=(), microphone=(), camera=(), payment=(), usb=()",
+        )
+        if UI_DOMAIN and LISTEN_ADDR not in _LOOPBACK_ADDRS:
+            self.send_header(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+        if content_type.startswith("text/html"):
+            # The SPA loads Steam avatars + the Awakening wiki for icons;
+            # tailwind generates inline style for utility classes so we
+            # allow 'unsafe-inline' there only. No inline scripts.
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: "
+                "https://awakening.wiki https://media.awakening.wiki "
+                "https://steamcdn-a.akamaihd.net https://avatars.steamstatic.com "
+                "https://steamcommunity-a.akamaihd.net; "
+                "connect-src 'self' https://api.awakening.wiki; "
+                "frame-ancestors 'none'; "
+                "base-uri 'self'; "
+                "form-action 'self'",
+            )
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
         log(f"{self.command} {self.path} -> {format % args}")
@@ -479,6 +612,45 @@ class Handler(BaseHTTPRequestHandler):
         if not SHARED_AUTH:
             return True
         return token == SHARED_AUTH
+
+    def _client_ip(self) -> str:
+        """Source IP for rate-limit bucketing. Trusts the socket peer —
+        deliberately NOT X-Forwarded-For, because honouring that header
+        in front of a proxy that doesn't strip it lets attackers forge
+        an arbitrary IP and bypass per-IP rate limits. If a TLS-
+        terminating reverse proxy is in front, all logins appear from
+        127.0.0.1, which collapses the per-IP bucket into a single
+        global bucket — that's a known limitation; operators behind a
+        proxy should pair this with per-account lockout at the proxy."""
+        try:
+            return self.client_address[0]
+        except (AttributeError, IndexError):
+            return "unknown"
+
+    def _login_rate_limited(self, ip: str) -> int:
+        """Return Retry-After seconds if the IP is over its login quota,
+        else 0. Drops attempts older than LOGIN_WINDOW_SECONDS from the
+        bucket first so the window slides correctly."""
+        now = time.time()
+        bucket = LOGIN_ATTEMPTS.get(ip)
+        if not bucket:
+            return 0
+        cutoff = now - LOGIN_WINDOW_SECONDS
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            # Bucket is empty after pruning — clear the dict entry so
+            # we don't leak memory on transient IPs.
+            LOGIN_ATTEMPTS.pop(ip, None)
+            return 0
+        if len(bucket) < LOGIN_MAX_ATTEMPTS:
+            return 0
+        # Bucket is full and oldest entry is still within window: throttled.
+        retry_after = int(bucket[0] + LOGIN_WINDOW_SECONDS - now) + 1
+        return max(retry_after, 1)
+
+    def _record_login_failure(self, ip: str) -> None:
+        LOGIN_ATTEMPTS[ip].append(time.time())
 
     # ------ OPTIONS preflight --------------------------------------------
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -703,12 +875,34 @@ class Handler(BaseHTTPRequestHandler):
             if not UI_PASSWORD:
                 self._write(503, {"error": "DUNE_ADMIN_UI_PASSWORD not set on the server"})
                 return
+            client_ip = self._client_ip()
+            retry_after = self._login_rate_limited(client_ip)
+            if retry_after:
+                log(f"WARN login rate-limited for {client_ip} (retry_after={retry_after}s)")
+                self._write(
+                    429,
+                    {
+                        "error": "too many login attempts",
+                        "retry_after_seconds": retry_after,
+                    },
+                    extra_headers=[("Retry-After", str(retry_after))],
+                )
+                return
             supplied = str(body.get("password", ""))
             if not hmac.compare_digest(supplied, UI_PASSWORD):
+                self._record_login_failure(client_ip)
                 # Small fixed delay to slow down brute-force guessing.
                 time.sleep(0.3)
+                log(
+                    f"WARN failed login from {client_ip} "
+                    f"({len(LOGIN_ATTEMPTS.get(client_ip, ()))}/{LOGIN_MAX_ATTEMPTS} in window)"
+                )
                 self._write(401, {"error": "invalid password"})
                 return
+            # Successful login — clear any prior failure history for this
+            # IP so a legitimate operator who fat-fingered a few times
+            # isn't punished for the next 15 minutes.
+            LOGIN_ATTEMPTS.pop(client_ip, None)
             token = issue_session_token()
             self._write(
                 200,
@@ -718,6 +912,19 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "Bearer",
                 },
             )
+            return
+
+        # POST /api/logout revokes the current session's jti. Idempotent:
+        # repeated calls or unauthenticated calls succeed without effect,
+        # to avoid leaking whether a token was valid.
+        if path == "/api/logout":
+            if UI_ENABLED:
+                token = self._bearer()
+                payload = verify_session_token(token) if token else None
+                if payload:
+                    if revoke_token(payload):
+                        log(f"INFO session revoked jti={payload.get('jti')}")
+            self._write(200, {"ok": True})
             return
 
         if not self._auth_ok():
@@ -781,6 +988,10 @@ def main() -> None:
             "browser must access the panel from the same origin as the API",
             file=sys.stderr,
         )
+    # Load any persisted session revocations from prior runs. The file
+    # is best-effort; absence/corruption just means we start with an
+    # empty revocation list (logged inside _load_revocations).
+    _load_revocations()
     mode = "UI" if UI_ENABLED else "internal"
     log(f"mode={mode} bind={LISTEN_ADDR}:{LISTEN_PORT} scripts={SCRIPTS_DIR}")
     if UI_ENABLED:
@@ -788,6 +999,8 @@ def main() -> None:
         log(f"  domain  : {UI_DOMAIN or '(none — using IP+port directly)'}")
         log(f"  data    : vehicles={len(_DATA['vehicles'])} items={len(_DATA['items'])} skills={len(_DATA['skills'])}")
         log(f"  steam   : {'STEAM_API_KEY set — persona lookups enabled' if STEAM_API_KEY else 'STEAM_API_KEY blank — persona lookups disabled'}")
+        log(f"  ratelim : {LOGIN_MAX_ATTEMPTS} failed /api/login per {LOGIN_WINDOW_SECONDS}s per-IP")
+        log(f"  revoked : {len(REVOCATIONS)} session token(s) on the revocation list")
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")
     HTTPServer((LISTEN_ADDR, LISTEN_PORT), Handler).serve_forever()
