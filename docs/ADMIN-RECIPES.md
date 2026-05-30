@@ -6,8 +6,11 @@ intended to be typed into the **Pelican panel Console tab** (the
 which routes to `admin-publish.sh`).
 
 For the full command reference + payload schemas, see
-[`ADMIN-COMMANDS.md`](./ADMIN-COMMANDS.md). For the protocol
-reverse-engineering, see the `dune-rmq-admin-protocol` wiki note.
+[`ADMIN-COMMANDS.md`](./ADMIN-COMMANDS.md). For the item catalogue
+grouped by faction and tier (T1..T6 weapons, armor sets, augments,
+B1C4 unique drops), see [`ADMIN-TIER-ITEMS.md`](./ADMIN-TIER-ITEMS.md).
+For the protocol reverse-engineering, see the `dune-rmq-admin-protocol`
+wiki note.
 
 ## Look up things first
 

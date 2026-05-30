@@ -26,8 +26,10 @@ admin broadcast "Hello" "Server-side admin is live" 15
 
 ### 2. HTTP loopback (for tooling / mods)
 
-`scripts/admin-http.py` listens on `127.0.0.1:8089` inside the
-container. Endpoints map 1:1 to subcommands. JSON in, JSON out.
+`scripts/admin-http.py` runs in two modes:
+
+**Internal mode** (default, `DUNE_ADMIN_UI_ENABLED=0`) — listens on
+`127.0.0.1:8089`. JSON in, JSON out. Map 1:1 to subcommands:
 
 ```bash
 docker exec <container> curl -sS -X POST http://127.0.0.1:8089/admin/broadcast \
@@ -35,8 +37,35 @@ docker exec <container> curl -sS -X POST http://127.0.0.1:8089/admin/broadcast \
   -d '{"title":"Hello","body":"Hello from curl","duration":15}'
 ```
 
-Set `DUNE_ADMIN_HTTP_AUTH=Bearer <secret>` env if you expose the port
-beyond loopback.
+If you bind beyond loopback in internal mode you must also set
+`DUNE_ADMIN_HTTP_AUTH=<secret>` — the server refuses to start
+otherwise. Calls then need `Authorization: Bearer <secret>`.
+
+**UI mode** (`DUNE_ADMIN_UI_ENABLED=1`) — exposes the React admin
+panel + a session-authenticated API. Authentication on POST routes
+is HttpOnly session cookie + CSRF double-submit:
+
+```bash
+# Login — stores session cookie + returns csrf token
+curl -sS -c jar.txt -X POST http://panel.example/api/login \
+  -H 'Content-Type: application/json' -d '{"password":"..."}'
+# CSRF cookie is dune_csrf; copy the value into X-CSRF-Token
+CSRF=$(grep dune_csrf jar.txt | awk '{print $NF}')
+curl -sS -b jar.txt -H "X-CSRF-Token: $CSRF" \
+  -X POST http://panel.example/admin/broadcast \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Hello","body":"Hi","duration":15}'
+# Logout revokes the session jti and clears cookies
+curl -sS -b jar.txt -H "X-CSRF-Token: $CSRF" \
+  -X POST http://panel.example/api/logout
+```
+
+Bearer auth still works in UI mode (the JSON response from `/api/login`
+includes `token` for legacy callers), but the browser SPA uses cookies
+exclusively. Mutating cookie-auth requests without `X-CSRF-Token`
+return 403. Failed logins are rate-limited to 5 per 15 min per
+source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
+`DUNE_ADMIN_UI_LOGIN_WINDOW_SECS` to tune).
 
 ### 3. Direct shell (for ops / debugging)
 
@@ -285,14 +314,21 @@ admin vehicle A1B2C3D4 Sandbike 101000 285000 4300 T6_Combat
 admin vehicle A1B2C3D4 Buggy 101000 285000 4300 T6_Combat 90 0.0
 ```
 
-### `raw` — arbitrary inline JSON
+### Tier-graded items — see the catalogue
 
-For commands or shapes not covered above. Body is the *inner* JSON
-(everything inside `MessageContent`); the script wraps the envelope.
+For copy-paste examples organised by faction and tier (Atre / Hark /
+Smug weapon families, armor sets, consumables, augments, B1C4 unique
+weapons), see [`ADMIN-TIER-ITEMS.md`](./ADMIN-TIER-ITEMS.md). The full
+2 558-row item table lives in `data/admin/items.json`; the admin web
+UI's Items tab exposes the same dataset with category filters.
 
-```text
-admin raw '{"ServerCommand":"AwardXP","PlayerId":"A1B2C3D4","Experience":1000,"Category":"Combat"}'
-```
+> The `raw` subcommand that accepted arbitrary `ServerCommand` JSON
+> was removed in the Phase 1 / Phase 2 security pass. It accepted any
+> JSON body and round-tripped it through a shell→python heredoc, which
+> let attacker-controlled values become live Python code. For protocol
+> debugging, `DUNE_ADMIN_DRY_RUN=1` on the per-subcommand scripts
+> prints the assembled envelope without publishing — that covers the
+> same diagnostic use case safely.
 
 ## Known no-ops on seabass servers
 
