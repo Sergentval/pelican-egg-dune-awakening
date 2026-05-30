@@ -360,7 +360,7 @@ PCOUNT=$(env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
   "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune -tA \
   -c "SELECT count(*) FROM dune.world_partition" 2>/dev/null || echo 0)
 
-if [ "${PCOUNT:-0}" -lt 28 ]; then
+if [ "${PCOUNT:-0}" -lt 29 ]; then
   log "Seeding world partitions..."
   env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
     "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune <<'SQL' || warn "world_partition seed failed (non-fatal)"
@@ -394,7 +394,14 @@ VALUES
   (25, 'CB_Overland_S_04', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S04'),
   (26, 'CB_Overland_S_06', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S06'),
   (27, 'CB_Story_BanditFortress01', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Bandit Fortress'),
-  (28, 'CB_Overland_S_07', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S07')
+  (28, 'CB_Overland_S_07', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S07'),
+  -- SH_FallenLight warm anchor. Funcom ships this map (GameTweaks
+  -- PlayerHardCap=80) but CubeCoders' AMP module never seeded it. We
+  -- always insert the row — costs nothing if the operator doesn't
+  -- DUNE_ENABLE_FALLEN_LIGHT, and removes a setup step if they do.
+  -- Id 130 is the base of multi-sietch-config.sh's FallenLight range
+  -- (warm = base-1, dims = base..base+9). See dune-multi-sietch wiki.
+  (130, 'SH_FallenLight', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Fallen Light')
 ON CONFLICT (partition_id) DO NOTHING;
 SQL
 fi

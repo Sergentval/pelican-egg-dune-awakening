@@ -47,14 +47,21 @@
 : "${DUNE_FALLEN_LIGHT_DIMENSIONS:=0}"
 : "${DUNE_ENABLE_FALLEN_LIGHT:=false}"
 
-# Per-destination metadata. Each entry: map_name|dim_count|partition_id_base|label_base
+# Per-destination metadata. Each entry:
+#   map_name|dim_count|dim_partition_id_base|label_base|warm_partition_id
+#
+# warm_partition_id is the row prestart.sh seeds with dimension_index=0
+# — the always-warm shared landing zone for that map. patch-world-template.sh
+# uses it when synthesising a new map block for destinations that Funcom's
+# world-template.yaml doesn't ship (SH_FallenLight in particular).
+#
 # Order matters — affects port allocation in start-ue5-dimensions.sh.
 multi_sietch_destinations() {
-  echo "DeepDesert_1|${DUNE_DD_DIMENSIONS}|101|Deep Desert"
-  echo "SH_Arrakeen|${DUNE_ARRAKEEN_DIMENSIONS}|111|Arrakeen"
-  echo "SH_HarkoVillage|${DUNE_HARKO_DIMENSIONS}|121|Harko Village"
+  echo "DeepDesert_1|${DUNE_DD_DIMENSIONS}|101|Deep Desert|8"
+  echo "SH_Arrakeen|${DUNE_ARRAKEEN_DIMENSIONS}|111|Arrakeen|3"
+  echo "SH_HarkoVillage|${DUNE_HARKO_DIMENSIONS}|121|Harko Village|4"
   if [ "${DUNE_ENABLE_FALLEN_LIGHT}" = "true" ]; then
-    echo "SH_FallenLight|${DUNE_FALLEN_LIGHT_DIMENSIONS}|131|Fallen Light"
+    echo "SH_FallenLight|${DUNE_FALLEN_LIGHT_DIMENSIONS}|131|Fallen Light|130"
   fi
 }
 
@@ -74,7 +81,7 @@ multi_sietch_partition_row() {
 # if no destinations have dims enabled.
 multi_sietch_partition_values() {
   local first=1
-  while IFS='|' read -r map count base label; do
+  while IFS='|' read -r map count base label _warm; do
     [ -z "$map" ] && continue
     [ "$count" -le 0 ] && continue
     for d in $(seq 1 "$count"); do
