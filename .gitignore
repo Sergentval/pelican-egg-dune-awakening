@@ -12,6 +12,13 @@ state/
 runtime/
 logs/
 
+# ...but the `state/` and `server/` runtime-dir rules above must not hide
+# the Go source packages of the same name under mock-k8s/internal.
+!mock-k8s/internal/server/
+!mock-k8s/internal/server/**
+!mock-k8s/internal/state/
+!mock-k8s/internal/state/**
+
 # Editor
 .vscode/
 .idea/
