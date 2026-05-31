@@ -1,10 +1,12 @@
 package spawner
 
 import (
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
 )
 
 const (
@@ -155,4 +157,43 @@ func (s *Spawner) sweep() map[string]bool {
 		s.persist()
 	}
 	return reaped
+}
+
+// reconcileUpLocked spawns instances for obj until current == desired (only
+// when desired > current). Caller MUST hold s.reconcileMu. When respectBackoff
+// is true and the map is in crash-loop backoff, it spawns nothing. Returns the
+// number spawned.
+func (s *Spawner) reconcileUpLocked(obj serversetscale.Object, respectBackoff bool) int {
+	key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
+	mapName, _ := obj.Spec["mapName"].(string)
+	if mapName == "" {
+		mapName, _ = obj.Spec["map"].(string)
+	}
+	if !safeInstanceName(mapName) {
+		slog.Error("spawner: refusing ServerSetScale with unsafe map name", "key", key, "map", mapName)
+		return 0
+	}
+	desired := readReplicas(obj.Spec)
+	partitionID := readPartitionID(obj.Spec)
+
+	s.mu.Lock()
+	current := len(s.instances[key])
+	s.mu.Unlock()
+	if desired <= current {
+		return 0
+	}
+	if respectBackoff && s.inBackoff(key) {
+		return 0
+	}
+	for i := current; i < desired; i++ {
+		s.spawnOne(obj, mapName, partitionID, i)
+	}
+	return desired - current
+}
+
+// currentCount returns the number of instances tracked for key.
+func currentCount(s *Spawner, key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.instances[key])
 }

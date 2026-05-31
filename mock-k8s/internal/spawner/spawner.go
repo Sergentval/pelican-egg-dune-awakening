@@ -250,20 +250,12 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 		return
 	}
 	desired := readReplicas(obj.Spec)
-	partitionID := readPartitionID(obj.Spec)
 
 	s.reconcileMu.Lock()
-	s.mu.Lock()
-	current := len(s.instances[key])
-	s.mu.Unlock()
-
-	switch {
-	case desired > current:
-		for i := current; i < desired; i++ {
-			s.spawnOne(obj, mapName, partitionID, i)
-		}
-	case desired < current:
+	if desired < currentCount(s, key) {
 		s.scaleDown(key, desired)
+	} else {
+		s.reconcileUpLocked(obj, false) // honor a Director patch immediately
 	}
 	s.reconcileMu.Unlock()
 

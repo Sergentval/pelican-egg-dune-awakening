@@ -1,12 +1,16 @@
 package spawner
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/pool"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
 )
 
 // liveSleeper starts a real process and returns its pid + start-time identity.
@@ -96,5 +100,86 @@ func TestSweep_ReapsPhantomSkipsStarting(t *testing.T) {
 	spw.mu.Unlock()
 	if got != 1 {
 		t.Fatalf("after sweep: %d instances, want 1 (phantom reaped, starting kept)", got)
+	}
+}
+
+// makeFakeUE5Script writes a start-ue5.sh stub that backgrounds a real sleeper
+// and records its pid where capturePID expects it. Returns the script path.
+func makeFakeUE5Script(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "start-ue5.sh")
+	// $1=BASE $2=MAP $3=SUFFIX ; write runtime/pids/ue5-<map>-<suffix>.pid
+	body := "#!/bin/bash\nset -e\nsleep 300 &\nPID=$!\nmkdir -p \"$1/runtime/pids\"\necho $PID > \"$1/runtime/pids/ue5-$2-$3.pid\"\n"
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func newLoopSpawner(t *testing.T) (*Spawner, *fakeClock) {
+	t.Helper()
+	base := t.TempDir()
+	store := serversetscale.NewStore()
+	pl, err := pool.New(7900, 7950, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use a fake script that actually launches a trackable process.
+	spw := New(store, pl, makeFakeUE5Script(t), base)
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	spw.now = clk.Now
+	spw.startedAt = clk.Now()
+	return spw, clk
+}
+
+func sssObj(name, mapName string, replicas int64) serversetscale.Object {
+	return serversetscale.Object{
+		Metadata: serversetscale.Metadata{Namespace: "default", Name: name},
+		Spec:     map[string]any{"mapName": mapName, "replicas": replicas, "partitionId": int64(1)},
+	}
+}
+
+func TestReconcileUp_SpawnsToDesired(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	obj := sssObj("m", "Survival_1", 2)
+
+	spw.reconcileMu.Lock()
+	n := spw.reconcileUpLocked(obj, true)
+	spw.reconcileMu.Unlock()
+	spw.Wait() // let capturePID finish
+
+	if n != 2 {
+		t.Errorf("spawned %d, want 2", n)
+	}
+	spw.mu.Lock()
+	got := len(spw.instances["default/m"])
+	spw.mu.Unlock()
+	if got != 2 {
+		t.Errorf("tracked %d, want 2", got)
+	}
+}
+
+func TestReconcileUp_RespectsBackoff(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	obj := sssObj("m", "Survival_1", 1)
+
+	// Put the map in backoff (failures=2 -> 1m window).
+	spw.recordFailure("default/m")
+	spw.recordFailure("default/m")
+
+	spw.reconcileMu.Lock()
+	withBackoff := spw.reconcileUpLocked(obj, true) // must NOT spawn
+	spw.reconcileMu.Unlock()
+	if withBackoff != 0 {
+		t.Errorf("respectBackoff=true spawned %d, want 0 (map in backoff)", withBackoff)
+	}
+
+	spw.reconcileMu.Lock()
+	ignoreBackoff := spw.reconcileUpLocked(obj, false) // Director patch honored
+	spw.reconcileMu.Unlock()
+	spw.Wait()
+	if ignoreBackoff != 1 {
+		t.Errorf("respectBackoff=false spawned %d, want 1", ignoreBackoff)
 	}
 }
