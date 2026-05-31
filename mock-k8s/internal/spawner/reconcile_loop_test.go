@@ -1,6 +1,7 @@
 package spawner
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,16 @@ import (
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/serversetscale"
 )
+
+func testCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func contextWithCancel() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
+}
 
 // liveSleeper starts a real process and returns its pid + start-time identity.
 func liveSleeper(t *testing.T) (pid int, st uint64) {
@@ -192,5 +203,133 @@ func TestReconcileUp_NoOpWhenAtDesired(t *testing.T) {
 	spw.reconcileMu.Unlock()
 	if n != 0 {
 		t.Errorf("spawned %d at desired==current, want 0", n)
+	}
+}
+
+func TestReconcileTick_ReapsAndRespawns(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	spw.store.Create(sssObj("m", "Survival_1", 1))
+
+	// First tick spawns the desired instance.
+	spw.reconcileTick()
+	spw.Wait()
+	spw.mu.Lock()
+	pid := spw.instances["default/m"][0].PID
+	spw.mu.Unlock()
+	if pid <= 0 {
+		t.Fatalf("expected a captured pid after first tick, got %d", pid)
+	}
+
+	// Kill it -> next tick must reap and respawn.
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	for i := 0; i < 200 && proc.Alive(pid); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	spw.reconcileTick()
+	spw.Wait()
+
+	spw.mu.Lock()
+	newPID := spw.instances["default/m"][0].PID
+	tracked := len(spw.instances["default/m"])
+	spw.mu.Unlock()
+	if tracked != 1 {
+		t.Fatalf("tracked %d, want 1 after respawn", tracked)
+	}
+	if newPID == pid || newPID <= 0 {
+		t.Errorf("expected a fresh pid after respawn, got %d (old %d)", newPID, pid)
+	}
+	if spw.respawnedTotal == 0 {
+		t.Error("respawnedTotal not incremented")
+	}
+}
+
+func TestReconcileTick_OneOffCrashResetsBackoff(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	spw.store.Create(sssObj("m", "Survival_1", 1))
+
+	spw.reconcileTick() // spawn
+	spw.Wait()
+	spw.mu.Lock()
+	pid := spw.instances["default/m"][0].PID
+	spw.mu.Unlock()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	for i := 0; i < 200 && proc.Alive(pid); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	spw.reconcileTick() // reap (failures=1) + respawn
+	spw.Wait()
+	spw.reconcileTick() // survives a clean tick -> reset
+	spw.Wait()
+
+	spw.mu.Lock()
+	_, hasBackoff := spw.backoff["default/m"]
+	spw.mu.Unlock()
+	if hasBackoff {
+		t.Error("backoff state should be cleared after a respawn survives a clean tick")
+	}
+}
+
+func TestReconcileTick_DesiredZeroLeftAlone(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	spw.store.Create(sssObj("m", "Survival_1", 0)) // Director scaled to 0
+	spw.reconcileTick()
+	spw.Wait()
+	if used, _, _ := spw.pool.Stats(); used != 0 {
+		t.Errorf("loop spawned a desired=0 map: pool used = %d, want 0", used)
+	}
+}
+
+func TestReconcileTick_BacksOffAfterRepeatedCrashes(t *testing.T) {
+	spw, clk := newLoopSpawner(t)
+	spw.store.Create(sssObj("m", "Survival_1", 1))
+	const k = "default/m"
+
+	// Stand in for two prior crashes the sweep would have recorded: failures=2
+	// puts the map in a 1m backoff window from "now".
+	spw.recordFailure(k)
+	spw.recordFailure(k)
+
+	// A tick during the backoff window must NOT respawn.
+	spw.reconcileTick()
+	spw.Wait()
+	if used, _, _ := spw.pool.Stats(); used != 0 {
+		t.Errorf("respawned during backoff: pool used = %d, want 0", used)
+	}
+	if got := spw.Snapshot().Maps[0].Status; got != "failing" {
+		t.Errorf("status = %q, want failing during backoff", got)
+	}
+
+	// Once the window elapses, a tick respawns.
+	clk.Advance(2 * time.Minute)
+	spw.reconcileTick()
+	spw.Wait()
+	if used, _, _ := spw.pool.Stats(); used != 1 {
+		t.Errorf("did not respawn after backoff elapsed: pool used = %d, want 1", used)
+	}
+}
+
+func TestReconcile_DisabledReturnsImmediately(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	done := make(chan struct{})
+	go func() { spw.Reconcile(testCtx(t), 0); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reconcile(interval=0) did not return immediately")
+	}
+}
+
+func TestReconcile_StopsOnContextCancel(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	ctx, cancel := contextWithCancel()
+	done := make(chan struct{})
+	go func() { spw.Reconcile(ctx, 20*time.Millisecond); close(done) }()
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reconcile did not stop after context cancel")
 	}
 }

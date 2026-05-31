@@ -1,6 +1,7 @@
 package spawner
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"time"
@@ -189,4 +190,68 @@ func (s *Spawner) reconcileUpLocked(obj serversetscale.Object, respectBackoff bo
 		s.spawnOne(obj, mapName, partitionID, i)
 	}
 	return desired - current
+}
+
+// Reconcile runs the self-healing loop until ctx is cancelled. interval <= 0
+// disables the loop (it records the disabled state and returns). Intended to
+// run in its own goroutine.
+func (s *Spawner) Reconcile(ctx context.Context, interval time.Duration) {
+	s.mu.Lock()
+	s.reconcileInterval = interval
+	s.mu.Unlock()
+	if interval <= 0 {
+		slog.Info("spawner: reconcile loop disabled (interval <= 0)")
+		return
+	}
+	slog.Info("spawner: reconcile loop started", "interval", interval)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("spawner: reconcile loop stopped")
+			return
+		case <-t.C:
+			s.reconcileTick()
+		}
+	}
+}
+
+// reconcileTick runs one sweep + up-reconcile pass under reconcileMu. It reaps
+// dead/phantom instances, respawns each map up to desired (honoring backoff),
+// and resets the backoff of any map that has survived a clean tick.
+func (s *Spawner) reconcileTick() {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
+	reaped := s.sweep()
+
+	objs := s.store.List(reconcileNamespace)
+	spawned := make(map[string]bool, len(objs))
+	desiredByKey := make(map[string]int, len(objs))
+	for _, obj := range objs {
+		key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
+		desiredByKey[key] = readReplicas(obj.Spec)
+		if n := s.reconcileUpLocked(obj, true); n > 0 {
+			spawned[key] = true
+			s.mu.Lock()
+			s.respawnedTotal += int64(n)
+			s.mu.Unlock()
+		}
+	}
+
+	// Reset backoff for maps that survived a clean tick (no reap, no spawn,
+	// already at desired).
+	s.mu.Lock()
+	for key, desired := range desiredByKey {
+		if reaped[key] || spawned[key] {
+			continue
+		}
+		if _, has := s.backoff[key]; has && len(s.instances[key]) >= desired {
+			delete(s.backoff, key)
+		}
+	}
+	s.reconcileSweeps++
+	s.lastSweep = s.now()
+	s.mu.Unlock()
 }
