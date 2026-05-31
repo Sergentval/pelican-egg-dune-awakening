@@ -410,8 +410,6 @@ func (s *Spawner) persist() {
 				MapName:     in.MapName,
 				PartitionID: in.PartitionID,
 				PoolIndex:   in.Allocation.Index,
-				GamePort:    in.Allocation.GamePort,
-				IGWPort:     in.Allocation.IGWPort,
 				Suffix:      in.Suffix,
 				PID:         in.PID,
 			})

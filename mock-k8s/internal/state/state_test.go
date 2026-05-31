@@ -1,8 +1,10 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,8 +12,8 @@ func sampleState() State {
 	return State{
 		Version: currentVersion,
 		Instances: []Instance{
-			{Key: "default/sietch-survival", MapName: "Survival_1", PartitionID: 1, PoolIndex: 0, GamePort: 7900, IGWPort: 7950, Suffix: "p0", PID: 4242},
-			{Key: "default/sietch-overmap", MapName: "Overmap", PartitionID: 2, PoolIndex: 1, GamePort: 7901, IGWPort: 7951, Suffix: "p1", PID: 4243},
+			{Key: "default/sietch-survival", MapName: "Survival_1", PartitionID: 1, PoolIndex: 0, Suffix: "p0", PID: 4242},
+			{Key: "default/sietch-overmap", MapName: "Overmap", PartitionID: 2, PoolIndex: 1, Suffix: "p1", PID: 4243},
 		},
 	}
 }
@@ -104,5 +106,32 @@ func TestSave_DefaultsVersion(t *testing.T) {
 	}
 	if got.Version != currentVersion {
 		t.Errorf("version = %d, want %d (Save should stamp it)", got.Version, currentVersion)
+	}
+}
+
+// A ledger written by an older binary still carried the now-removed
+// gamePort/igwPort keys. json.Unmarshal silently ignores unknown keys, so an
+// on-disk ledger from before this change must still load cleanly — no
+// migration needed.
+func TestLoad_OldLedgerWithPortFieldsIsForwardCompat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.json")
+	old := []byte(`{"version":1,"instances":[{"key":"default/sietch-survival","mapName":"Survival_1","partitionId":1,"poolIndex":2,"gamePort":7902,"igwPort":7952,"suffix":"p2","pid":999}]}`)
+	if err := os.WriteFile(path, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of old ledger with port fields: %v", err)
+	}
+	if len(got.Instances) != 1 {
+		t.Fatalf("instances = %d, want 1", len(got.Instances))
+	}
+	pi := got.Instances[0]
+	if pi.PoolIndex != 2 || pi.Suffix != "p2" || pi.PID != 999 {
+		t.Errorf("old ledger parsed wrong: %+v", pi)
+	}
+	// Sanity: the removed keys really are gone from the struct's JSON now.
+	if b, _ := json.Marshal(pi); strings.Contains(string(b), "gamePort") {
+		t.Errorf("re-marshaled instance still emits gamePort: %s", b)
 	}
 }

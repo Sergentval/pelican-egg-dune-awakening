@@ -37,8 +37,6 @@ type Instance struct {
 	MapName     string `json:"mapName"`
 	PartitionID int    `json:"partitionId"`
 	PoolIndex   int    `json:"poolIndex"`
-	GamePort    int    `json:"gamePort"`
-	IGWPort     int    `json:"igwPort"`
 	Suffix      string `json:"suffix"`
 	PID         int    `json:"pid"`
 }

@@ -67,7 +67,7 @@ func TestSpawner_RestoreReadoptsLiveInstance(t *testing.T) {
 	writePidfile(t, base, "Survival_1", "p2", pid)
 	writeLedger(t, base, state.Instance{
 		Key: "default/sietch-survival", MapName: "Survival_1", PartitionID: 1,
-		PoolIndex: 2, GamePort: 7902, IGWPort: 7952, Suffix: "p2", PID: pid,
+		PoolIndex: 2, Suffix: "p2", PID: pid,
 	})
 
 	store := serversetscale.NewStore()
@@ -96,7 +96,7 @@ func TestSpawner_RestoreDropsDeadInstance(t *testing.T) {
 	dead := deadPID(t)
 	writeLedger(t, base, state.Instance{
 		Key: "default/sietch-overmap", MapName: "Overmap", PartitionID: 2,
-		PoolIndex: 3, GamePort: 7903, IGWPort: 7953, Suffix: "p3", PID: dead,
+		PoolIndex: 3, Suffix: "p3", PID: dead,
 	})
 	store := serversetscale.NewStore()
 	pl, err := pool.New(7900, 7950, 5)
@@ -123,7 +123,7 @@ func TestSpawner_RestorePreventsDuplicateSpawn(t *testing.T) {
 	writePidfile(t, base, "Survival_1", "p0", pid)
 	writeLedger(t, base, state.Instance{
 		Key: key, MapName: "Survival_1", PartitionID: 1,
-		PoolIndex: 0, GamePort: 7900, IGWPort: 7950, Suffix: "p0", PID: pid,
+		PoolIndex: 0, Suffix: "p0", PID: pid,
 	})
 
 	spw.Restore()
