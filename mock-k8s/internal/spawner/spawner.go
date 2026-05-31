@@ -232,6 +232,9 @@ func (s *Spawner) Restore() {
 			"key", pi.Key, "map", pi.MapName, "pid", pid, "game_port", alloc.GamePort)
 	}
 	slog.Info("spawner: state restore complete", "adopted", adopted, "of", len(prev.Instances))
+	s.mu.Lock()
+	s.restoredAtBoot += int64(adopted)
+	s.mu.Unlock()
 	s.persist()
 }
 
@@ -472,6 +475,10 @@ func (s *Spawner) persist() {
 	}
 	if err := state.Save(s.statePath, st); err != nil {
 		slog.Error("spawner: persist state failed", "path", s.statePath, "err", err)
+		s.mu.Lock()
+		s.persistErrors++
+		s.lastPersistError = err.Error()
+		s.mu.Unlock()
 		return
 	}
 	s.lastSavedGen = gen

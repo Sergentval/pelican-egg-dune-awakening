@@ -79,6 +79,9 @@ func TestSpawner_RestoreReadoptsLiveInstance(t *testing.T) {
 
 	spw.Restore()
 
+	if spw.Snapshot().Instances.RestoredAtBoot != 1 {
+		t.Errorf("RestoredAtBoot = %d, want 1", spw.Snapshot().Instances.RestoredAtBoot)
+	}
 	if used, _, _ := pl.Stats(); used != 1 {
 		t.Fatalf("after restore, pool used = %d, want 1", used)
 	}

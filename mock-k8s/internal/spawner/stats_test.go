@@ -135,3 +135,17 @@ func TestSnapshot_FailingMapShowsBackoff(t *testing.T) {
 		t.Error("nextRetry = nil, want a time for a failing map")
 	}
 }
+
+func TestPersist_CountsErrors(t *testing.T) {
+	spw, _ := newBareSpawner(t)
+	// Point statePath at an un-writable location to force a Save error.
+	spw.statePath = filepath.Join(t.TempDir(), "nope", "\x00bad", "state.json")
+	spw.persist()
+	snap := spw.Snapshot()
+	if snap.Persist.Errors == 0 {
+		t.Error("persist error not counted")
+	}
+	if snap.Persist.LastError == "" {
+		t.Error("lastPersistError not recorded")
+	}
+}
