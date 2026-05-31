@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -318,10 +319,7 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 
 	cmd := exec.CommandContext(context.Background(),
 		"bash", s.scriptPath, s.baseDir, mapName, suffix)
-	cmd.Env = append([]string{}, mockChildEnv(partitionID, alloc)...)
-	// Inherit existing process env so $PATH, $HOME, $DUNE_* (set by
-	// pelican-entrypoint.sh) flow through.
-	cmd.Env = append(cmd.Env, os.Environ()...)
+	cmd.Env = spawnEnv(partitionID, alloc)
 	slog.Info("spawner: starting UE5", "map", mapName, "suffix", suffix,
 		"partition", partitionID, "game_port", alloc.GamePort, "igw_port", alloc.IGWPort)
 
@@ -455,6 +453,37 @@ func safeInstanceName(s string) bool {
 func (s *Spawner) pidPath(mapName, suffix string) string {
 	name := filepath.Base("ue5-" + mapName + "-" + suffix + ".pid")
 	return filepath.Join(s.baseDir, "runtime", "pids", name)
+}
+
+// spawnEnv builds the environment for a UE5 child: the inherited process env
+// (so $PATH, $HOME, $DUNE_* set by pelican-entrypoint.sh flow through) with
+// the per-instance DUNE_PARTITION / DUNE_GAME_PORT / DUNE_IGW_PORT taking
+// precedence. Any inherited copy of an overridden key is dropped rather than
+// merely shadowed, so the child's getenv can't resolve a stale value
+// regardless of how it handles duplicate names — otherwise a stray inherited
+// DUNE_GAME_PORT would collapse every instance onto one UDP port.
+func spawnEnv(partitionID int, alloc pool.Allocation) []string {
+	return overrideEnv(os.Environ(), mockChildEnv(partitionID, alloc))
+}
+
+// overrideEnv returns base with every "KEY=value" whose KEY is set by
+// overrides removed, then overrides appended — so the override value is the
+// only occurrence of that key.
+func overrideEnv(base, overrides []string) []string {
+	keys := make(map[string]bool, len(overrides))
+	for _, kv := range overrides {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			keys[kv[:i]] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		if i := strings.IndexByte(kv, '='); i >= 0 && keys[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, overrides...)
 }
 
 // mockChildEnv returns the env vars start-ue5.sh's preamble reads to
