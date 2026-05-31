@@ -68,6 +68,15 @@ type Spawner struct {
 	// interleave file writes.
 	saveMu sync.Mutex
 
+	// persistGen is bumped under s.mu on every snapshot; lastSavedGen (under
+	// saveMu) is the newest generation committed to disk. Because persist()
+	// snapshots under s.mu but writes under saveMu, two calls can win the
+	// saveMu race in the opposite order to their snapshots — the guard makes a
+	// call skip its write when its generation is no newer than what is already
+	// on disk, so a stale snapshot can never clobber a newer ledger.
+	persistGen   uint64
+	lastSavedGen uint64
+
 	// bg tracks background goroutines (pid capture + scale-down teardown)
 	// so tests — and a future graceful shutdown — can wait for them.
 	bg sync.WaitGroup
@@ -382,13 +391,17 @@ func (s *Spawner) capturePID(key string, index int, pidPath string, ready chan s
 
 // persist snapshots the current instance ledger to disk so a later Restore
 // can re-adopt still-live UE5 processes on their original ports. No-op when
-// statePath is empty. The snapshot is taken under s.mu but the file write
-// happens under saveMu only, so a slow disk never stalls reconciliation.
+// statePath is empty. The snapshot is taken under s.mu (which also bumps
+// persistGen) but the file write happens under saveMu only, so a slow disk
+// never stalls reconciliation; a monotonic generation guard stops a snapshot
+// that lost the saveMu race from overwriting a newer one.
 func (s *Spawner) persist() {
 	if s.statePath == "" {
 		return
 	}
 	s.mu.Lock()
+	s.persistGen++
+	gen := s.persistGen
 	st := state.State{Version: 1}
 	for key, list := range s.instances {
 		for _, in := range list {
@@ -408,9 +421,15 @@ func (s *Spawner) persist() {
 
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
+	if gen <= s.lastSavedGen {
+		// A newer snapshot already reached disk; this one is stale — skip it.
+		return
+	}
 	if err := state.Save(s.statePath, st); err != nil {
 		slog.Error("spawner: persist state failed", "path", s.statePath, "err", err)
+		return
 	}
+	s.lastSavedGen = gen
 }
 
 // safeInstanceName reports whether a map name or suffix is safe to embed in
