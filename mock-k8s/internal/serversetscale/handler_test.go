@@ -126,6 +126,29 @@ func TestList_OmitNestedField(t *testing.T) {
 	}
 }
 
+func TestList_OmitDeeplyNestedField(t *testing.T) {
+	// A multi-level path (more than one dot) must descend one map level per
+	// dot and drop the leaf key, not silently no-op. The bisection knob is
+	// useless if it can only reach one level deep.
+	withEnv(t, true, "metadata.labels.existing")
+	s := NewStore()
+	seedWithLabels(t, s, "sietch-survival", "Survival_1") // seeds label existing=x
+
+	it := listItems(t, s)[0].(map[string]any)
+	md := it["metadata"].(map[string]any)
+	labels, ok := md["labels"].(map[string]any)
+	if !ok {
+		t.Fatal("labels map was removed; only the leaf key should be dropped")
+	}
+	if _, present := labels["existing"]; present {
+		t.Errorf("MOCK_K8S_LIST_OMIT=metadata.labels.existing did not drop the nested key: %v", labels)
+	}
+	// Sibling derived label must survive — only the targeted leaf is dropped.
+	if _, present := labels["igw.funcom.com/map-name"]; !present {
+		t.Errorf("deep omit removed a sibling label: %v", labels)
+	}
+}
+
 func TestList_DoesNotMutateStoredObject(t *testing.T) {
 	withEnv(t, true, "")
 	s := NewStore()
@@ -142,5 +165,68 @@ func TestList_DoesNotMutateStoredObject(t *testing.T) {
 	}
 	if len(obj.Metadata.Labels) != 1 {
 		t.Errorf("stored object labels mutated: %v", obj.Metadata.Labels)
+	}
+}
+
+func seedWithStatus(t *testing.T, s *Store, name, mapName string, status map[string]any) {
+	t.Helper()
+	if _, ok := s.Create(Object{
+		Metadata: Metadata{Namespace: "default", Name: name, Labels: map[string]string{"existing": "x"}},
+		Spec:     map[string]any{"mapName": mapName, "battlegroupName": "w", "replicas": int64(1)},
+		Status:   status,
+	}); !ok {
+		t.Fatalf("seed %s failed", name)
+	}
+}
+
+// ensureUniformItem must not add derived keys to the stored object's Spec.
+func TestList_DoesNotMutateStoredSpec(t *testing.T) {
+	withEnv(t, true, "")
+	s := NewStore()
+	seedWithLabels(t, s, "sietch-survival", "Survival_1")
+
+	_ = listItems(t, s)
+
+	obj, ok := s.Get("default", "sietch-survival")
+	if !ok {
+		t.Fatal("stored object vanished")
+	}
+	for _, k := range []string{"mapName", "battlegroupName", "replicas"} {
+		if _, ok := obj.Spec[k]; !ok {
+			t.Errorf("LIST dropped spec key %q from the stored object", k)
+		}
+	}
+	if len(obj.Spec) != 3 {
+		t.Errorf("stored spec mutated after LIST, got %d keys: %v", len(obj.Spec), obj.Spec)
+	}
+}
+
+// The stored object's non-nil Status shares its backing map with the value
+// ensureUniformItem returns; objectToMap's JSON round-trip is what isolates
+// the LIST copy before applyOmit can delete from it. This pins that down: a
+// LIST that omits status must not wipe the stored Status.
+func TestList_DoesNotMutateStoredStatus(t *testing.T) {
+	withEnv(t, true, "status") // applyOmit will delete status from the LIST copy
+	s := NewStore()
+	seedWithStatus(t, s, "sietch-survival", "Survival_1", map[string]any{
+		"observedGeneration": int64(3),
+		"completedReplicas":  int64(2),
+		"phase":              "Running",
+	})
+
+	_ = listItems(t, s)
+
+	obj, ok := s.Get("default", "sietch-survival")
+	if !ok {
+		t.Fatal("stored object vanished")
+	}
+	if obj.Status == nil {
+		t.Fatal("LIST wiped the stored Status")
+	}
+	if obj.Status["phase"] != "Running" {
+		t.Errorf("stored Status.phase = %v, want Running — LIST mutated stored status", obj.Status["phase"])
+	}
+	if len(obj.Status) != 3 {
+		t.Errorf("stored Status has %d keys after LIST, want 3: %v", len(obj.Status), obj.Status)
 	}
 }

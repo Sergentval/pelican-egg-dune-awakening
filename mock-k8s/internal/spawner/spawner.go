@@ -16,13 +16,14 @@ package spawner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,15 @@ type Spawner struct {
 	// saveMu serializes ledger writes so concurrent persist() calls can't
 	// interleave file writes.
 	saveMu sync.Mutex
+
+	// persistGen is bumped under s.mu on every snapshot; lastSavedGen (under
+	// saveMu) is the newest generation committed to disk. Because persist()
+	// snapshots under s.mu but writes under saveMu, two calls can win the
+	// saveMu race in the opposite order to their snapshots — the guard makes a
+	// call skip its write when its generation is no newer than what is already
+	// on disk, so a stale snapshot can never clobber a newer ledger.
+	persistGen   uint64
+	lastSavedGen uint64
 
 	// bg tracks background goroutines (pid capture + scale-down teardown)
 	// so tests — and a future graceful shutdown — can wait for them.
@@ -119,15 +129,24 @@ func (s *Spawner) Restore() {
 	}
 	prev, err := state.Load(s.statePath)
 	if err != nil {
-		// Quarantine the unreadable ledger so it is preserved for inspection
-		// and does not keep failing on every boot, then start fresh.
-		corrupt := s.statePath + ".corrupt." + strconv.FormatInt(time.Now().UnixNano(), 10)
-		if rnErr := os.Rename(s.statePath, corrupt); rnErr != nil {
-			slog.Error("spawner: state ledger unreadable and could not be quarantined; starting fresh",
-				"path", s.statePath, "err", err, "rename_err", rnErr)
+		if errors.Is(err, state.ErrCorrupt) {
+			// The ledger is present but unparseable. Quarantine it so the
+			// operator can inspect it and it stops failing every boot, then
+			// start fresh — safe precisely because we KNOW the file is bad.
+			corrupt := s.statePath + ".corrupt." + strconv.FormatInt(time.Now().UnixNano(), 10)
+			if rnErr := os.Rename(s.statePath, corrupt); rnErr != nil {
+				slog.Error("spawner: corrupt state ledger could not be quarantined; starting fresh",
+					"path", s.statePath, "err", err, "rename_err", rnErr)
+			} else {
+				slog.Error("spawner: corrupt state ledger quarantined; starting fresh",
+					"path", s.statePath, "quarantined_to", corrupt, "err", err)
+			}
 		} else {
-			slog.Error("spawner: state ledger unreadable; quarantined and starting fresh",
-				"path", s.statePath, "quarantined_to", corrupt, "err", err)
+			// Transient I/O error (EACCES, EIO, …). The ledger may be healthy;
+			// do NOT rename it — log and skip restore so the next boot can try
+			// again and still re-adopt the instances it records.
+			slog.Error("spawner: transient I/O error reading state ledger; skipping restore (ledger preserved)",
+				"path", s.statePath, "err", err)
 		}
 		return
 	}
@@ -372,13 +391,17 @@ func (s *Spawner) capturePID(key string, index int, pidPath string, ready chan s
 
 // persist snapshots the current instance ledger to disk so a later Restore
 // can re-adopt still-live UE5 processes on their original ports. No-op when
-// statePath is empty. The snapshot is taken under s.mu but the file write
-// happens under saveMu only, so a slow disk never stalls reconciliation.
+// statePath is empty. The snapshot is taken under s.mu (which also bumps
+// persistGen) but the file write happens under saveMu only, so a slow disk
+// never stalls reconciliation; a monotonic generation guard stops a snapshot
+// that lost the saveMu race from overwriting a newer one.
 func (s *Spawner) persist() {
 	if s.statePath == "" {
 		return
 	}
 	s.mu.Lock()
+	s.persistGen++
+	gen := s.persistGen
 	st := state.State{Version: 1}
 	for key, list := range s.instances {
 		for _, in := range list {
@@ -387,8 +410,6 @@ func (s *Spawner) persist() {
 				MapName:     in.MapName,
 				PartitionID: in.PartitionID,
 				PoolIndex:   in.Allocation.Index,
-				GamePort:    in.Allocation.GamePort,
-				IGWPort:     in.Allocation.IGWPort,
 				Suffix:      in.Suffix,
 				PID:         in.PID,
 			})
@@ -398,23 +419,32 @@ func (s *Spawner) persist() {
 
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
+	if gen <= s.lastSavedGen {
+		// A newer snapshot already reached disk; this one is stale — skip it.
+		return
+	}
 	if err := state.Save(s.statePath, st); err != nil {
 		slog.Error("spawner: persist state failed", "path", s.statePath, "err", err)
+		return
 	}
+	s.lastSavedGen = gen
 }
 
-// safeInstanceName reports whether a map name or suffix is safe to embed in
-// a pidfile path: non-empty and free of path separators or "..", so a
-// crafted ServerSetScale spec cannot make the spawner read, write, or
-// delete files outside runtime/pids.
+// safeNameRe is the allowlist for a map name or suffix: it must start with an
+// alphanumeric and then contain only alphanumerics, '_', '.', and '-'. That
+// rejects the empty string, path separators, a leading '.' (so a bare ".." or
+// any dot-led traversal fails the first-character class), a leading '-' (argv
+// flag injection into the UE5 binary), whitespace and newlines (log
+// injection), and every shell metacharacter — none of which appear in a real
+// Funcom map name (Survival_1, Overmap, …) or a generated p<N> suffix.
+var safeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// safeInstanceName reports whether a map name or suffix is safe to embed in a
+// pidfile path (no traversal), a log line (no newlines), and an exec argv (no
+// leading dash, whitespace, or shell metacharacters). It is an allowlist, not
+// a denylist, so unanticipated dangerous inputs fail closed.
 func safeInstanceName(s string) bool {
-	if s == "" {
-		return false
-	}
-	if strings.ContainsAny(s, "/\\") {
-		return false
-	}
-	return !strings.Contains(s, "..")
+	return safeNameRe.MatchString(s)
 }
 
 // pidPath returns the pidfile path start-ue5.sh writes for an instance,

@@ -33,7 +33,7 @@ mock-k8s rebuild needed):
 | Env | Effect |
 |-----|--------|
 | `MOCK_K8S_LIST_ENABLE=1` | Return the **real** items in `LIST` instead of an empty array. Each item is shape-normalised first so it carries the same non-null fields a by-name `GET` does (`metadata.labels` with `igw.funcom.com/map-name` + `igw.funcom.com/battlegroup-name`, a `status` block, `spec`). |
-| `MOCK_K8S_LIST_OMIT=a,b.c` | Drop the listed dotted fields from each `LIST` item before sending. One level of nesting. Remove suspected fields one at a time. |
+| `MOCK_K8S_LIST_OMIT=a,b.c` | Drop the listed dotted fields from each `LIST` item before sending. A dotted path descends one map level per dot, to any depth (`status`, `metadata.labels`, `metadata.labels.existing`). Remove suspected fields one at a time. |
 
 Every enabled `LIST` is logged:
 
