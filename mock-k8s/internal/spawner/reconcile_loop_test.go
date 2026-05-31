@@ -35,6 +35,9 @@ func TestSweep_ReapsDeadKeepsLive(t *testing.T) {
 	for i := 0; i < 200 && proc.Alive(deadPID); i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
+	if proc.Alive(deadPID) {
+		t.Fatal("deadPID still alive after SIGKILL; cannot test reaping")
+	}
 	aDead, _ := spw.pool.Acquire()
 
 	spw.mu.Lock()
@@ -55,8 +58,11 @@ func TestSweep_ReapsDeadKeepsLive(t *testing.T) {
 	if used, _, _ := spw.pool.Stats(); used != 1 {
 		t.Errorf("after sweep: pool used = %d, want 1 (dead slot released)", used)
 	}
-	if spw.reapedTotal != 1 {
-		t.Errorf("reapedTotal = %d, want 1", spw.reapedTotal)
+	spw.mu.Lock()
+	reapedTotal := spw.reapedTotal
+	spw.mu.Unlock()
+	if reapedTotal != 1 {
+		t.Errorf("reapedTotal = %d, want 1", reapedTotal)
 	}
 	// One reap records exactly one failure (failures==1 means retry next tick).
 	spw.mu.Lock()

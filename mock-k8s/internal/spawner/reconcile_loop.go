@@ -123,8 +123,10 @@ func (s *Spawner) sweep() map[string]bool {
 		return nil
 	}
 
-	// Phase 3: remove dead under s.mu (match by pool index + pid), count, record.
+	// Phase 3: remove dead under s.mu (match by pool index + pid), count,
+	// record, and collect the entries we actually removed.
 	reaped := make(map[string]bool, len(dead))
+	var confirmed []probe
 	s.mu.Lock()
 	for _, d := range dead {
 		list := s.instances[d.key]
@@ -133,20 +135,24 @@ func (s *Spawner) sweep() map[string]bool {
 				s.instances[d.key] = append(list[:i:i], list[i+1:]...)
 				s.reapedTotal++
 				reaped[d.key] = true
+				confirmed = append(confirmed, d)
 				break
 			}
 		}
 	}
 	s.mu.Unlock()
 
-	// Phase 4: side effects + backoff outside s.mu.
-	for _, d := range dead {
+	// Phase 4: side effects + backoff outside s.mu — only for entries we
+	// actually removed, so each slot is released exactly once.
+	for _, d := range confirmed {
 		s.pool.Release(d.allocIndex)
 		_ = os.Remove(d.pidPath)
 	}
 	for key := range reaped {
 		s.recordFailure(key)
 	}
-	s.persist()
+	if len(confirmed) > 0 {
+		s.persist()
+	}
 	return reaped
 }
