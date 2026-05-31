@@ -5,11 +5,14 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/spawner"
 )
+
+var labelReplacer = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 
 // StatusHandler serves the snapshot as indented JSON.
 func StatusHandler(get func() spawner.Snapshot) http.HandlerFunc {
@@ -42,7 +45,7 @@ func MetricsHandler(get func() spawner.Snapshot) http.HandlerFunc {
 			}
 			return 0
 		})
-		_, _ = w.Write([]byte(b.String()))
+		_, _ = io.WriteString(w, b.String())
 	}
 }
 
@@ -55,6 +58,9 @@ func counter(b *strings.Builder, name, help string, v int64) {
 }
 
 func mapGauge(b *strings.Builder, name, help string, maps []spawner.MapStatus, val func(spawner.MapStatus) int) {
+	if len(maps) == 0 {
+		return
+	}
 	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
 	for _, m := range maps {
 		fmt.Fprintf(b, "%s{map=\"%s\"} %d\n", name, escapeLabel(m.Map), val(m))
@@ -62,5 +68,5 @@ func mapGauge(b *strings.Builder, name, help string, maps []spawner.MapStatus, v
 }
 
 func escapeLabel(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(s)
+	return labelReplacer.Replace(s)
 }

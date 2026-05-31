@@ -44,6 +44,9 @@ func TestStatusHandler_JSON(t *testing.T) {
 func TestMetricsHandler_Prometheus(t *testing.T) {
 	rec := httptest.NewRecorder()
 	MetricsHandler(sampleSnapshot)(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4" {
+		t.Errorf("metrics content-type = %q, want text/plain; version=0.0.4", ct)
+	}
 	body := rec.Body.String()
 	for _, want := range []string{
 		"mock_k8s_pool_slots_used 8",
@@ -53,6 +56,8 @@ func TestMetricsHandler_Prometheus(t *testing.T) {
 		`mock_k8s_map_current{map="Overmap"} 0`,
 		`mock_k8s_map_failing{map="Overmap"} 1`,
 		`mock_k8s_map_failing{map="Survival_1"} 0`,
+		"# TYPE mock_k8s_pool_slots_used gauge",
+		"# TYPE mock_k8s_instances_reaped_total counter",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q\n--- body ---\n%s", want, body)
