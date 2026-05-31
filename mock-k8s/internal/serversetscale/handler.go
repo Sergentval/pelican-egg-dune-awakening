@@ -3,7 +3,6 @@ package serversetscale
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -109,12 +108,16 @@ func handleList(s *Store, ns string, isWatch bool, w http.ResponseWriter, r *htt
 	// MOCK_K8S_LIST_ENABLE=1 opts into returning the real list. Used
 	// for bisecting which field on a real item triggers the crash —
 	// flip on, enable some-items, watch Director's exception, narrow.
-	items := []Object{}
+	items := []any{}
 	if listEnabled() {
-		realItems := s.List(ns)
-		if realItems != nil {
-			items = realItems
+		omit := listOmitFields()
+		for _, o := range s.List(ns) {
+			m := objectToMap(ensureUniformItem(o))
+			applyOmit(m, omit)
+			items = append(items, m)
 		}
+		slog.Info("serversetscale: LIST returning real items (MOCK_K8S_LIST_ENABLE set)",
+			"namespace", ns, "count", len(items), "omit", omitKeys(omit))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "igw.funcom.com/v1",
@@ -138,6 +141,99 @@ func listEnabled() bool {
 		return true
 	}
 	return false
+}
+
+// listOmitFields parses MOCK_K8S_LIST_OMIT — a comma-separated list of
+// dotted item fields to drop from LIST responses — for bisecting which
+// field triggers the Director's null-key Dictionary.Add crash. One level
+// of nesting is supported, e.g.:
+//
+//	MOCK_K8S_LIST_OMIT=status,metadata.labels,metadata.annotations
+//
+// Read per request so an operator can bisect against a live Director
+// without restarting mock-k8s.
+func listOmitFields() map[string]bool {
+	raw := osLookupEnv("MOCK_K8S_LIST_OMIT")
+	if raw == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, f := range strings.Split(raw, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out[f] = true
+		}
+	}
+	return out
+}
+
+func omitKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// ensureUniformItem returns a copy of o carrying the same non-null fields a
+// by-name GET item does, so the Director — which accepts our GET responses
+// — sees a consistent shape across every item in a LIST. The Director
+// deserializes ListServerSetScales into a Dictionary keyed by a per-item
+// string; a field that is null on even one item throws ArgumentNullException
+// and crashes Director at startup. Deriving the igw.funcom.com map-name /
+// battlegroup-name labels and a status block from spec is the best-effort
+// cure; MOCK_K8S_LIST_OMIT lets an operator confirm which field actually
+// matters. The labels map is cloned so the stored object is never mutated.
+func ensureUniformItem(o Object) Object {
+	labels := make(map[string]string, len(o.Metadata.Labels)+2)
+	for k, v := range o.Metadata.Labels {
+		labels[k] = v
+	}
+	if mn, _ := o.Spec["mapName"].(string); mn != "" {
+		if _, has := labels["igw.funcom.com/map-name"]; !has {
+			labels["igw.funcom.com/map-name"] = mn
+		}
+	}
+	if bg, _ := o.Spec["battlegroupName"].(string); bg != "" {
+		if _, has := labels["igw.funcom.com/battlegroup-name"]; !has {
+			labels["igw.funcom.com/battlegroup-name"] = bg
+		}
+	}
+	o.Metadata.Labels = labels
+	if o.Status == nil {
+		o.Status = map[string]any{
+			"observedGeneration": o.Metadata.Generation,
+			"completedReplicas":  int64(0),
+		}
+	}
+	return o
+}
+
+// objectToMap renders o to the generic JSON shape so individual fields can
+// be omitted before the item is written. Marshaling an Object only touches
+// JSON-native types, so the error is intentionally dropped.
+func objectToMap(o Object) map[string]any {
+	b, _ := json.Marshal(o)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+// applyOmit deletes each dotted path in omit from a serialized item map.
+// Supports one level of nesting ("status", "metadata.labels"); unknown
+// paths are ignored.
+func applyOmit(m map[string]any, omit map[string]bool) {
+	for path := range omit {
+		if i := strings.IndexByte(path, '.'); i >= 0 {
+			if sub, ok := m[path[:i]].(map[string]any); ok {
+				delete(sub, path[i+1:])
+			}
+			continue
+		}
+		delete(m, path)
+	}
 }
 
 func handleCreate(s *Store, ns string, w http.ResponseWriter, r *http.Request) {
@@ -361,13 +457,6 @@ func codeToReason(code int) string {
 		return "Failure"
 	}
 }
-
-// Sentinel used internally for cleaner error returns. Not currently
-// emitted on the wire; placeholder for future error-categorization work.
-var ErrNotFound = errors.New("not found")
-
-// Silence the import if slog ends up unused after refactors.
-var _ = slog.Default
 
 // jsonPatchToMergePatch converts a list of RFC 6902 JSON Patch
 // operations into the equivalent RFC 7396 merge-patch object.
