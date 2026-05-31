@@ -307,10 +307,11 @@ func envOr(name, fallback string) string {
 
 // parseReconcileInterval reads the reconcile-loop interval. Empty/unparseable
 // values fall back to 30s; "0", "off", or a non-positive duration disables the
-// loop.
+// loop. Surrounding whitespace is tolerated.
 func parseReconcileInterval(v string) time.Duration {
 	const def = 30 * time.Second
-	switch strings.TrimSpace(strings.ToLower(v)) {
+	v = strings.TrimSpace(v)
+	switch strings.ToLower(v) {
 	case "":
 		return def
 	case "off", "false", "no":
