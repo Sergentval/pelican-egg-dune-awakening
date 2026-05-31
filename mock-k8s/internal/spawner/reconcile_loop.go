@@ -190,10 +190,3 @@ func (s *Spawner) reconcileUpLocked(obj serversetscale.Object, respectBackoff bo
 	}
 	return desired - current
 }
-
-// currentCount returns the number of instances tracked for key.
-func currentCount(s *Spawner, key string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.instances[key])
-}

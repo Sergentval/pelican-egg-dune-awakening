@@ -252,9 +252,13 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	desired := readReplicas(obj.Spec)
 
 	s.reconcileMu.Lock()
-	if desired < currentCount(s, key) {
+	s.mu.Lock()
+	current := len(s.instances[key])
+	s.mu.Unlock()
+	switch {
+	case desired < current:
 		s.scaleDown(key, desired)
-	} else {
+	case desired > current:
 		s.reconcileUpLocked(obj, false) // honor a Director patch immediately
 	}
 	s.reconcileMu.Unlock()

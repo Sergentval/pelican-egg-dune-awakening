@@ -183,3 +183,14 @@ func TestReconcileUp_RespectsBackoff(t *testing.T) {
 		t.Errorf("respectBackoff=false spawned %d, want 1", ignoreBackoff)
 	}
 }
+
+func TestReconcileUp_NoOpWhenAtDesired(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	obj := sssObj("m", "Survival_1", 0) // desired==current==0
+	spw.reconcileMu.Lock()
+	n := spw.reconcileUpLocked(obj, true)
+	spw.reconcileMu.Unlock()
+	if n != 0 {
+		t.Errorf("spawned %d at desired==current, want 0", n)
+	}
+}
