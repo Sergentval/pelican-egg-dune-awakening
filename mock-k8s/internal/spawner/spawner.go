@@ -84,6 +84,23 @@ type Spawner struct {
 
 	// terminate is the process-termination seam; defaults to proc.Terminate.
 	terminate func(pid int, grace time.Duration) error
+
+	// now is the clock seam; defaults to time.Now. Swappable so backoff timing
+	// is deterministic in tests.
+	now func() time.Time
+
+	startedAt         time.Time     // process start, for /status uptime
+	reconcileInterval time.Duration // 0 when the loop is disabled
+	reconcileSweeps   int64         // ticks run
+	lastSweep         time.Time     // zero until the first tick
+	reapedTotal       int64
+	respawnedTotal    int64
+	restoredAtBoot    int64
+	persistErrors     int64
+	lastPersistError  string
+
+	// backoff holds per-map crash-loop state, guarded by s.mu.
+	backoff map[string]backoffState
 }
 
 type instance struct {
@@ -101,6 +118,12 @@ type instance struct {
 	pidReady chan struct{}
 }
 
+// backoffState tracks crash-loop backoff for one map key.
+type backoffState struct {
+	failures  int
+	nextRetry time.Time // zero when failures <= 1 (retry immediately)
+}
+
 // New constructs a Spawner. scriptPath should be absolute (e.g.
 // /home/container/scripts/start-ue5.sh). baseDir is passed as $1 to the
 // script and roots both runtime/pids and the server/state ledger.
@@ -113,6 +136,9 @@ func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir strin
 		statePath:  filepath.Join(baseDir, "server", "state", "mock-k8s-state.json"),
 		instances:  make(map[string][]instance),
 		terminate:  proc.Terminate,
+		now:        time.Now,
+		startedAt:  time.Now(),
+		backoff:    make(map[string]backoffState),
 	}
 }
 
@@ -206,6 +232,9 @@ func (s *Spawner) Restore() {
 			"key", pi.Key, "map", pi.MapName, "pid", pid, "game_port", alloc.GamePort)
 	}
 	slog.Info("spawner: state restore complete", "adopted", adopted, "of", len(prev.Instances))
+	s.mu.Lock()
+	s.restoredAtBoot += int64(adopted)
+	s.mu.Unlock()
 	s.persist()
 }
 
@@ -224,20 +253,16 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 		return
 	}
 	desired := readReplicas(obj.Spec)
-	partitionID := readPartitionID(obj.Spec)
 
 	s.reconcileMu.Lock()
 	s.mu.Lock()
 	current := len(s.instances[key])
 	s.mu.Unlock()
-
 	switch {
-	case desired > current:
-		for i := current; i < desired; i++ {
-			s.spawnOne(obj, mapName, partitionID, i)
-		}
 	case desired < current:
 		s.scaleDown(key, desired)
+	case desired > current:
+		s.reconcileUpLocked(obj, false) // honor a Director patch immediately
 	}
 	s.reconcileMu.Unlock()
 
@@ -450,6 +475,10 @@ func (s *Spawner) persist() {
 	}
 	if err := state.Save(s.statePath, st); err != nil {
 		slog.Error("spawner: persist state failed", "path", s.statePath, "err", err)
+		s.mu.Lock()
+		s.persistErrors++
+		s.lastPersistError = err.Error()
+		s.mu.Unlock()
 		return
 	}
 	s.lastSavedGen = gen

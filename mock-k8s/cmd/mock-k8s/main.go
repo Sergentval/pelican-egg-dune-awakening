@@ -37,9 +37,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/apigroup"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/battlegroup"
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/health"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/ondemand"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/pool"
 	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/sa"
@@ -251,6 +253,8 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/status", health.StatusHandler(spw.Snapshot))
+	mux.HandleFunc("/metrics", health.MetricsHandler(spw.Snapshot))
 
 	handler := server.LogMiddleware(mux, 4096)
 
@@ -267,6 +271,9 @@ func run() error {
 	// 8. Run until SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	reconcileInterval := parseReconcileInterval(os.Getenv("MOCK_K8S_RECONCILE_INTERVAL"))
+	slog.Info("self-healing reconcile", "interval", reconcileInterval, "enabled", reconcileInterval > 0)
+	go spw.Reconcile(ctx, reconcileInterval)
 	if err := server.Run(ctx, srv); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -296,6 +303,28 @@ func envOr(name, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// parseReconcileInterval reads the reconcile-loop interval. Empty/unparseable
+// values fall back to 30s; "0", "off", or a non-positive duration disables the
+// loop. Surrounding whitespace is tolerated.
+func parseReconcileInterval(v string) time.Duration {
+	const def = 30 * time.Second
+	v = strings.TrimSpace(v)
+	switch strings.ToLower(v) {
+	case "":
+		return def
+	case "off", "false", "no":
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	if d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // envInt reads an int env var, returning fallback when unset/invalid.
