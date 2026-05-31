@@ -150,16 +150,26 @@ A "battlegroup" is one world. It hosts multiple "Sietches" (always-warm hub
 maps + on-demand instances for dungeons / story missions / Deep Desert) on
 a shared UDP port pool.
 
-## Networking
+## Port allocation
 
-| Protocol | Port(s) | Purpose |
-|---|---|---|
-| TCP | 5673 | RabbitMQ Game broker (AMQPS / TLS) |
-| TCP | 15673 | RabbitMQ Game HTTP management |
-| UDP | 7777–7806 | UE5 dedicated server pool (30 slots, default 8 active) |
+Assign these in the Pelican panel's **Allocations** tab when you create the
+server. The **primary** allocation must be the UDP game base, `7777`.
 
-These are advertised to clients via Funcom's FLS service using
-`DUNE_EXTERNAL_IP` (your public WAN IP).
+| Protocol | Port(s) | Allocate? | Purpose |
+|---|---|---|---|
+| UDP | 7777–7806 | **Yes — whole range** | UE5 dedicated-server instance pool (30 slots; ~8 active by default). Primary = `7777`, wired to `SERVER_PORT` / `K8S_POOL_GAME_PORT_BASE`. Allocate the full range so on-demand maps and Deep Desert instances can bind. |
+| TCP | 5673 | **Yes** | RabbitMQ game broker (AMQPS / TLS) — `DUNE_MQ_GAME_PORT` |
+| TCP | 15673 | **Yes** | RabbitMQ game management, client token auth — `DUNE_MQ_GAME_MGMT_PORT` |
+| TCP | 8090 | Optional | Admin web UI — only when `DUNE_ADMIN_UI_ENABLED=1` (`DUNE_ADMIN_UI_PORT`) |
+
+The UDP range and the two TCP broker ports are advertised to clients via
+Funcom's FLS service using `DUNE_EXTERNAL_IP` (your public WAN IP), so they
+must also be open/forwarded on your router or firewall.
+
+Everything else binds to `127.0.0.1` inside the container and needs **no**
+allocation: Postgres (15432), mock-k8s API (6443), Battlegroup Director
+(11717), gateway (8080), text-router (5059), RabbitMQ admin (5672 / 15672),
+the IGW port pool (7950+), and the internal admin HTTP wrapper (8089).
 
 ## Setup
 
