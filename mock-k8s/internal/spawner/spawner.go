@@ -22,8 +22,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -430,18 +430,21 @@ func (s *Spawner) persist() {
 	s.lastSavedGen = gen
 }
 
-// safeInstanceName reports whether a map name or suffix is safe to embed in
-// a pidfile path: non-empty and free of path separators or "..", so a
-// crafted ServerSetScale spec cannot make the spawner read, write, or
-// delete files outside runtime/pids.
+// safeNameRe is the allowlist for a map name or suffix: it must start with an
+// alphanumeric and then contain only alphanumerics, '_', '.', and '-'. That
+// rejects the empty string, path separators, a leading '.' (so a bare ".." or
+// any dot-led traversal fails the first-character class), a leading '-' (argv
+// flag injection into the UE5 binary), whitespace and newlines (log
+// injection), and every shell metacharacter — none of which appear in a real
+// Funcom map name (Survival_1, Overmap, …) or a generated p<N> suffix.
+var safeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// safeInstanceName reports whether a map name or suffix is safe to embed in a
+// pidfile path (no traversal), a log line (no newlines), and an exec argv (no
+// leading dash, whitespace, or shell metacharacters). It is an allowlist, not
+// a denylist, so unanticipated dangerous inputs fail closed.
 func safeInstanceName(s string) bool {
-	if s == "" {
-		return false
-	}
-	if strings.ContainsAny(s, "/\\") {
-		return false
-	}
-	return !strings.Contains(s, "..")
+	return safeNameRe.MatchString(s)
 }
 
 // pidPath returns the pidfile path start-ue5.sh writes for an instance,
