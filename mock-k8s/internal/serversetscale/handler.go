@@ -221,18 +221,29 @@ func objectToMap(o Object) map[string]any {
 	return m
 }
 
-// applyOmit deletes each dotted path in omit from a serialized item map.
-// Supports one level of nesting ("status", "metadata.labels"); unknown
-// paths are ignored.
+// applyOmit deletes each dotted path in omit from a serialized item map,
+// walking into nested maps to any depth (e.g. "status",
+// "metadata.labels", "metadata.labels.some/key"). Unknown paths are
+// no-ops.
 func applyOmit(m map[string]any, omit map[string]bool) {
 	for path := range omit {
-		if i := strings.IndexByte(path, '.'); i >= 0 {
-			if sub, ok := m[path[:i]].(map[string]any); ok {
-				delete(sub, path[i+1:])
-			}
-			continue
+		deletePath(m, strings.Split(path, "."))
+	}
+}
+
+// deletePath removes a dotted field path of arbitrary depth from m. The last
+// segment is deleted from the map reached by walking the earlier segments;
+// a path that doesn't resolve to a nested map is ignored.
+func deletePath(m map[string]any, segs []string) {
+	switch len(segs) {
+	case 0:
+		return
+	case 1:
+		delete(m, segs[0])
+	default:
+		if sub, ok := m[segs[0]].(map[string]any); ok {
+			deletePath(sub, segs[1:])
 		}
-		delete(m, path)
 	}
 }
 

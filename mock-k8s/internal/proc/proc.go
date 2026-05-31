@@ -1,6 +1,7 @@
 // Package proc provides the minimal process-lifecycle helpers the spawner
-// needs: liveness probing, graceful-then-forceful termination, and reading
-// the pidfiles that scripts/lib.sh's launch_bg writes for each UE5 instance.
+// needs: liveness probing, process-identity (start-time) checks,
+// graceful-then-forceful termination, and reading the pidfiles that
+// scripts/lib.sh's launch_bg writes for each UE5 instance.
 //
 // UE5 dedicated servers are launched by scripts/start-ue5.sh via launch_bg,
 // which `setsid`s the process (making it a session / process-group leader,
@@ -39,6 +40,55 @@ func Alive(pid int) bool {
 	default: // ESRCH and friends
 		return false
 	}
+}
+
+// StartTime returns the process start time (field 22 of /proc/<pid>/stat, in
+// clock ticks since boot). It is a stable per-process identity: the OS does
+// not reuse a (pid, start-time) pair, so comparing start-times distinguishes
+// the original process from an unrelated one that later recycled the pid.
+// Returns (0, false) when the process is gone or /proc can't be read.
+func StartTime(pid int) (uint64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	// The comm field (2nd) is wrapped in parens and may itself contain spaces
+	// or ')'. Everything after the LAST ')' is plain space-separated, and
+	// starttime is overall field 22 → index 19 of that tail (field 3 = state
+	// is tail index 0).
+	s := string(b)
+	rp := strings.LastIndexByte(s, ')')
+	if rp < 0 || rp+2 > len(s) {
+		return 0, false
+	}
+	fields := strings.Fields(s[rp+1:])
+	if len(fields) < 20 {
+		return 0, false
+	}
+	st, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return st, true
+}
+
+// SameProcess reports whether pid is alive AND, when want != 0, has start
+// time == want. A want of 0 means "identity unknown" and falls back to a
+// bare liveness check. Call it before signalling or adopting a pid read from
+// a pidfile so a recycled pid (a different, innocent process) is not acted
+// on.
+func SameProcess(pid int, want uint64) bool {
+	if !Alive(pid) {
+		return false
+	}
+	if want == 0 {
+		return true
+	}
+	got, ok := StartTime(pid)
+	return ok && got == want
 }
 
 // Terminate stops the process identified by pid: SIGTERM first, then, if it

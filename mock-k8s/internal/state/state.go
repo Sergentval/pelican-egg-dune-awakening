@@ -22,8 +22,13 @@ import (
 // future migrations to recognise older ledgers.
 const currentVersion = 1
 
+// ErrCorrupt marks a ledger that exists but is not valid JSON — as opposed
+// to a transient I/O failure (EACCES/EIO). Callers quarantine only on
+// ErrCorrupt; an I/O error should leave the ledger untouched and be retried.
+var ErrCorrupt = errors.New("state: ledger is corrupt (unparseable)")
+
 // Instance is one persisted UE5 instance: enough to re-reserve its exact
-// port slot and probe whether its process survived the restart.
+// port slot and verify the process survived the restart.
 type Instance struct {
 	Key         string `json:"key"` // ServerSetScale namespace/name
 	MapName     string `json:"mapName"`
@@ -33,6 +38,10 @@ type Instance struct {
 	IGWPort     int    `json:"igwPort"`
 	Suffix      string `json:"suffix"`
 	PID         int    `json:"pid"`
+	// StartTime is the process start time (proc.StartTime) captured when the
+	// pid was learned. On restore it is compared against the live pid's
+	// start time so a recycled pid (a different process) is never adopted.
+	StartTime uint64 `json:"startTime,omitempty"`
 }
 
 // State is the full persisted ledger.
@@ -41,10 +50,11 @@ type State struct {
 	Instances []Instance `json:"instances"`
 }
 
-// Load reads the ledger at path. A missing file is not an error — it
-// returns an empty (current-version) ledger, which is the correct
-// first-boot state. A present-but-unparseable file IS an error so the
-// caller can decide whether to start fresh or abort.
+// Load reads the ledger at path. A missing file is not an error — it returns
+// an empty (current-version) ledger, the correct first-boot state. A
+// present-but-unparseable file returns an error wrapping ErrCorrupt; any
+// other read failure (permissions, I/O) is returned as-is so the caller can
+// tell a transient fault from real corruption.
 func Load(path string) (State, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -55,14 +65,14 @@ func Load(path string) (State, error) {
 	}
 	var s State
 	if err := json.Unmarshal(b, &s); err != nil {
-		return State{}, fmt.Errorf("parse state %s: %w", path, err)
+		return State{}, fmt.Errorf("%w: %s: %v", ErrCorrupt, path, err)
 	}
 	return s, nil
 }
 
 // Save writes the ledger to path atomically, creating the parent directory
-// if needed and stamping the schema version. The temp-file-plus-rename
-// dance guarantees readers ever see only a complete file.
+// if needed and stamping the schema version. The temp-file-plus-rename dance
+// guarantees readers ever see only a complete file.
 func Save(path string, s State) error {
 	if s.Version == 0 {
 		s.Version = currentVersion
