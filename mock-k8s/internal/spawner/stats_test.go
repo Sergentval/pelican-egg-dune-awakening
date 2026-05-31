@@ -80,3 +80,58 @@ func TestBackoff_CapsAtMax(t *testing.T) {
 		t.Errorf("just after maxBackoff: inBackoff=true, want false (capped at %s)", maxBackoff)
 	}
 }
+
+func TestSnapshot_ReflectsPoolInstancesAndMaps(t *testing.T) {
+	spw, _ := newBareSpawner(t)
+
+	// One ServerSetScale desiring 1 replica, with one live tracked instance.
+	spw.store.Create(serversetscale.Object{
+		Metadata: serversetscale.Metadata{Namespace: "default", Name: "m"},
+		Spec:     map[string]any{"mapName": "Survival_1", "replicas": int64(1)},
+	})
+	alloc, _ := spw.pool.Acquire()
+	spw.mu.Lock()
+	spw.instances["default/m"] = []instance{{Suffix: "p0", MapName: "Survival_1", Allocation: alloc, PID: 1234, StartTime: 99}}
+	spw.reapedTotal = 2
+	spw.respawnedTotal = 2
+	spw.mu.Unlock()
+
+	snap := spw.Snapshot()
+
+	if snap.Pool.Used != 1 || snap.Pool.Size != 5 {
+		t.Errorf("pool used/size = %d/%d, want 1/5", snap.Pool.Used, snap.Pool.Size)
+	}
+	if snap.Instances.Tracked != 1 || snap.Instances.ReapedTotal != 2 || snap.Instances.RespawnedTotal != 2 {
+		t.Errorf("instances = %+v, want tracked=1 reaped=2 respawned=2", snap.Instances)
+	}
+	if len(snap.Maps) != 1 {
+		t.Fatalf("maps = %d, want 1", len(snap.Maps))
+	}
+	m := snap.Maps[0]
+	if m.Map != "Survival_1" || m.Desired != 1 || m.Current != 1 || m.Status != "healthy" {
+		t.Errorf("map = %+v, want Survival_1 desired=1 current=1 healthy", m)
+	}
+}
+
+func TestSnapshot_FailingMapShowsBackoff(t *testing.T) {
+	spw, _ := newBareSpawner(t)
+	spw.store.Create(serversetscale.Object{
+		Metadata: serversetscale.Metadata{Namespace: "default", Name: "m"},
+		Spec:     map[string]any{"mapName": "Overmap", "replicas": int64(1)},
+	})
+	// Desired 1, current 0, and the map is in backoff -> "failing".
+	spw.recordFailure("default/m")
+	spw.recordFailure("default/m") // failures=2 -> 1m window
+
+	snap := spw.Snapshot()
+	m := snap.Maps[0]
+	if m.Status != "failing" {
+		t.Errorf("status = %q, want failing", m.Status)
+	}
+	if m.ConsecutiveFailures != 2 {
+		t.Errorf("consecutiveFailures = %d, want 2", m.ConsecutiveFailures)
+	}
+	if m.NextRetry == nil {
+		t.Error("nextRetry = nil, want a time for a failing map")
+	}
+}
