@@ -109,7 +109,16 @@ func (s *Spawner) Restore() {
 	}
 	prev, err := state.Load(s.statePath)
 	if err != nil {
-		slog.Warn("spawner: state load failed; starting fresh", "path", s.statePath, "err", err)
+		// Quarantine the unreadable ledger so it is preserved for inspection
+		// and does not keep failing on every boot, then start fresh.
+		corrupt := s.statePath + ".corrupt." + strconv.FormatInt(time.Now().UnixNano(), 10)
+		if rnErr := os.Rename(s.statePath, corrupt); rnErr != nil {
+			slog.Error("spawner: state ledger unreadable and could not be quarantined; starting fresh",
+				"path", s.statePath, "err", err, "rename_err", rnErr)
+		} else {
+			slog.Error("spawner: state ledger unreadable; quarantined and starting fresh",
+				"path", s.statePath, "quarantined_to", corrupt, "err", err)
+		}
 		return
 	}
 	if len(prev.Instances) == 0 {
@@ -265,7 +274,7 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 	cmd.Env = append([]string{}, mockChildEnv(partitionID, alloc)...)
 	// Inherit existing process env so $PATH, $HOME, $DUNE_* (set by
 	// pelican-entrypoint.sh) flow through.
-	cmd.Env = append(cmd.Env, cmdEnviron()...)
+	cmd.Env = append(cmd.Env, os.Environ()...)
 	slog.Info("spawner: starting UE5", "map", mapName, "suffix", suffix,
 		"partition", partitionID, "game_port", alloc.GamePort, "igw_port", alloc.IGWPort)
 
@@ -385,12 +394,6 @@ func mockChildEnv(partitionID int, alloc pool.Allocation) []string {
 		"DUNE_GAME_PORT=" + strconv.Itoa(alloc.GamePort),
 		"DUNE_IGW_PORT=" + strconv.Itoa(alloc.IGWPort),
 	}
-}
-
-// cmdEnviron returns os.Environ wrapped in a function so unit tests can
-// fake it. Trivial today; kept as a hook for future test ergonomics.
-func cmdEnviron() []string {
-	return osEnviron()
 }
 
 func readReplicas(spec map[string]any) int {
