@@ -267,6 +267,46 @@ func TestTerminate_GroupSweep(t *testing.T) {
 	}
 }
 
+func TestStartTime_StableForLiveProcess(t *testing.T) {
+	pid := os.Getpid()
+	st1, ok := StartTime(pid)
+	if !ok || st1 == 0 {
+		t.Fatalf("StartTime(self) = (%d, %v), want nonzero with ok=true", st1, ok)
+	}
+	st2, ok := StartTime(pid)
+	if !ok || st2 != st1 {
+		t.Errorf("StartTime not stable across reads: %d then %d (ok=%v)", st1, st2, ok)
+	}
+}
+
+func TestStartTime_DeadPidNotOK(t *testing.T) {
+	pid := startChild(t, "block")
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if !waitGone(pid, 2*time.Second) {
+		t.Fatalf("child %d did not die", pid)
+	}
+	if st, ok := StartTime(pid); ok {
+		t.Errorf("StartTime(dead pid) = (%d, true), want ok=false", st)
+	}
+}
+
+func TestSameProcess(t *testing.T) {
+	self := os.Getpid()
+	st, ok := StartTime(self)
+	if !ok {
+		t.Fatal("StartTime(self) not ok")
+	}
+	if !SameProcess(self, st) {
+		t.Error("SameProcess(self, real start-time) = false, want true")
+	}
+	if SameProcess(self, st+1) {
+		t.Error("SameProcess(self, wrong start-time) = true, want false — pid reuse must be detected")
+	}
+	if SameProcess(self, 0) {
+		t.Error("SameProcess(self, 0) = true, want false — no recorded identity must fail closed")
+	}
+}
+
 func TestReadPidFile(t *testing.T) {
 	dir := t.TempDir()
 

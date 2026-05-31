@@ -39,6 +39,7 @@ type Instance struct {
 	PoolIndex   int    `json:"poolIndex"`
 	Suffix      string `json:"suffix"`
 	PID         int    `json:"pid"`
+	StartTime   uint64 `json:"startTime,omitempty"` // /proc start-time of PID; detects pid reuse on restore
 }
 
 // State is the full persisted ledger.

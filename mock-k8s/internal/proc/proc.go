@@ -105,3 +105,49 @@ func ReadPidFile(path string) int {
 	}
 	return pid
 }
+
+// StartTime returns a process's start time — field 22 of /proc/<pid>/stat,
+// in clock ticks since boot. Paired with the pid it is a stable identity the
+// kernel never reuses: a recycled pid carries a different start time, so a
+// stale pidfile pointing at a since-recycled pid can be detected. ok is false
+// when pid is not a live process (its stat file is gone or unreadable).
+func StartTime(pid int) (uint64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	// Field 2 (comm) is parenthesised and may itself contain spaces or ')';
+	// skip past the LAST ')' so the remaining whitespace-separated fields are
+	// unambiguous. After it, field 3 (state) is index 0, so field 22
+	// (starttime) is index 19.
+	s := string(b)
+	rparen := strings.LastIndexByte(s, ')')
+	if rparen < 0 || rparen+1 >= len(s) {
+		return 0, false
+	}
+	fields := strings.Fields(s[rparen+1:])
+	const startTimeIdx = 22 - 3 // fields[0] == stat field 3 (state)
+	if len(fields) <= startTimeIdx {
+		return 0, false
+	}
+	st, err := strconv.ParseUint(fields[startTimeIdx], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return st, true
+}
+
+// SameProcess reports whether pid is alive AND still the same incarnation
+// whose start time was recorded as startTime. A zero startTime ("no recorded
+// identity") returns false so a strict identity check fails closed; callers
+// that want best-effort liveness for an unrecorded process use Alive instead.
+func SameProcess(pid int, startTime uint64) bool {
+	if startTime == 0 {
+		return false
+	}
+	st, ok := StartTime(pid)
+	return ok && st == startTime
+}

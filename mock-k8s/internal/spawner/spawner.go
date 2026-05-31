@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,7 +91,8 @@ type instance struct {
 	MapName     string
 	PartitionID int
 	Allocation  pool.Allocation
-	PID         int // 0 until capturePID reads the pidfile
+	PID         int    // 0 until capturePID reads the pidfile
+	StartTime   uint64 // /proc start-time of PID; with PID, a reuse-proof identity
 
 	// pidReady is closed by capturePID once the pidfile has been read (or the
 	// wait timed out). teardown blocks on it so a scale-down that races a
@@ -165,11 +167,23 @@ func (s *Spawner) Restore() {
 		if pid == 0 {
 			pid = pi.PID
 		}
-		if !proc.Alive(pid) {
-			slog.Info("spawner: dropping dead instance from prior state",
+		// If the ledger recorded a process identity, require it to still match
+		// so a recycled pid (original UE5 crashed, pid reused) isn't adopted as
+		// live. Old ledgers without a start-time fall back to a plain liveness
+		// probe, and we re-establish the identity below for future restarts.
+		live := proc.Alive(pid)
+		if live && pi.StartTime != 0 {
+			live = proc.SameProcess(pid, pi.StartTime)
+		}
+		if !live {
+			slog.Info("spawner: dropping dead or pid-reused instance from prior state",
 				"key", pi.Key, "map", pi.MapName, "suffix", pi.Suffix)
 			_ = os.Remove(pidPath)
 			continue
+		}
+		startTime := pi.StartTime
+		if startTime == 0 {
+			startTime, _ = proc.StartTime(pid)
 		}
 		alloc, err := s.pool.AcquireSpecific(pi.PoolIndex)
 		if err != nil {
@@ -184,6 +198,7 @@ func (s *Spawner) Restore() {
 			PartitionID: pi.PartitionID,
 			Allocation:  alloc,
 			PID:         pid,
+			StartTime:   startTime,
 		})
 		s.mu.Unlock()
 		adopted++
@@ -282,7 +297,17 @@ func (s *Spawner) teardown(key string, inst instance) {
 	if pid == 0 {
 		pid = inst.PID
 	}
-	if pid > 0 {
+	switch {
+	case pid <= 0:
+		slog.Warn("spawner: scale-down with no pid (process never started?)", "key", key, "suffix", inst.Suffix)
+	case inst.StartTime != 0 && !proc.SameProcess(pid, inst.StartTime):
+		// The recorded UE5 exited and this pid may now belong to an unrelated
+		// process — and sendSignal also hits the whole process group (-pid).
+		// Do NOT signal it; just drop the stale pidfile and free the slot.
+		slog.Warn("spawner: recorded UE5 is gone and pid may be reused — not terminating",
+			"key", key, "suffix", inst.Suffix, "pid", pid)
+		_ = os.Remove(pidPath)
+	default:
 		if err := s.terminate(pid, terminateGrace); err != nil {
 			// The process may still be holding its UDP port; do NOT release
 			// the slot, or a later spawn could collide on it.
@@ -292,8 +317,6 @@ func (s *Spawner) teardown(key string, inst instance) {
 		}
 		slog.Info("spawner: terminated UE5 on scale-down", "key", key, "suffix", inst.Suffix, "pid", pid)
 		_ = os.Remove(pidPath)
-	} else {
-		slog.Warn("spawner: scale-down with no pid (process never started?)", "key", key, "suffix", inst.Suffix)
 	}
 	// Release the slot only now that the port is actually free.
 	s.pool.Release(inst.Allocation.Index)
@@ -318,10 +341,7 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 
 	cmd := exec.CommandContext(context.Background(),
 		"bash", s.scriptPath, s.baseDir, mapName, suffix)
-	cmd.Env = append([]string{}, mockChildEnv(partitionID, alloc)...)
-	// Inherit existing process env so $PATH, $HOME, $DUNE_* (set by
-	// pelican-entrypoint.sh) flow through.
-	cmd.Env = append(cmd.Env, os.Environ()...)
+	cmd.Env = spawnEnv(partitionID, alloc)
 	slog.Info("spawner: starting UE5", "map", mapName, "suffix", suffix,
 		"partition", partitionID, "game_port", alloc.GamePort, "igw_port", alloc.IGWPort)
 
@@ -360,11 +380,15 @@ func (s *Spawner) capturePID(key string, index int, pidPath string, ready chan s
 	deadline := time.Now().Add(pidWaitTimeout)
 	for {
 		if pid := proc.ReadPidFile(pidPath); pid > 0 {
+			// Record the start-time alongside the pid so teardown/Restore can
+			// later tell this exact process from a recycled pid.
+			startTime, _ := proc.StartTime(pid)
 			s.mu.Lock()
 			found := false
 			for i := range s.instances[key] {
 				if s.instances[key][i].Allocation.Index == index {
 					s.instances[key][i].PID = pid
+					s.instances[key][i].StartTime = startTime
 					found = true
 					break
 				}
@@ -412,6 +436,7 @@ func (s *Spawner) persist() {
 				PoolIndex:   in.Allocation.Index,
 				Suffix:      in.Suffix,
 				PID:         in.PID,
+				StartTime:   in.StartTime,
 			})
 		}
 	}
@@ -455,6 +480,37 @@ func safeInstanceName(s string) bool {
 func (s *Spawner) pidPath(mapName, suffix string) string {
 	name := filepath.Base("ue5-" + mapName + "-" + suffix + ".pid")
 	return filepath.Join(s.baseDir, "runtime", "pids", name)
+}
+
+// spawnEnv builds the environment for a UE5 child: the inherited process env
+// (so $PATH, $HOME, $DUNE_* set by pelican-entrypoint.sh flow through) with
+// the per-instance DUNE_PARTITION / DUNE_GAME_PORT / DUNE_IGW_PORT taking
+// precedence. Any inherited copy of an overridden key is dropped rather than
+// merely shadowed, so the child's getenv can't resolve a stale value
+// regardless of how it handles duplicate names — otherwise a stray inherited
+// DUNE_GAME_PORT would collapse every instance onto one UDP port.
+func spawnEnv(partitionID int, alloc pool.Allocation) []string {
+	return overrideEnv(os.Environ(), mockChildEnv(partitionID, alloc))
+}
+
+// overrideEnv returns base with every "KEY=value" whose KEY is set by
+// overrides removed, then overrides appended — so the override value is the
+// only occurrence of that key.
+func overrideEnv(base, overrides []string) []string {
+	keys := make(map[string]bool, len(overrides))
+	for _, kv := range overrides {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			keys[kv[:i]] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		if i := strings.IndexByte(kv, '='); i >= 0 && keys[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, overrides...)
 }
 
 // mockChildEnv returns the env vars start-ue5.sh's preamble reads to
