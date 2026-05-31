@@ -22,6 +22,14 @@ import (
 // future migrations to recognise older ledgers.
 const currentVersion = 1
 
+// ErrCorrupt is wrapped into the error Load returns when the ledger file is
+// present but cannot be parsed (truncated, wrong encoding, invalid JSON).
+// Callers use errors.Is(err, ErrCorrupt) to tell a genuinely corrupt ledger
+// (safe to quarantine and start fresh) apart from a transient I/O failure
+// (EACCES, EIO) where the file may be perfectly healthy and must be left
+// untouched so a later boot can still read it.
+var ErrCorrupt = errors.New("corrupt ledger")
+
 // Instance is one persisted UE5 instance: enough to re-reserve its exact
 // port slot and probe whether its process survived the restart.
 type Instance struct {
@@ -55,7 +63,9 @@ func Load(path string) (State, error) {
 	}
 	var s State
 	if err := json.Unmarshal(b, &s); err != nil {
-		return State{}, fmt.Errorf("parse state %s: %w", path, err)
+		// Wrap both ErrCorrupt (so the caller can quarantine) and the json
+		// error (so the cause stays inspectable).
+		return State{}, fmt.Errorf("parse state %s: %w: %w", path, ErrCorrupt, err)
 	}
 	return s, nil
 }

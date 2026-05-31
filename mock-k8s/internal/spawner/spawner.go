@@ -16,6 +16,7 @@ package spawner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -119,15 +120,24 @@ func (s *Spawner) Restore() {
 	}
 	prev, err := state.Load(s.statePath)
 	if err != nil {
-		// Quarantine the unreadable ledger so it is preserved for inspection
-		// and does not keep failing on every boot, then start fresh.
-		corrupt := s.statePath + ".corrupt." + strconv.FormatInt(time.Now().UnixNano(), 10)
-		if rnErr := os.Rename(s.statePath, corrupt); rnErr != nil {
-			slog.Error("spawner: state ledger unreadable and could not be quarantined; starting fresh",
-				"path", s.statePath, "err", err, "rename_err", rnErr)
+		if errors.Is(err, state.ErrCorrupt) {
+			// The ledger is present but unparseable. Quarantine it so the
+			// operator can inspect it and it stops failing every boot, then
+			// start fresh — safe precisely because we KNOW the file is bad.
+			corrupt := s.statePath + ".corrupt." + strconv.FormatInt(time.Now().UnixNano(), 10)
+			if rnErr := os.Rename(s.statePath, corrupt); rnErr != nil {
+				slog.Error("spawner: corrupt state ledger could not be quarantined; starting fresh",
+					"path", s.statePath, "err", err, "rename_err", rnErr)
+			} else {
+				slog.Error("spawner: corrupt state ledger quarantined; starting fresh",
+					"path", s.statePath, "quarantined_to", corrupt, "err", err)
+			}
 		} else {
-			slog.Error("spawner: state ledger unreadable; quarantined and starting fresh",
-				"path", s.statePath, "quarantined_to", corrupt, "err", err)
+			// Transient I/O error (EACCES, EIO, …). The ledger may be healthy;
+			// do NOT rename it — log and skip restore so the next boot can try
+			// again and still re-adopt the instances it records.
+			slog.Error("spawner: transient I/O error reading state ledger; skipping restore (ledger preserved)",
+				"path", s.statePath, "err", err)
 		}
 		return
 	}
