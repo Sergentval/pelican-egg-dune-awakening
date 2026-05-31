@@ -333,3 +333,20 @@ func TestReconcile_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("Reconcile did not stop after context cancel")
 	}
 }
+
+func TestReconcileTick_DesiredZeroPreservesBackoff(t *testing.T) {
+	spw, _ := newLoopSpawner(t)
+	spw.store.Create(sssObj("m", "Survival_1", 0)) // idled by the Director
+	const k = "default/m"
+	spw.recordFailure(k)
+	spw.recordFailure(k) // failures=2 (a crash history)
+
+	spw.reconcileTick()
+
+	spw.mu.Lock()
+	failures := spw.backoff[k].failures
+	spw.mu.Unlock()
+	if failures != 2 {
+		t.Errorf("idle (desired=0) map lost its backoff history: failures=%d, want 2", failures)
+	}
+}

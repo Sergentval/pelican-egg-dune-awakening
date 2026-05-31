@@ -229,25 +229,27 @@ func (s *Spawner) reconcileTick() {
 	objs := s.store.List(reconcileNamespace)
 	spawned := make(map[string]bool, len(objs))
 	desiredByKey := make(map[string]int, len(objs))
+	var tickSpawns int64
 	for _, obj := range objs {
 		key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
 		desiredByKey[key] = readReplicas(obj.Spec)
 		if n := s.reconcileUpLocked(obj, true); n > 0 {
 			spawned[key] = true
-			s.mu.Lock()
-			s.respawnedTotal += int64(n)
-			s.mu.Unlock()
+			tickSpawns += int64(n)
 		}
 	}
 
 	// Reset backoff for maps that survived a clean tick (no reap, no spawn,
-	// already at desired).
+	// already at desired). Guard desired > 0 so that idle (scaled-to-zero) maps
+	// never have their crash-loop history silently cleared — len(instances) >= 0
+	// is always true, which would otherwise wipe backoff every tick.
 	s.mu.Lock()
+	s.respawnedTotal += tickSpawns
 	for key, desired := range desiredByKey {
 		if reaped[key] || spawned[key] {
 			continue
 		}
-		if _, has := s.backoff[key]; has && len(s.instances[key]) >= desired {
+		if _, has := s.backoff[key]; has && desired > 0 && len(s.instances[key]) >= desired {
 			delete(s.backoff, key)
 		}
 	}
