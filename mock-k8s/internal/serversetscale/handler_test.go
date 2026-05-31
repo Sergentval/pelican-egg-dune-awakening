@@ -126,6 +126,29 @@ func TestList_OmitNestedField(t *testing.T) {
 	}
 }
 
+func TestList_OmitDeeplyNestedField(t *testing.T) {
+	// A multi-level path (more than one dot) must descend one map level per
+	// dot and drop the leaf key, not silently no-op. The bisection knob is
+	// useless if it can only reach one level deep.
+	withEnv(t, true, "metadata.labels.existing")
+	s := NewStore()
+	seedWithLabels(t, s, "sietch-survival", "Survival_1") // seeds label existing=x
+
+	it := listItems(t, s)[0].(map[string]any)
+	md := it["metadata"].(map[string]any)
+	labels, ok := md["labels"].(map[string]any)
+	if !ok {
+		t.Fatal("labels map was removed; only the leaf key should be dropped")
+	}
+	if _, present := labels["existing"]; present {
+		t.Errorf("MOCK_K8S_LIST_OMIT=metadata.labels.existing did not drop the nested key: %v", labels)
+	}
+	// Sibling derived label must survive — only the targeted leaf is dropped.
+	if _, present := labels["igw.funcom.com/map-name"]; !present {
+		t.Errorf("deep omit removed a sibling label: %v", labels)
+	}
+}
+
 func TestList_DoesNotMutateStoredObject(t *testing.T) {
 	withEnv(t, true, "")
 	s := NewStore()

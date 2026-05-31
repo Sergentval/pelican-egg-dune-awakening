@@ -145,10 +145,10 @@ func listEnabled() bool {
 
 // listOmitFields parses MOCK_K8S_LIST_OMIT — a comma-separated list of
 // dotted item fields to drop from LIST responses — for bisecting which
-// field triggers the Director's null-key Dictionary.Add crash. One level
-// of nesting is supported, e.g.:
+// field triggers the Director's null-key Dictionary.Add crash. A dotted
+// path descends one map level per dot, to any depth, e.g.:
 //
-//	MOCK_K8S_LIST_OMIT=status,metadata.labels,metadata.annotations
+//	MOCK_K8S_LIST_OMIT=status,metadata.labels,metadata.labels.existing
 //
 // Read per request so an operator can bisect against a live Director
 // without restarting mock-k8s.
@@ -221,18 +221,26 @@ func objectToMap(o Object) map[string]any {
 	return m
 }
 
-// applyOmit deletes each dotted path in omit from a serialized item map.
-// Supports one level of nesting ("status", "metadata.labels"); unknown
-// paths are ignored.
+// applyOmit deletes each dotted path in omit from a serialized item map,
+// descending one map level per dot so any depth works ("status",
+// "metadata.labels", "metadata.labels.somekey"). A path that runs through a
+// missing key or a non-map value is a no-op for that path. (Label keys that
+// themselves contain dots, e.g. igw.funcom.com/map-name, can't be addressed
+// this way — omit their parent map instead.)
 func applyOmit(m map[string]any, omit map[string]bool) {
 	for path := range omit {
-		if i := strings.IndexByte(path, '.'); i >= 0 {
-			if sub, ok := m[path[:i]].(map[string]any); ok {
-				delete(sub, path[i+1:])
-			}
-			continue
-		}
+		omitPath(m, path)
+	}
+}
+
+func omitPath(m map[string]any, path string) {
+	i := strings.IndexByte(path, '.')
+	if i < 0 {
 		delete(m, path)
+		return
+	}
+	if sub, ok := m[path[:i]].(map[string]any); ok {
+		omitPath(sub, path[i+1:])
 	}
 }
 
