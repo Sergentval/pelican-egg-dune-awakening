@@ -167,3 +167,66 @@ func TestList_DoesNotMutateStoredObject(t *testing.T) {
 		t.Errorf("stored object labels mutated: %v", obj.Metadata.Labels)
 	}
 }
+
+func seedWithStatus(t *testing.T, s *Store, name, mapName string, status map[string]any) {
+	t.Helper()
+	if _, ok := s.Create(Object{
+		Metadata: Metadata{Namespace: "default", Name: name, Labels: map[string]string{"existing": "x"}},
+		Spec:     map[string]any{"mapName": mapName, "battlegroupName": "w", "replicas": int64(1)},
+		Status:   status,
+	}); !ok {
+		t.Fatalf("seed %s failed", name)
+	}
+}
+
+// ensureUniformItem must not add derived keys to the stored object's Spec.
+func TestList_DoesNotMutateStoredSpec(t *testing.T) {
+	withEnv(t, true, "")
+	s := NewStore()
+	seedWithLabels(t, s, "sietch-survival", "Survival_1")
+
+	_ = listItems(t, s)
+
+	obj, ok := s.Get("default", "sietch-survival")
+	if !ok {
+		t.Fatal("stored object vanished")
+	}
+	for _, k := range []string{"mapName", "battlegroupName", "replicas"} {
+		if _, ok := obj.Spec[k]; !ok {
+			t.Errorf("LIST dropped spec key %q from the stored object", k)
+		}
+	}
+	if len(obj.Spec) != 3 {
+		t.Errorf("stored spec mutated after LIST, got %d keys: %v", len(obj.Spec), obj.Spec)
+	}
+}
+
+// The stored object's non-nil Status shares its backing map with the value
+// ensureUniformItem returns; objectToMap's JSON round-trip is what isolates
+// the LIST copy before applyOmit can delete from it. This pins that down: a
+// LIST that omits status must not wipe the stored Status.
+func TestList_DoesNotMutateStoredStatus(t *testing.T) {
+	withEnv(t, true, "status") // applyOmit will delete status from the LIST copy
+	s := NewStore()
+	seedWithStatus(t, s, "sietch-survival", "Survival_1", map[string]any{
+		"observedGeneration": int64(3),
+		"completedReplicas":  int64(2),
+		"phase":              "Running",
+	})
+
+	_ = listItems(t, s)
+
+	obj, ok := s.Get("default", "sietch-survival")
+	if !ok {
+		t.Fatal("stored object vanished")
+	}
+	if obj.Status == nil {
+		t.Fatal("LIST wiped the stored Status")
+	}
+	if obj.Status["phase"] != "Running" {
+		t.Errorf("stored Status.phase = %v, want Running — LIST mutated stored status", obj.Status["phase"])
+	}
+	if len(obj.Status) != 3 {
+		t.Errorf("stored Status has %d keys after LIST, want 3: %v", len(obj.Status), obj.Status)
+	}
+}
