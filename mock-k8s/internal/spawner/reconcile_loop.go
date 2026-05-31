@@ -1,6 +1,11 @@
 package spawner
 
-import "time"
+import (
+	"os"
+	"time"
+
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/proc"
+)
 
 const (
 	baseBackoff = time.Minute
@@ -47,4 +52,101 @@ func (s *Spawner) resetBackoff(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.backoff, key)
+}
+
+// aliveAs reports whether pid is still the same process incarnation recorded by
+// startTime; a zero start-time falls back to a plain liveness probe (legacy /
+// restored instances).
+func aliveAs(pid int, startTime uint64) bool {
+	if startTime == 0 {
+		return proc.Alive(pid)
+	}
+	return proc.SameProcess(pid, startTime)
+}
+
+// isChanClosed non-blockingly reports whether ch (only ever closed, never sent
+// to) is closed.
+func isChanClosed(ch chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// sweep reaps tracked instances whose process is gone (a crashed UE5) or whose
+// spawn failed (pid never captured), releasing their slots and recording a
+// failure for backoff. Live and still-starting instances are left alone.
+// Returns the set of map keys that had at least one reap.
+func (s *Spawner) sweep() map[string]bool {
+	// Phase 1: snapshot identities under s.mu (no syscalls under the lock).
+	type probe struct {
+		key        string
+		allocIndex int
+		pid        int
+		startTime  uint64
+		phantom    bool
+		pidPath    string
+	}
+	var probes []probe
+	s.mu.Lock()
+	for key, list := range s.instances {
+		for _, in := range list {
+			probes = append(probes, probe{
+				key:        key,
+				allocIndex: in.Allocation.Index,
+				pid:        in.PID,
+				startTime:  in.StartTime,
+				phantom:    in.PID == 0 && isChanClosed(in.pidReady),
+				pidPath:    s.pidPath(in.MapName, in.Suffix),
+			})
+		}
+	}
+	s.mu.Unlock()
+
+	// Phase 2: classify outside the lock.
+	var dead []probe
+	for _, p := range probes {
+		if p.pid > 0 {
+			if !aliveAs(p.pid, p.startTime) {
+				dead = append(dead, p)
+			}
+		} else if p.phantom {
+			dead = append(dead, p)
+		}
+	}
+	if len(dead) == 0 {
+		return nil
+	}
+
+	// Phase 3: remove dead under s.mu (match by pool index + pid), count, record.
+	reaped := make(map[string]bool, len(dead))
+	s.mu.Lock()
+	for _, d := range dead {
+		list := s.instances[d.key]
+		for i := range list {
+			if list[i].Allocation.Index == d.allocIndex && list[i].PID == d.pid {
+				s.instances[d.key] = append(list[:i:i], list[i+1:]...)
+				s.reapedTotal++
+				reaped[d.key] = true
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	// Phase 4: side effects + backoff outside s.mu.
+	for _, d := range dead {
+		s.pool.Release(d.allocIndex)
+		_ = os.Remove(d.pidPath)
+	}
+	for key := range reaped {
+		s.recordFailure(key)
+	}
+	s.persist()
+	return reaped
 }
