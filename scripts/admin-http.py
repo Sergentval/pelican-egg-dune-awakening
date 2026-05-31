@@ -26,11 +26,14 @@ from __future__ import annotations
 
 import base64
 import collections
+import csv
 import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shlex
 import subprocess
@@ -337,7 +340,10 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
         or "publish=db-delete" in result.stdout
-        or argv[0] in ("players", "resolve", "pos", "vehicles", "items", "skills", "items-json", "vehicle-list")
+        or argv[0] in (
+            "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
+            "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
+        )
     )
     entry = {
         "ts": int(time.time()),
@@ -349,6 +355,44 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     }
     HISTORY.append(entry)
     return entry
+
+
+# --------------------------------------------------------------------------
+# Database-tab helpers (Phase 1 port of Icehunter/dune-admin, MIT).
+#
+# is_read_only_sql is lifted verbatim from dune-admin
+# cmd/dune-admin/handlers_database.go:11-22 — strip comments, lowercase,
+# and only accept queries that start with select/explain/show/with so a
+# mutating statement never reaches Postgres. The db-sql subcommand ALSO
+# pins a read-only psql session as a second layer; this guard rejects
+# early with a clear 400. See ATTRIBUTION.md.
+# --------------------------------------------------------------------------
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
+_SQL_READONLY = re.compile(r"^(select|explain|show|with)[\s(]")
+
+
+def is_read_only_sql(sql: str) -> bool:
+    """True if sql is a read-only statement (SELECT/EXPLAIN/SHOW/WITH)."""
+    s = _SQL_BLOCK_COMMENT.sub(" ", sql)
+    s = _SQL_LINE_COMMENT.sub(" ", s)
+    s = s.strip().lower()
+    return bool(_SQL_READONLY.match(s))
+
+
+def csv_to_table(text: str, truncate: "int | None" = None) -> dict:
+    """Parse psql --csv output (header row + data rows) into the Database-tab
+    response shape {headers, rows, truncated}. Values stay strings exactly as
+    psql emits them (SQL NULL -> empty field), matching dune-admin's
+    stringified table response."""
+    parsed = list(csv.reader(io.StringIO(text)))
+    headers = parsed[0] if parsed else []
+    body = parsed[1:] if len(parsed) > 1 else []
+    truncated = False
+    if truncate is not None and len(body) > truncate:
+        body = body[:truncate]
+        truncated = True
+    return {"headers": headers, "rows": body, "truncated": truncated}
 
 
 # --------------------------------------------------------------------------
@@ -912,6 +956,20 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        # Database tab (read-only). These sit after the do_GET auth gate.
+        if path == "/api/database/tables":
+            self._handle_db_tables()
+            return
+        if path == "/api/database/describe":
+            self._handle_db_describe(query.get("table", [""])[0])
+            return
+        if path == "/api/database/sample":
+            self._handle_db_sample(query.get("table", [""])[0], query.get("limit", ["20"])[0])
+            return
+        if path == "/api/database/search":
+            self._handle_db_search(query.get("term", [""])[0])
+            return
+
         if path == "/":
             self._write(200, USAGE_PLAIN, content_type="text/plain")
             return
@@ -948,6 +1006,50 @@ class Handler(BaseHTTPRequestHandler):
             self._write(500, {"error": "io", "detail": str(exc)})
             return
         self._write(200, data, content_type=ctype)
+
+    # ------ Database tab (read-only inspection) --------------------------
+    # Ported from Icehunter/dune-admin handlers_database.go (MIT). Each
+    # handler shells out to a db-* subcommand (CSV out) via run_publish and
+    # returns {headers, rows, truncated}. The GET routes sit after the
+    # do_GET auth gate; the db-sql POST route is behind auth+csrf.
+    def _db_reply(self, entry: dict, truncate: "int | None" = None) -> None:
+        if entry["ok"]:
+            self._write(200, csv_to_table(entry["stdout"], truncate))
+            return
+        detail = (entry.get("stderr") or "").strip()[:400]
+        self._write(502, {"error": "db query failed", "detail": detail})
+
+    def _handle_db_tables(self) -> None:
+        self._db_reply(run_publish(["db-tables"], timeout=15))
+
+    def _handle_db_describe(self, table: str) -> None:
+        if not table:
+            self._write(400, {"error": "table required"})
+            return
+        self._db_reply(run_publish(["db-describe", table], timeout=15))
+
+    def _handle_db_sample(self, table: str, limit: str) -> None:
+        if not table:
+            self._write(400, {"error": "table required"})
+            return
+        self._db_reply(run_publish(["db-sample", table, limit], timeout=15))
+
+    def _handle_db_search(self, term: str) -> None:
+        if not term:
+            self._write(400, {"error": "term required"})
+            return
+        self._db_reply(run_publish(["db-search", term], timeout=15))
+
+    def _handle_db_sql(self, sql: str) -> None:
+        sql = (sql or "").strip()
+        if not sql:
+            self._write(400, {"error": "sql required"})
+            return
+        if not is_read_only_sql(sql):
+            self._write(400, {"error": "only SELECT, EXPLAIN, SHOW, and WITH statements are allowed"})
+            return
+        # dune-admin truncates the result set at 200 rows for the UI.
+        self._db_reply(run_publish(["db-sql", sql], timeout=20), truncate=200)
 
     # ------ POST ---------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802
@@ -1063,6 +1165,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._csrf_ok():
             self._write(403, {"error": "csrf token missing or invalid"})
+            return
+
+        # Database tab read-only SQL (auth + csrf already enforced above).
+        if path == "/api/database/sql":
+            self._handle_db_sql(body.get("sql", "") if isinstance(body, dict) else "")
             return
 
         if not path.startswith("/admin/"):

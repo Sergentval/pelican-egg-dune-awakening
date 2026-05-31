@@ -94,3 +94,17 @@ grants, vehicle spawns, player lookup, scheduled restarts), check out
 their app directly. Our bash wrapper is intentionally minimal — meant
 for ad-hoc admin from inside the Pelican container, not as a
 replacement for their work.
+
+## Icehunter/dune-admin (MIT) — ported admin capabilities
+
+Portions of the admin tooling are ported from
+[Icehunter/dune-admin](https://github.com/Icehunter/dune-admin) (MIT). We
+reimplement against our own stack (admin-publish.sh + admin-http.py + the
+web SPA) rather than running dune-admin as a dependency.
+
+Phase 1 (Database tab) lifts, with thanks:
+- the read-only SQL guard `is_read_only_sql()` in `scripts/admin-http.py`
+  (from `cmd/dune-admin/handlers_database.go`), and
+- the table-list / describe / sample / column-search / read-only-SQL
+  queries, ported as the `db-*` subcommands in `scripts/admin-publish.sh`
+  (from `handlers_database.go` + `db.go`).

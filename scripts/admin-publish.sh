@@ -44,6 +44,15 @@
 #   vehicle-list                                 -- list all spawned vehicle actors
 #   vehicle-delete <actor_id>                    -- delete one vehicle (cascade-safe)
 #
+# Database-inspection subcommands (read-only; emit CSV for the admin UI's
+# Database tab). SQL/queries ported from Icehunter/dune-admin
+# cmd/dune-admin/handlers_database.go + db.go (MIT). See ATTRIBUTION.md.
+#   db-tables                                    -- list dune.* tables + live row counts
+#   db-describe <table>                          -- column name/type/nullable for one table
+#   db-sample <table> [limit=20]                 -- first N rows of a table (max 500)
+#   db-search <term>                             -- find tables/columns matching a term (ILIKE)
+#   db-sql <select-query>                        -- run a read-only query (SELECT/EXPLAIN/SHOW/WITH)
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -428,6 +437,92 @@ PYEOF
             echo "[admin-publish] ERROR vehicle-delete: postgres DELETE failed" >&2
             exit 1
         fi
+        exit 0
+        ;;
+
+    # ----------------------------------------------------------------------
+    # Database-inspection subcommands. Read-only; emit CSV (header row +
+    # data rows) so admin-http.py can parse into {headers, rows, truncated}
+    # for the Database tab. Ported from Icehunter/dune-admin
+    # handlers_database.go + db.go (MIT) — see ATTRIBUTION.md. Table/term
+    # values are bound via psql --set/:'var' (or validated to an identifier
+    # allowlist) so the queries stay injection-safe.
+    # ----------------------------------------------------------------------
+    db-tables)
+        # pg_stat_user_tables scoped to the dune schema; n_live_tup is the
+        # planner's live-row estimate (cheap, no full COUNT scan).
+        dune_psql --csv -c "
+            SELECT relname AS table, COALESCE(n_live_tup, 0) AS rows
+            FROM pg_stat_user_tables
+            WHERE schemaname = 'dune'
+            ORDER BY relname
+        "
+        exit 0
+        ;;
+    db-describe)
+        tbl="${1:?usage: db-describe <table>}"
+        case "$tbl" in
+            *[!A-Za-z0-9_]*|'')
+                echo "[admin-publish] ERROR db-describe: invalid table name '$tbl'" >&2
+                exit 2
+                ;;
+        esac
+        dune_psql --csv --set=tbl="$tbl" -c "
+            SELECT column_name AS column,
+                   data_type   AS type,
+                   CASE is_nullable WHEN 'YES' THEN 'null' ELSE 'not null' END AS nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'dune' AND table_name = :'tbl'
+            ORDER BY ordinal_position
+        "
+        exit 0
+        ;;
+    db-sample)
+        tbl="${1:?usage: db-sample <table> [limit]}"
+        case "$tbl" in
+            *[!A-Za-z0-9_]*|'')
+                echo "[admin-publish] ERROR db-sample: invalid table name '$tbl'" >&2
+                exit 2
+                ;;
+        esac
+        lim="${2:-20}"
+        case "$lim" in *[!0-9]*|'') lim=20 ;; esac
+        [ "$lim" -gt 500 ] && lim=500
+        [ "$lim" -lt 1 ] && lim=1
+        # $tbl is validated to ^[A-Za-z0-9_]+$ above, so it cannot break out
+        # of the double-quoted identifier — safe to interpolate.
+        dune_psql --csv -c "SELECT * FROM dune.\"$tbl\" LIMIT $lim"
+        exit 0
+        ;;
+    db-search)
+        term="${1:?usage: db-search <term>}"
+        if [ "${#term}" -gt 64 ]; then
+            echo "[admin-publish] ERROR db-search: term too long (${#term} chars, max 64)" >&2
+            exit 2
+        fi
+        dune_psql --csv --set=pat="%$term%" -c "
+            SELECT table_name  AS table,
+                   column_name AS column,
+                   data_type   AS type
+            FROM information_schema.columns
+            WHERE table_schema = 'dune'
+              AND (column_name ILIKE :'pat' OR table_name ILIKE :'pat')
+            ORDER BY table_name, column_name
+            LIMIT 500
+        "
+        exit 0
+        ;;
+    db-sql)
+        sql="${1:?usage: db-sql <select-query>}"
+        # Defence in depth: admin-http.py already applies is_read_only_sql()
+        # before calling us, but we ALSO pin the psql session read-only so a
+        # direct CLI call (or any guard bypass) still cannot mutate — a write
+        # then fails with "cannot execute X in a read-only transaction". The
+        # SET applies to the subsequent -c in the same connection. -q
+        # suppresses the SET command tag so only the query's CSV is emitted.
+        dune_psql -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
+            -c "$sql"
         exit 0
         ;;
 esac
