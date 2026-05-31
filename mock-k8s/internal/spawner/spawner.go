@@ -54,11 +54,17 @@ type Spawner struct {
 	baseDir    string // $BASE for the script (also roots runtime/pids)
 	statePath  string // on-disk instance ledger (empty disables persistence)
 
+	// reconcileMu serializes OnSpecChange so a single map's
+	// read-count → decide → spawn/scale is atomic. Without it, two
+	// concurrent reconciles for the same map both observe the stale replica
+	// count and over-spawn past spec.replicas, exhausting the port pool.
+	reconcileMu sync.Mutex
+
 	mu        sync.Mutex
 	instances map[string][]instance // key: namespace/name → instance list
 
-	// saveMu serializes ledger writes so concurrent persist() calls (e.g. a
-	// spawn and a teardown finishing at once) can't interleave file writes.
+	// saveMu serializes ledger writes so concurrent persist() calls can't
+	// interleave file writes.
 	saveMu sync.Mutex
 
 	// bg tracks background goroutines (pid capture + scale-down teardown)
@@ -66,7 +72,6 @@ type Spawner struct {
 	bg sync.WaitGroup
 
 	// terminate is the process-termination seam; defaults to proc.Terminate.
-	// Swappable so tests can assert teardown behaviour without real signals.
 	terminate func(pid int, grace time.Duration) error
 }
 
@@ -76,6 +81,12 @@ type instance struct {
 	PartitionID int
 	Allocation  pool.Allocation
 	PID         int // 0 until capturePID reads the pidfile
+
+	// pidReady is closed by capturePID once the pidfile has been read (or the
+	// wait timed out). teardown blocks on it so a scale-down that races a
+	// just-started spawn waits for the real pid instead of seeing pid==0 and
+	// orphaning the process. nil for restored instances (pid already known).
+	pidReady chan struct{}
 }
 
 // New constructs a Spawner. scriptPath should be absolute (e.g.
@@ -99,10 +110,9 @@ func (s *Spawner) Wait() { s.bg.Wait() }
 
 // Restore re-adopts UE5 instances recorded in the on-disk ledger that are
 // still alive, reserving their original port slots so game/IGW ports stay
-// stable across a mock-k8s restart. Dead entries are dropped (their maps
-// respawn through normal reconciliation). MUST run before the AlwaysWarm
-// pre-spawn so a re-adopted map's OnSpecChange sees desired == current and
-// does not double-spawn a process that is already running.
+// stable across a mock-k8s restart. Dead entries are dropped. MUST run
+// before the AlwaysWarm pre-spawn so a re-adopted map's OnSpecChange sees
+// desired == current and does not double-spawn.
 func (s *Spawner) Restore() {
 	if s.statePath == "" {
 		return
@@ -132,8 +142,6 @@ func (s *Spawner) Restore() {
 			continue
 		}
 		pidPath := s.pidPath(pi.MapName, pi.Suffix)
-		// The pidfile on disk is the source of truth (start-ue5.sh wrote
-		// it); fall back to the ledger's recorded pid if it's gone.
 		pid := proc.ReadPidFile(pidPath)
 		if pid == 0 {
 			pid = pi.PID
@@ -164,12 +172,13 @@ func (s *Spawner) Restore() {
 			"key", pi.Key, "map", pi.MapName, "pid", pid, "game_port", alloc.GamePort)
 	}
 	slog.Info("spawner: state restore complete", "adopted", adopted, "of", len(prev.Instances))
-	// Rewrite the ledger so it reflects only the instances we kept.
 	s.persist()
 }
 
 // OnSpecChange is assigned to store.OnSpecChange. It diffs the desired
 // replica count against current instances and starts / stops as needed.
+// The read → decide → act is serialized by reconcileMu so concurrent
+// reconciles for the same map cannot both act on a stale count.
 func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	key := obj.Metadata.Namespace + "/" + obj.Metadata.Name
 	mapName, _ := obj.Spec["mapName"].(string)
@@ -177,13 +186,13 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 		mapName, _ = obj.Spec["map"].(string) // tolerate alt field name
 	}
 	if !safeInstanceName(mapName) {
-		slog.Error("spawner: refusing ServerSetScale with unsafe map name",
-			"key", key, "map", mapName)
+		slog.Error("spawner: refusing ServerSetScale with unsafe map name", "key", key, "map", mapName)
 		return
 	}
 	desired := readReplicas(obj.Spec)
 	partitionID := readPartitionID(obj.Spec)
 
+	s.reconcileMu.Lock()
 	s.mu.Lock()
 	current := len(s.instances[key])
 	s.mu.Unlock()
@@ -196,6 +205,7 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 	case desired < current:
 		s.scaleDown(key, desired)
 	}
+	s.reconcileMu.Unlock()
 
 	// Reflect spec change into status.
 	_, _ = s.store.UpdateStatus(obj.Metadata.Namespace, obj.Metadata.Name, map[string]any{
@@ -208,7 +218,9 @@ func (s *Spawner) OnSpecChange(obj serversetscale.Object) {
 // down asynchronously: SIGTERM (then SIGKILL after grace) the UE5 process,
 // and only release its port slot once the process is gone — releasing
 // earlier would let a concurrent scale-up grab the same UDP port while the
-// dying UE5 still holds it.
+// dying UE5 still holds it. Called with reconcileMu held; the teardown
+// goroutines run after it returns (and after reconcileMu is released), so
+// the 15s grace never blocks reconciliation.
 func (s *Spawner) scaleDown(key string, desired int) {
 	s.mu.Lock()
 	list := s.instances[key]
@@ -235,6 +247,17 @@ func (s *Spawner) scaleDown(key string, desired int) {
 
 // teardown terminates one instance's UE5 process and releases its slot.
 func (s *Spawner) teardown(key string, inst instance) {
+	// Wait for the spawn to have recorded its pid (or to have definitively
+	// failed) before deciding there's nothing to kill. A scale-down that
+	// lands in the spawn window would otherwise see pid==0 and orphan an
+	// about-to-start UE5, which later collides on its UDP port (EADDRINUSE).
+	if inst.pidReady != nil {
+		select {
+		case <-inst.pidReady:
+		case <-time.After(pidWaitTimeout + 2*time.Second):
+		}
+	}
+
 	pidPath := s.pidPath(inst.MapName, inst.Suffix)
 	pid := proc.ReadPidFile(pidPath)
 	if pid == 0 {
@@ -242,13 +265,16 @@ func (s *Spawner) teardown(key string, inst instance) {
 	}
 	if pid > 0 {
 		if err := s.terminate(pid, terminateGrace); err != nil {
-			slog.Error("spawner: terminate failed", "key", key, "suffix", inst.Suffix, "pid", pid, "err", err)
-		} else {
-			slog.Info("spawner: terminated UE5 on scale-down", "key", key, "suffix", inst.Suffix, "pid", pid)
+			// The process may still be holding its UDP port; do NOT release
+			// the slot, or a later spawn could collide on it.
+			slog.Error("spawner: terminate failed; keeping slot reserved",
+				"key", key, "suffix", inst.Suffix, "pid", pid, "index", inst.Allocation.Index, "err", err)
+			return
 		}
+		slog.Info("spawner: terminated UE5 on scale-down", "key", key, "suffix", inst.Suffix, "pid", pid)
 		_ = os.Remove(pidPath)
 	} else {
-		slog.Warn("spawner: scale-down with no pid to terminate", "key", key, "suffix", inst.Suffix)
+		slog.Warn("spawner: scale-down with no pid (process never started?)", "key", key, "suffix", inst.Suffix)
 	}
 	// Release the slot only now that the port is actually free.
 	s.pool.Release(inst.Allocation.Index)
@@ -262,11 +288,13 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 		return
 	}
 	suffix := fmt.Sprintf("p%d", alloc.Index)
+	ready := make(chan struct{})
 	inst := instance{
 		Suffix:      suffix,
 		MapName:     mapName,
 		PartitionID: partitionID,
 		Allocation:  alloc,
+		pidReady:    ready,
 	}
 
 	cmd := exec.CommandContext(context.Background(),
@@ -281,6 +309,7 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 	if err := cmd.Start(); err != nil {
 		slog.Error("spawner: cmd.Start failed", "err", err)
 		s.pool.Release(alloc.Index)
+		close(ready) // unblock any future waiter; nothing was tracked
 		return
 	}
 	// Don't Wait() on the foreground script's result — start-ue5.sh
@@ -298,27 +327,39 @@ func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionI
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
-		s.capturePID(key, alloc.Index, s.pidPath(inst.MapName, inst.Suffix))
+		s.capturePID(key, alloc.Index, s.pidPath(inst.MapName, inst.Suffix), ready)
 	}()
 }
 
-// capturePID polls for the pidfile start-ue5.sh writes and records the pid
-// onto the matching tracked instance, then persists. Best-effort: if the
-// pidfile never appears within pidWaitTimeout we log and move on (teardown
-// re-reads the pidfile directly, so a missed capture is not fatal).
-func (s *Spawner) capturePID(key string, index int, pidPath string) {
+// capturePID polls for the pidfile start-ue5.sh writes, records the pid onto
+// the matching tracked instance, then persists. It closes ready on return
+// (pid found or timed out) so teardown can stop waiting. Best-effort: if the
+// pidfile never appears the instance keeps PID 0 (teardown re-reads the
+// pidfile directly, so a missed capture is not fatal).
+func (s *Spawner) capturePID(key string, index int, pidPath string, ready chan struct{}) {
+	defer close(ready)
 	deadline := time.Now().Add(pidWaitTimeout)
 	for {
 		if pid := proc.ReadPidFile(pidPath); pid > 0 {
 			s.mu.Lock()
+			found := false
 			for i := range s.instances[key] {
 				if s.instances[key][i].Allocation.Index == index {
 					s.instances[key][i].PID = pid
+					found = true
 					break
 				}
 			}
 			s.mu.Unlock()
-			s.persist()
+			if found {
+				s.persist()
+			} else {
+				// Instance was torn down before we captured its pid. teardown
+				// re-reads the pidfile directly, so this is not fatal — but
+				// log it so an orphan is diagnosable.
+				slog.Warn("spawner: captured pid for an instance no longer tracked",
+					"key", key, "index", index, "pid", pid)
+			}
 			return
 		}
 		if time.Now().After(deadline) {
