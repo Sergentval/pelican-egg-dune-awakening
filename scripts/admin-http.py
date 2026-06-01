@@ -1242,6 +1242,27 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Player WRITE: award/deduct character XP (recomputes level/SP/intel).
+        # Offline-gated. POST /api/players/<id>/award-char-xp  body {"amount": <int>}
+        if path.startswith("/api/players/") and path.endswith("/award-char-xp"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/award-char-xp")])
+            amount = body.get("amount") if isinstance(body, dict) else None
+            if not isinstance(amount, int) or isinstance(amount, bool):
+                self._write(400, {"error": "amount (integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["award-char-xp", player, str(amount)], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # /api/login is the only POST that bypasses Bearer auth.
         if path == "/api/login":
             if not UI_ENABLED:

@@ -129,3 +129,31 @@ def char_xp_summary(total_xp: int) -> dict:
         "maxLevel": MAX_LEVEL,
         "atCap": total_xp >= MAX_CHAR_XP,
     }
+
+
+# --------------------------------------------------------------------------
+# award-char-xp outcome (Phase 3). Ported from dune-admin computeAwardCharXP
+# Outcome: new XP = clamp(current + amount, 0, maxCharXP); skill points are
+# re-derived from the new level + the player's keystone bonus (starter job
+# always occupies 1 SP, excluded from spent_sp). Pure — the caller reads
+# current_xp/spent_sp + the keystone bonus from the DB and writes the result
+# back via jsonb_set. (We clamp to >=0; dune-admin only caps the upper bound.)
+# --------------------------------------------------------------------------
+def award_char_xp_outcome(current_xp: int, spent_sp: int,
+                          keystone_bonus: int, amount: int) -> dict:
+    new_xp = current_xp + amount
+    if new_xp > MAX_CHAR_XP:
+        new_xp = MAX_CHAR_XP
+    if new_xp < 0:
+        new_xp = 0
+    level = xp_to_level(new_xp)
+    total_sp = level + keystone_bonus
+    unspent_sp = max(0, total_sp - spent_sp - 1)
+    return {
+        "new_xp": new_xp,
+        "new_level": level,
+        "new_total_sp": total_sp,
+        "new_unspent_sp": unspent_sp,
+        "new_intel": intel_at_level(level),
+        "capped": new_xp == MAX_CHAR_XP,
+    }

@@ -139,3 +139,10 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   (`dune.update_player_tags(account_id, add[], remove[])`) → the `tags-update`
   subcommand. Both account-keyed, gated on `assert_player_offline`, with
   read-back. Live-verified reversibly (rename round-trip; tag add/remove).
+- the award-char-xp flow (`cmdAwardCharXP`, `computeAwardCharXPOutcome`,
+  `applyAwardCharXPFLevelUpdate`/`applyAwardCharXPIntelUpdate`): cap at
+  `maxCharXP=344440`, re-derive level/skill-points (from the controller's
+  purchased-keystone bonus) and intel, then `jsonb_set` FLevelComponent (pawn
+  fgl entity) + TechKnowledgePlayerComponent intel (pawn actor). Ported as the
+  `award-char-xp` subcommand; the pure math is `admin_progression.award_char_xp
+  _outcome` and the argv-only compute lives in `scripts/admin-inventory.py`.

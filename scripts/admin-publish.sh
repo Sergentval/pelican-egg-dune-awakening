@@ -72,6 +72,7 @@
 #   give-currency <player_id> <amount>           -- adjust Solaris balance (signed; offline only)
 #   rename <player_id> <new-name>                -- set character name (offline only)
 #   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
+#   award-char-xp <player_id> <amount>           -- award/deduct char XP; recompute level/SP/intel (offline only)
 #
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
@@ -945,6 +946,104 @@ SQL
 )
         echo "[admin-publish] OK tags-update fls=$fls_id account=$aid add='$add_csv' remove='$rem_csv' tag_count=$count"
         echo "publish=db-write tags-update account=$aid tag_count=$count"
+        exit 0
+        ;;
+    award-char-xp)
+        # Award (or deduct) character XP and re-derive level / skill points /
+        # intel, then jsonb_set FLevelComponent (XP + both SP fields) on the
+        # PAWN's fgl entity and TechKnowledgePlayerComponent intel on the pawn
+        # actor. Ported from dune-admin cmdAwardCharXP: read current XP+spent
+        # SP (pawn), keystone bonus (controller's purchased keystones), compute
+        # via admin-inventory.py (capped at maxCharXP=344440), write back.
+        raw="${1:?usage: award-char-xp <fls_id|me|steam:<id>|name:<n>> <amount>}"
+        amount="${2:?usage: award-char-xp <player> <amount>}"
+        amt_digits="${amount#-}"
+        case "$amt_digits" in
+            ''|*[!0-9]*)
+                echo "[admin-publish] ERROR award-char-xp: amount must be an integer, got '$amount'" >&2
+                exit 2
+                ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR award-char-xp: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.fgl_entities dune.actor_fgl_entities dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR award-char-xp: no player-character actor for $fls_id" >&2
+            exit 1
+        fi
+        ctrl=$(dune_controller_actor_id "$fls_id")   # may be empty -> 0 keystones
+        # Current FLevel state (TotalXPEarned <TAB> non-starter SkillPointsSpent), via pawn.
+        state=$(dune_psql_q --set=pawn="$pawn" -tAF $'\t' 2>/dev/null <<'SQL'
+SELECT
+  COALESCE((fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint, 0),
+  COALESCE((SELECT SUM((v->>'SkillPointsSpent')::int)
+            FROM jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData') AS kv(k, v)
+            WHERE k != format('(TagName="%s")',
+                fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName')), 0)
+FROM dune.fgl_entities fe
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter'
+SQL
+)
+        cur_xp=$(printf '%s' "$state" | cut -f1)
+        spent_sp=$(printf '%s' "$state" | cut -f2)
+        if [ -z "$cur_xp" ]; then
+            echo "[admin-publish] ERROR award-char-xp: no FLevelComponent for $fls_id (DuneCharacter fgl entity not found)" >&2
+            exit 1
+        fi
+        # Purchased keystone ids (controller) -> CSV for the SP bonus.
+        ks_csv=""
+        if [ -n "$ctrl" ]; then
+            ks_csv=$(dune_psql_q --set=ctrl="$ctrl" -tA 2>/dev/null <<'SQL' | paste -sd, -
+SELECT keystone_id FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint
+SQL
+)
+        fi
+        # Compute the new values (pure, no DB) via the argv-only helper.
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" award-char-xp \
+              --current-xp "$cur_xp" --spent-sp "$spent_sp" --keystones "$ks_csv" --amount "$amount") || {
+            echo "[admin-publish] ERROR award-char-xp: compute failed" >&2; exit 1; }
+        new_xp=""; new_level=""; new_tsp=""; new_usp=""; new_intel=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                new_xp) new_xp=$v ;;
+                new_level) new_level=$v ;;
+                new_total_sp) new_tsp=$v ;;
+                new_unspent_sp) new_usp=$v ;;
+                new_intel) new_intel=$v ;;
+            esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$new_xp" ] || [ -z "$new_tsp" ] || [ -z "$new_usp" ] || [ -z "$new_intel" ]; then
+            echo "[admin-publish] ERROR award-char-xp: malformed compute output" >&2
+            exit 1
+        fi
+        # Apply: FLevel XP+SP (pawn fgl entity) and intel (pawn actor properties),
+        # then read the stored XP back (last line, after the UPDATE tags).
+        applied_xp=$(dune_psql_q --set=pawn="$pawn" --set=xp="$new_xp" --set=tsp="$new_tsp" \
+                     --set=usp="$new_usp" --set=intel="$new_intel" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+UPDATE dune.fgl_entities SET components = jsonb_set(jsonb_set(jsonb_set(components,
+    '{FLevelComponent,1,TotalXPEarned}',      to_jsonb(:'xp'::bigint)),
+    '{FLevelComponent,1,TotalSkillPoints}',   to_jsonb(:'tsp'::bigint)),
+    '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb(:'usp'::bigint))
+WHERE entity_id = (SELECT entity_id FROM dune.actor_fgl_entities
+                   WHERE actor_id = :'pawn'::bigint AND slot_name = 'DuneCharacter');
+UPDATE dune.actors SET properties = jsonb_set(properties,
+    '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb(:'intel'::bigint))
+WHERE id = :'pawn'::bigint AND properties ? 'TechKnowledgePlayerComponent';
+SELECT (fe.components->'FLevelComponent'->1->>'TotalXPEarned')
+FROM dune.fgl_entities fe JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter';
+SQL
+)
+        echo "[admin-publish] OK award-char-xp fls=$fls_id pawn=$pawn level=$new_level xp=$applied_xp total_sp=$new_tsp unspent_sp=$new_usp intel=$new_intel"
+        echo "publish=db-write award-char-xp pawn=$pawn xp=$applied_xp level=$new_level"
         exit 0
         ;;
 esac
