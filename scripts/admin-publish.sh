@@ -167,6 +167,22 @@ dune_psql() {
         "$PG_BIN/psql" -h "$PG_SOCK" -p "$PG_PORT" -U dune -d dune "$@"
 }
 
+# Parameterised-query helper. CRITICAL: Funcom's extracted psql (17.4) does
+# NOT interpolate :'var' bindings supplied with --set when the query comes
+# from -c "..." — it sends the literal ":'var'" to the server, which fails
+# with `syntax error at or near ":"`. Interpolation only happens when the
+# query is read from stdin / a file (-f -). So every parameterised query
+# (anything using :'var') MUST feed its SQL on stdin via this wrapper:
+#
+#     result=$(dune_psql_q --set=x="$x" -tA <<'SQL'
+#     SELECT ... WHERE col = :'x'
+#     SQL
+#     )
+#
+# Raw queries with no :'var' (values shell-interpolated after validation, or
+# no params at all) can still use dune_psql ... -c "..." directly.
+dune_psql_q() { dune_psql "$@" -f -; }
+
 # --------------------------------------------------------------------------
 # Player-id resolver. PlayerIds on the wire MUST be the 16-hex FLS id;
 # in-game character names cannot be looked up (Funcom stores them
@@ -200,9 +216,10 @@ resolve_player_id() {
             # SQL even though the regex above already restricts to digits.
             # Defence in depth.
             local resolved
-            resolved=$(dune_psql --set=sid="$sid" -tAc \
-                "SELECT \"user\" FROM dune.encrypted_accounts WHERE platform_id=:'sid' AND platform_name='Steam' LIMIT 1" \
-                2>/dev/null | tr -d '\r\n')
+            resolved=$(dune_psql_q --set=sid="$sid" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT "user" FROM dune.encrypted_accounts WHERE platform_id=:'sid' AND platform_name='Steam' LIMIT 1
+SQL
+)
             if [ -z "$resolved" ]; then
                 echo "[admin-publish] ERROR no FLS account for Steam id $sid (run 'admin players' to list)" >&2
                 return 1
@@ -228,13 +245,14 @@ resolve_player_id() {
             # regardless of content. Closes the shell-interpolation SQL
             # injection that existed when this query used '$nm'.
             local resolved
-            resolved=$(dune_psql --set=nm="$nm" -tAc "
-                SELECT a.\"user\"
-                FROM dune.encrypted_accounts a
-                JOIN dune.encrypted_player_state ps ON ps.account_id=a.id
-                WHERE lower(convert_from(ps.encrypted_character_name, 'UTF8')) = lower(:'nm')
-                LIMIT 1
-            " 2>/dev/null | tr -d '\r\n')
+            resolved=$(dune_psql_q --set=nm="$nm" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT a."user"
+FROM dune.encrypted_accounts a
+JOIN dune.encrypted_player_state ps ON ps.account_id=a.id
+WHERE lower(convert_from(ps.encrypted_character_name, 'UTF8')) = lower(:'nm')
+LIMIT 1
+SQL
+)
             if [ -z "$resolved" ]; then
                 echo "[admin-publish] ERROR no character named '$nm' (run 'admin players' for the live list)" >&2
                 echo "                Note: only works when User-data encryption is 'As-is'; if Funcom" >&2
@@ -280,19 +298,20 @@ resolve_player_id() {
 
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
-    dune_psql --set=fls="$1" -tAc \
-        "SELECT id FROM dune.encrypted_accounts WHERE \"user\" = :'fls' LIMIT 1" \
-        2>/dev/null | tr -d '\r\n'
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT id FROM dune.encrypted_accounts WHERE "user" = :'fls' LIMIT 1
+SQL
 }
 
 # FLS hex -> current player-character (pawn) actor id, or empty if the player
 # has no BP_DunePlayerCharacter actor (offline / never spawned). Newest wins.
 dune_pc_actor_id() {
-    dune_psql --set=fls="$1" -tAc "
-        SELECT ac.id FROM dune.actors ac
-        JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
-        WHERE a.\"user\" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
-        ORDER BY ac.id DESC LIMIT 1" 2>/dev/null | tr -d '\r\n'
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT ac.id FROM dune.actors ac
+JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
+ORDER BY ac.id DESC LIMIT 1
+SQL
 }
 
 # Return 0 only if every named relation exists; else name the missing ones and
@@ -384,15 +403,16 @@ case "$cmd" in
         # Parameterised via psql --set + :'fls' to keep the resolver
         # contract (16-hex or DB-fetched account.user) honest even if
         # a future account row gets seeded with weird characters.
-        row=$(dune_psql --set=fls="$fls_id" -tAF $'\t' -c "
-            SELECT ac.map, ac.partition_id, ac.transform::text
-            FROM dune.actors ac
-            JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
-            WHERE a.\"user\" = :'fls'
-              AND ac.class LIKE '%BP_DunePlayerCharacter%'
-            ORDER BY ac.id DESC
-            LIMIT 1
-        " 2>/dev/null)
+        row=$(dune_psql_q --set=fls="$fls_id" -tAF $'\t' 2>/dev/null <<'SQL'
+SELECT ac.map, ac.partition_id, ac.transform::text
+FROM dune.actors ac
+JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+WHERE a."user" = :'fls'
+  AND ac.class LIKE '%BP_DunePlayerCharacter%'
+ORDER BY ac.id DESC
+LIMIT 1
+SQL
+)
         if [ -z "$row" ]; then
             echo "[admin-publish] ERROR no BP_DunePlayerCharacter row for $fls_id" >&2
             echo "                player may be offline or in a Sietch we haven't queried." >&2
@@ -523,14 +543,14 @@ PYEOF
                 exit 2
                 ;;
         esac
-        dune_psql --csv --set=tbl="$tbl" -c "
-            SELECT column_name AS column,
-                   data_type   AS type,
-                   CASE is_nullable WHEN 'YES' THEN 'null' ELSE 'not null' END AS nullable
-            FROM information_schema.columns
-            WHERE table_schema = 'dune' AND table_name = :'tbl'
-            ORDER BY ordinal_position
-        "
+        dune_psql_q --csv --set=tbl="$tbl" <<'SQL'
+SELECT column_name AS column,
+       data_type   AS type,
+       CASE is_nullable WHEN 'YES' THEN 'null' ELSE 'not null' END AS nullable
+FROM information_schema.columns
+WHERE table_schema = 'dune' AND table_name = :'tbl'
+ORDER BY ordinal_position
+SQL
         exit 0
         ;;
     db-sample)
@@ -556,16 +576,16 @@ PYEOF
             echo "[admin-publish] ERROR db-search: term too long (${#term} chars, max 64)" >&2
             exit 2
         fi
-        dune_psql --csv --set=pat="%$term%" -c "
-            SELECT table_name  AS table,
-                   column_name AS column,
-                   data_type   AS type
-            FROM information_schema.columns
-            WHERE table_schema = 'dune'
-              AND (column_name ILIKE :'pat' OR table_name ILIKE :'pat')
-            ORDER BY table_name, column_name
-            LIMIT 500
-        "
+        dune_psql_q --csv --set=pat="%$term%" <<'SQL'
+SELECT table_name  AS table,
+       column_name AS column,
+       data_type   AS type
+FROM information_schema.columns
+WHERE table_schema = 'dune'
+  AND (column_name ILIKE :'pat' OR table_name ILIKE :'pat')
+ORDER BY table_name, column_name
+LIMIT 500
+SQL
         exit 0
         ;;
     db-sql)
@@ -597,14 +617,15 @@ PYEOF
             echo "[admin-publish] ERROR player-offline: needs a single player, not '*'" >&2
             exit 2
         fi
-        status=$(dune_psql --set=fls="$fls_id" -tAc "
-            SELECT COALESCE(ps.online_status::text, 'Offline')
-            FROM dune.encrypted_accounts a
-            LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
-            WHERE a.\"user\" = :'fls'
-            ORDER BY ps.last_avatar_activity DESC NULLS LAST
-            LIMIT 1
-        " 2>/dev/null | tr -d '\r\n')
+        status=$(dune_psql_q --set=fls="$fls_id" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT COALESCE(ps.online_status::text, 'Offline')
+FROM dune.encrypted_accounts a
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+WHERE a."user" = :'fls'
+ORDER BY ps.last_avatar_activity DESC NULLS LAST
+LIMIT 1
+SQL
+)
         if [ -z "$status" ]; then
             echo "[admin-publish] ERROR player-offline: no account for $fls_id (run 'admin players')" >&2
             exit 2
@@ -634,28 +655,28 @@ PYEOF
             echo "[admin-publish] ERROR player-state: no account for $fls_id (run 'admin players')" >&2
             exit 2
         fi
-        dune_psql --csv --set=fls="$fls_id" -c "
-            SELECT a.\"user\"                            AS fls_id,
-                   a.id                                  AS account_id,
-                   a.platform_id                         AS platform_id,
-                   a.platform_name                       AS platform_name,
-                   COALESCE(ps.online_status::text, 'Offline') AS online,
-                   COALESCE(ps.life_state::text, '-')    AS life,
-                   ps.last_avatar_activity               AS last_activity,
-                   pc.pc_actor_id                        AS pc_actor_id,
-                   pc.map                                AS map
-            FROM dune.encrypted_accounts a
-            LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
-            LEFT JOIN LATERAL (
-                SELECT ac.id AS pc_actor_id, ac.map
-                FROM dune.actors ac
-                WHERE ac.owner_account_id = a.id
-                  AND ac.class LIKE '%BP_DunePlayerCharacter%'
-                ORDER BY ac.id DESC LIMIT 1
-            ) pc ON true
-            WHERE a.\"user\" = :'fls'
-            LIMIT 1
-        "
+        dune_psql_q --csv --set=fls="$fls_id" <<'SQL'
+SELECT a."user"                            AS fls_id,
+       a.id                                AS account_id,
+       a.platform_id                       AS platform_id,
+       a.platform_name                     AS platform_name,
+       COALESCE(ps.online_status::text, 'Offline') AS online,
+       COALESCE(ps.life_state::text, '-')  AS life,
+       ps.last_avatar_activity             AS last_activity,
+       pc.pc_actor_id                      AS pc_actor_id,
+       pc.map                              AS map
+FROM dune.encrypted_accounts a
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+LEFT JOIN LATERAL (
+    SELECT ac.id AS pc_actor_id, ac.map
+    FROM dune.actors ac
+    WHERE ac.owner_account_id = a.id
+      AND ac.class LIKE '%BP_DunePlayerCharacter%'
+    ORDER BY ac.id DESC LIMIT 1
+) pc ON true
+WHERE a."user" = :'fls'
+LIMIT 1
+SQL
         exit 0
         ;;
     char-xp-read)
@@ -711,19 +732,19 @@ SQL
             exit 1
         fi
         # pc_actor is a DB-sourced integer id; bind it as an integer.
-        dune_psql --csv --set=actor="$pc_actor" -c "
-            SELECT i.id           AS item_id,
-                   i.template_id  AS template_id,
-                   i.stack_size   AS stack_size,
-                   i.quality_level AS quality,
-                   COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), 'N/A') AS durability,
-                   COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'), 'N/A')     AS max_durability,
-                   i.position_index AS slot
-            FROM dune.items i
-            JOIN dune.inventories inv ON i.inventory_id = inv.id
-            WHERE inv.actor_id = :'actor'::bigint
-            ORDER BY i.template_id
-        "
+        dune_psql_q --csv --set=actor="$pc_actor" <<'SQL'
+SELECT i.id           AS item_id,
+       i.template_id  AS template_id,
+       i.stack_size   AS stack_size,
+       i.quality_level AS quality,
+       COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), 'N/A') AS durability,
+       COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'), 'N/A')     AS max_durability,
+       i.position_index AS slot
+FROM dune.items i
+JOIN dune.inventories inv ON i.inventory_id = inv.id
+WHERE inv.actor_id = :'actor'::bigint
+ORDER BY i.template_id
+SQL
         exit 0
         ;;
     tags-get)
@@ -741,9 +762,9 @@ SQL
             echo "[admin-publish] ERROR tags-get: no account for $fls_id (run 'admin players')" >&2
             exit 2
         fi
-        dune_psql --csv --set=aid="$aid" -c "
-            SELECT tag FROM dune.player_tags WHERE account_id = :'aid'::bigint ORDER BY tag
-        "
+        dune_psql_q --csv --set=aid="$aid" <<'SQL'
+SELECT tag FROM dune.player_tags WHERE account_id = :'aid'::bigint ORDER BY tag
+SQL
         exit 0
         ;;
 esac
