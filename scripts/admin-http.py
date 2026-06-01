@@ -51,6 +51,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import admin_progression  # noqa: E402  # type: ignore[import-not-found]  (resolved at runtime via sys.path; pure XP/keystone math, no DB/network)
 from admin_status import merge_status, parse_player_counts  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure status-grid merge, no DB/network)
+import admin_ini_merge  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure INI read/upsert engine, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -66,6 +67,15 @@ MOCK_K8S_PORT = int(os.environ.get("K8S_MOCK_PORT", "6443"))
 # mock-k8s writes its self-signed cert here (in-cluster SA mount); we pin the
 # /status fetch to it rather than disabling TLS verification.
 SA_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
+# Server-settings catalogue (shared with apply-config.sh) + the INI sinks it
+# resolves to. GET/PUT /api/settings read/write these directly (local files,
+# no PG). Logical sink name -> path, matching apply-config.sh's FILES.
+SETTINGS_SCHEMA_PATH = BASE_DIR + "/data/admin/settings-schema.json"
+INI_FILES = {
+    "UserEngine": BASE_DIR + "/server/state/ue5-saved/UserSettings/UserEngine.ini",
+    "UserGame": BASE_DIR + "/server/state/ue5-saved/UserSettings/UserGame.ini",
+    "ondemand": BASE_DIR + "/server/state/ondemand.ini",
+}
 STATE_DIR = BASE_DIR + "/state"
 PUBLISH_SH = SCRIPTS_DIR + "/admin-publish.sh"
 REVOCATION_FILE = STATE_DIR + "/admin-ui-revoked-jtis.json"
@@ -399,6 +409,68 @@ def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+# --------------------------------------------------------------------------
+# Server-settings helpers (Phase 5). The catalogue in settings-schema.json is
+# the single source of truth shared with apply-config.sh; GET/PUT /api/settings
+# read/write the INI sinks directly via the (unit-tested) admin_ini_merge engine.
+# Changes take effect on the next server restart (UE5 reads the INIs at boot).
+# --------------------------------------------------------------------------
+def load_settings_schema() -> list[dict]:
+    try:
+        with open(SETTINGS_SCHEMA_PATH, encoding="utf-8") as f:
+            return json.load(f).get("settings", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _read_ini_text(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def read_setting_value(st: dict) -> str | None:
+    """Current INI value for a setting, or None if unset / file missing. For a
+    quoted string setting the surrounding double quotes are stripped so the UI
+    shows the bare value."""
+    path = INI_FILES.get(st.get("file") or "")
+    if not path:
+        return None
+    text = _read_ini_text(path)
+    if text is None:
+        return None
+    section = st.get("section")
+    if section is None:
+        val = admin_ini_merge.read_flat(text, st["key"])
+    else:
+        val = admin_ini_merge.read_keyed(text, section, st["key"])
+    if val is not None and st.get("quoted") and len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+        val = val[1:-1]
+    return val
+
+
+def write_setting(st: dict, value) -> None:
+    """Validate + write one setting to its INI sink. Raises ValueError on an
+    invalid value or a missing target file."""
+    norm = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    rendered = admin_ini_merge.render_value(norm, st.get("quoted", False))
+    if rendered is None:
+        raise ValueError("value contains a double quote, which UE5 cannot parse")
+    path = INI_FILES.get(st.get("file") or "")
+    if not path or not os.path.isfile(path):
+        raise ValueError(f"target INI sink {st.get('file')!r} is missing")
+    text = _read_ini_text(path) or ""
+    section = st.get("section")
+    if section is None:
+        new = admin_ini_merge.upsert_flat(text, st["key"], rendered)
+    else:
+        new = admin_ini_merge.upsert_keyed(text, section, st["key"], rendered)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new)
 
 
 # --------------------------------------------------------------------------
@@ -911,6 +983,33 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, grid)
             return
 
+        # Phase 5: server-settings catalogue + current values, grouped by
+        # category. `verified:false` entries are mapped on the proven
+        # UserGame.ini mechanism but not yet game-effect-confirmed.
+        if path == "/api/settings":
+            categories: dict[str, list] = {}
+            schema = load_settings_schema()
+            for st in schema:
+                cur = read_setting_value(st)
+                cat = st.get("category", "Other")
+                categories.setdefault(cat, []).append({
+                    "id": st["id"],
+                    "label": st.get("label", st["id"]),
+                    "type": st["type"],
+                    "default": st.get("default"),
+                    "enum": st.get("enum"),
+                    "value": cur,
+                    "isDefault": cur is None,
+                    "verified": st.get("verified", False),
+                })
+            self._write(200, {
+                "ok": True,
+                "count": len(schema),
+                "categories": categories,
+                "note": "changes take effect on the next server restart",
+            })
+            return
+
         if path == "/api/me":
             if UI_ENABLED:
                 token, _ = self._session_token_from_request()
@@ -1208,6 +1307,41 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except json.JSONDecodeError as exc:
             self._write(400, {"error": "invalid JSON body", "detail": str(exc)})
+            return
+
+        # Phase 5: apply server-setting changes. Body: {"settings": {id: value}}.
+        # Each value is validated + normalized against the schema, then written
+        # to its INI sink via the engine; takes effect on the next restart.
+        if path == "/api/settings":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            updates = body.get("settings") if isinstance(body, dict) else None
+            if not isinstance(updates, dict) or not updates:
+                self._write(400, {"error": 'body must be {"settings": {"<id>": <value>, ...}}'})
+                return
+            schema = {st["id"]: st for st in load_settings_schema()}
+            applied: list[str] = []
+            errors: list[dict] = []
+            for sid, value in updates.items():
+                st = schema.get(sid)
+                if st is None:
+                    errors.append({"id": sid, "error": "unknown setting id"})
+                    continue
+                try:
+                    write_setting(st, value)
+                    applied.append(sid)
+                except (ValueError, OSError) as exc:
+                    errors.append({"id": sid, "error": str(exc)})
+            self._write(200, {
+                "ok": not errors,
+                "applied": applied,
+                "errors": errors,
+                "restartRequired": bool(applied),
+            })
             return
 
         if path == "/api/vehicles/delete":
