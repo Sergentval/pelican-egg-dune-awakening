@@ -74,6 +74,9 @@
 #   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
 #   award-char-xp <player_id> <amount>           -- award/deduct char XP; recompute level/SP/intel (offline only)
 #   grant-keystones <player_id>                  -- grant all 205 keystones + recompute SP (offline only)
+#   give-item <player_id> <ItemTemplate> [qty=1] [quality=0]
+#                                                -- grant items: online+quality0 -> RMQ AddItemToInventory;
+#                                                   offline -> direct dune.items INSERT (stack/slot/volume planned)
 #
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
@@ -1121,6 +1124,178 @@ SQL
 )
         echo "[admin-publish] OK grant-keystones fls=$fls_id controller=$ctrl pawn=$pawn keystones=$count total_sp=$exp_total unspent_sp=$exp_unspent"
         echo "publish=db-write grant-keystones controller=$ctrl keystones=$count"
+        exit 0
+        ;;
+    give-item)
+        # Grant items to a player. Ported from dune-admin handleGiveItem +
+        # runGiveItem + applyGiveItemChanges (MIT). Stack/slot/volume planning
+        # is pure math in admin-inventory.py; stack_max + per-item volume are
+        # LEARNED from existing world items (dune-admin's MAX(stack_size) /
+        # MAX(volume_override) fallback) because our catalogue carries no
+        # stack_max/volume.
+        #
+        # Routing — our stack is STRICTER than dune-admin (we never DB-write a
+        # live inventory, which the running server holds in memory):
+        #   Online  + quality 0  -> RMQ AddItemToInventory (delegate to `give`)
+        #   Online  + quality >0 -> refuse (log out first; DB write needs offline)
+        #   Offline (any quality)-> INSERT into dune.items (this path), topping
+        #                           up existing matching stacks first.
+        raw="${1:?usage: give-item <player> <ItemTemplate> [qty=1] [quality=0]}"
+        template="${2:?usage: give-item <player> <ItemTemplate> [qty=1] [quality=0]}"
+        qty="${3:-1}"
+        quality="${4:-0}"
+        case "$qty" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: qty must be a positive integer, got '$qty'" >&2; exit 2 ;; esac
+        [ "$qty" -ge 1 ] || { echo "[admin-publish] ERROR give-item: qty must be >= 1" >&2; exit 2; }
+        case "$quality" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: quality must be a non-negative integer, got '$quality'" >&2; exit 2 ;; esac
+        # Item template ids look like OrnithopterLightLauncher_6 / T6_Augment_Acuracy1:
+        # letters, digits, underscore, dot only. Also bound via :'tmpl' in SQL.
+        case "$template" in ''|*[!A-Za-z0-9_.]*) echo "[admin-publish] ERROR give-item: invalid item template '$template'" >&2; exit 2 ;; esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR give-item: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.items dune.inventories dune.actors || exit 3
+
+        # ---- Route on live online status (mirrors assert_player_offline) ----
+        status=$(dune_online_status "$fls_id")
+        if [ -z "$status" ]; then
+            echo "[admin-publish] ERROR give-item: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        if [ "$status" != "Offline" ]; then
+            if [ "$quality" -eq 0 ]; then
+                # Live player: hand off to the RMQ server-command path so the
+                # running server adds the item to its in-memory inventory.
+                exec bash "$BASE/scripts/admin-publish.sh" give "$fls_id" "$template" "$qty"
+            fi
+            echo "[admin-publish] ERROR give-item: $fls_id is $status; quality>0 grants need a DB write — have them log out first" >&2
+            exit 1
+        fi
+
+        # ---- Offline DB INSERT path ----
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR give-item: no player-character actor for $fls_id (never spawned a character)" >&2
+            exit 1
+        fi
+
+        # Target inventory: the player's backpack (inventory_type=0), falling
+        # back to any inventory of the pawn. Returns "id|maxslots|maxvol".
+        inv_row=$(dune_psql_q --set=actor="$pawn" -tAF'|' <<'SQL'
+SELECT id, COALESCE(max_item_count, -1), COALESCE(max_item_volume, -1)
+FROM dune.inventories WHERE actor_id = :'actor'::bigint AND inventory_type = 0
+LIMIT 1
+SQL
+)
+        if [ -z "$inv_row" ]; then
+            inv_row=$(dune_psql_q --set=actor="$pawn" -tAF'|' <<'SQL'
+SELECT id, COALESCE(max_item_count, -1), COALESCE(max_item_volume, -1)
+FROM dune.inventories WHERE actor_id = :'actor'::bigint
+LIMIT 1
+SQL
+)
+        fi
+        if [ -z "$inv_row" ]; then
+            echo "[admin-publish] ERROR give-item: no inventory for pawn $pawn" >&2
+            exit 1
+        fi
+        IFS='|' read -r inv_id max_slots max_volume <<EOF2
+$inv_row
+EOF2
+
+        # Existing matching stacks (same template + quality) as "id:size,..." .
+        stacks=$(dune_psql_q --set=inv="$inv_id" --set=tmpl="$template" --set=q="$quality" -tA <<'SQL'
+SELECT COALESCE(string_agg(id || ':' || stack_size, ','), '')
+FROM dune.items
+WHERE inventory_id = :'inv'::bigint AND template_id = :'tmpl' AND quality_level = :'q'::bigint
+SQL
+)
+        # Inventory usage: row count, max position, used volume (per-row override only).
+        agg=$(dune_psql_q --set=inv="$inv_id" -tAF'|' <<'SQL'
+SELECT COUNT(*),
+       COALESCE(MAX(position_index), -1),
+       COALESCE(SUM(CASE WHEN volume_override IS NOT NULL AND volume_override > 0
+                         THEN volume_override * stack_size ELSE 0 END), 0)
+FROM dune.items WHERE inventory_id = :'inv'::bigint
+SQL
+)
+        IFS='|' read -r used_slots max_pos used_volume <<EOF2
+$agg
+EOF2
+
+        # stack_max: largest existing stack of this template+quality, floored at 1.
+        stack_max=$(dune_psql_q --set=tmpl="$template" --set=q="$quality" -tA <<'SQL'
+SELECT GREATEST(COALESCE(MAX(stack_size), 0), 1)
+FROM dune.items WHERE template_id = :'tmpl' AND quality_level = :'q'::bigint
+SQL
+)
+        # per-item volume: largest stored override for this template, else 0.
+        per_item_vol=$(dune_psql_q --set=tmpl="$template" -tA <<'SQL'
+SELECT COALESCE(MAX(volume_override), 0)
+FROM dune.items WHERE template_id = :'tmpl' AND volume_override IS NOT NULL
+SQL
+)
+        [ -n "$stack_max" ] || stack_max=1
+        [ -n "$per_item_vol" ] || per_item_vol=0
+        [ -n "$used_slots" ] || used_slots=0
+        [ -n "$max_pos" ] || max_pos=-1
+        [ -n "$used_volume" ] || used_volume=0
+
+        # Pure planner: emits UPDATE/NEW/SUMMARY lines, or a single ERROR line.
+        plan=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" give-item \
+               --qty "$qty" --stack-max "$stack_max" --template "$template" \
+               --stacks "$stacks" --max-pos "$max_pos" \
+               --max-slots "$max_slots" --used-slots "$used_slots" \
+               --max-volume "$max_volume" --used-volume "$used_volume" \
+               --per-item-vol "$per_item_vol") || {
+            echo "[admin-publish] ERROR give-item: plan compute failed" >&2; exit 1; }
+
+        if printf '%s\n' "$plan" | grep -q '^ERROR '; then
+            msg=$(printf '%s\n' "$plan" | sed -n 's/^ERROR //p')
+            echo "[admin-publish] ERROR give-item: $msg" >&2
+            exit 4
+        fi
+
+        # Build the transaction from the plan. The planner emits ONLY integers
+        # for stack ids / adds / sizes / positions (re-validated below); the
+        # template, quality and inventory id are bound via :'var'.
+        txn="BEGIN;"
+        topped=0; created=0
+        while read -r kind a b; do
+            case "$kind" in
+                UPDATE)
+                    case "$a$b" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: malformed UPDATE plan line" >&2; exit 1 ;; esac
+                    txn+=$'\n'"UPDATE dune.items SET stack_size = stack_size + ${b}::bigint WHERE id = ${a}::bigint;"
+                    topped=$((topped + 1))
+                    ;;
+                NEW)
+                    case "$a$b" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: malformed NEW plan line" >&2; exit 1 ;; esac
+                    txn+=$'\n'"INSERT INTO dune.items (inventory_id, stack_size, position_index, template_id, quality_level, stats) VALUES (:'inv'::bigint, ${a}::bigint, ${b}::bigint, :'tmpl', :'q'::bigint, '{}'::jsonb);"
+                    created=$((created + 1))
+                    ;;
+            esac
+        done <<EOF2
+$plan
+EOF2
+        txn+=$'\n'"COMMIT;"
+        txn+=$'\n'"SELECT COALESCE(SUM(stack_size), 0) FROM dune.items WHERE inventory_id = :'inv'::bigint AND template_id = :'tmpl' AND quality_level = :'q'::bigint;"
+
+        # Run the txn. ON_ERROR_STOP aborts before COMMIT on any failure, so the
+        # whole grant rolls back atomically; -q suppresses command tags so only
+        # the final read-back total reaches stdout.
+        rc=0
+        out=$(printf '%s\n' "$txn" | dune_psql_q -q -v ON_ERROR_STOP=1 \
+              --set=inv="$inv_id" --set=tmpl="$template" --set=q="$quality" -tA 2>&1) || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR give-item: transaction failed (rolled back)" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        fi
+        total_now=$(printf '%s\n' "$out" | tail -n1 | tr -d '\r\n')
+        echo "[admin-publish] OK give-item fls=$fls_id pawn=$pawn inv=$inv_id template=$template quality=$quality qty=$qty topped_up=$topped created=$created total_now=$total_now"
+        echo "publish=db-write give-item pawn=$pawn template=$template qty=$qty topped_up=$topped created=$created"
         exit 0
         ;;
 esac

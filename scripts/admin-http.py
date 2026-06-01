@@ -1280,6 +1280,40 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Player WRITE: grant items. Online+quality0 -> RMQ AddItemToInventory;
+        # offline -> direct dune.items INSERT (stack/slot/volume planned). The
+        # bash layer enforces the offline gate for the DB path.
+        # POST /api/players/<id>/give-item  body {"template": str, "qty"?: int, "quality"?: int}
+        if path.startswith("/api/players/") and path.endswith("/give-item"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/give-item")])
+            template = body.get("template") if isinstance(body, dict) else None
+            qty = body.get("qty", 1) if isinstance(body, dict) else 1
+            quality = body.get("quality", 0) if isinstance(body, dict) else 0
+            if not isinstance(template, str) or not template.strip():
+                self._write(400, {"error": "template (non-empty string) required"})
+                return
+            # bool is an int subclass — reject it explicitly for both numbers.
+            if not isinstance(qty, int) or isinstance(qty, bool) or qty < 1:
+                self._write(400, {"error": "qty (positive integer) required"})
+                return
+            if not isinstance(quality, int) or isinstance(quality, bool) or quality < 0:
+                self._write(400, {"error": "quality (non-negative integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(
+                ["give-item", player, template, str(qty), str(quality)], timeout=20
+            )
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # /api/login is the only POST that bypasses Bearer auth.
         if path == "/api/login":
             if not UI_ENABLED:

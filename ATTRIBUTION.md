@@ -153,3 +153,21 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   TotalSkillPoints/UnspentSkillPoints (level + 54 bonus) on the pawn. Ported as
   the `grant-keystones` subcommand; math is `admin_progression.grant_all_keystone
   _targets` via `admin-inventory.py`.
+- the give-item flow (`runGiveItem`, `planGiveItemStacks`/`fillExistingStacks`,
+  `ensureGiveItemSlotCapacity`/`ensureGiveItemVolumeCapacity`,
+  `maxItemsByVolume`/`requiredStackCount`/`formatGiveItemResult`/
+  `validateGiveItemInput`, `findGiveItemInventory`/`applyGiveItemChanges`, and
+  the `handleGiveItem` RMQ-vs-DB routing): the pure stack/slot/volume planner is
+  `scripts/admin_inventory_plan.py` (argv-only compute exposed via
+  `admin-inventory.py give-item`), and the INSERT-into-`dune.items` transaction
+  (top-up existing matching stacks largest-first, then new stacks at
+  MAX(position_index)+1, `stats='{}'`) + the `inventory_type=0` backpack
+  resolution are the `give-item` subcommand. We DROP dune-admin's
+  item-definition JSON resolvers (`resolveStackMax`/`resolveItemVolume`) because
+  our catalogue carries no stack_max/volume, and instead use dune-admin's
+  secondary DB fallback (`MAX(stack_size)`/`MAX(volume_override)` over existing
+  world items). Routing diverges deliberately: we are STRICTER — online+quality0
+  delegates to the RMQ `give` (AddItemToInventory) path, but online+quality>0 is
+  REFUSED (DB writes require offline) rather than DB-written into a live
+  inventory. The planner's expected values are pinned by a Python port of
+  dune-admin's `db_cmd_give_item_test.go` oracle in `scripts/test_give_item.py`.
