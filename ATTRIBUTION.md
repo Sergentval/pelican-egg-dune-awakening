@@ -108,3 +108,22 @@ Phase 1 (Database tab) lifts, with thanks:
 - the table-list / describe / sample / column-search / read-only-SQL
   queries, ported as the `db-*` subcommands in `scripts/admin-publish.sh`
   (from `handlers_database.go` + `db.go`).
+
+Phase 2 (Players/Character reads + PlayerGuard) lifts, with thanks:
+- the FLevelComponent character-XP read (`readLevelComponentSkillState`), the
+  inventory durability read (`cmdFetchInventory`), and the player-tags read —
+  ported as the `char-xp-read` / `inventory-list` / `tags-get` subcommands in
+  `scripts/admin-publish.sh` (from `cmd/dune-admin/db.go`). We anchor them on
+  our confirmed `encrypted_accounts`/`actors` resolution instead of
+  dune-admin's `player_state` controller→pawn hop, and guard the
+  Funcom-schema-dependent reads behind a `to_regclass` preflight.
+- the PlayerGuard offline precondition (`checkPlayerOffline`), ported as the
+  `player-offline` subcommand (our confirmed `encrypted_player_state` schema).
+- the pure progression math in `scripts/admin_progression.py` — `xpToLevel`
+  binary search, the `intelAtLevel` curve, and `keystoneSPBonus` /
+  `grantAllKeystoneTargets` (from `db.go` + `keystones.go`).
+- the static data tables in `data/admin/{skill-xp-per-level,keystones,
+  factions}.json` — the 201-level cumulative-XP table + `maxCharXP`, the 205
+  keystone definitions, and the 21 faction-tier thresholds. These are
+  mechanically derived from `db.go`/`keystones.go` (each file records its
+  `_source`), not hand-transcribed.

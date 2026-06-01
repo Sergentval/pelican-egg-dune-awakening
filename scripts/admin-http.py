@@ -45,6 +45,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
+# Ensure sibling modules (admin_progression) import regardless of CWD —
+# whether this file is run as a script, via importlib in tests, or -m.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import admin_progression  # noqa: E402  # type: ignore[import-not-found]  (resolved at runtime via sys.path; pure XP/keystone math, no DB/network)
+
 
 # --------------------------------------------------------------------------
 # Config — env vars resolved once at process start.
@@ -343,6 +348,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
         or argv[0] in (
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
+            "player-state", "char-xp-read", "inventory-list", "tags-get",
         )
     )
     entry = {
@@ -919,6 +925,29 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Per-player reads: /api/players/<id>/{state,inventory,char-xp,tags}.
+        # <id> is URL-encoded (e.g. name%3AFoo); the online list stays on the
+        # existing /api/players?filter=online. These sit after the auth gate.
+        if path.startswith("/api/players/"):
+            rest = path[len("/api/players/"):]
+            if "/" in rest:
+                pid_enc, sub = rest.rsplit("/", 1)
+                player = unquote(pid_enc)
+                if player and sub == "state":
+                    self._handle_player_state(player)
+                    return
+                if player and sub == "inventory":
+                    self._handle_player_inventory(player)
+                    return
+                if player and sub == "char-xp":
+                    self._handle_player_char_xp(player)
+                    return
+                if player and sub == "tags":
+                    self._handle_player_tags(player)
+                    return
+            self._write(404, {"error": "unknown player sub-resource"})
+            return
+
         if path == "/api/vehicles/list":
             entry = run_publish(["vehicle-list"], timeout=10)
             self._write(200 if entry["ok"] else 502, entry)
@@ -1050,6 +1079,60 @@ class Handler(BaseHTTPRequestHandler):
             return
         # dune-admin truncates the result set at 200 rows for the UI.
         self._db_reply(run_publish(["db-sql", sql], timeout=20), truncate=200)
+
+    # ------ Players-tab reads -------------------------------------------
+    # Player-read subcommands signal via exit code: 0 = data (CSV on stdout),
+    # 3 = the targeted Funcom table isn't present on this build (a capability
+    # gap, not an error), 1/2 = no such player / offline / usage. _player_reply
+    # maps those to responses and returns the parsed table only on success.
+    def _player_reply(self, entry: dict, truncate: "int | None" = None) -> "dict | None":
+        code = entry["exit_code"]
+        if code == 0:
+            return csv_to_table(entry["stdout"], truncate)
+        detail = (entry.get("stderr") or "").strip()[:400]
+        if code == 3:
+            self._write(200, {
+                "available": False, "detail": detail,
+                "headers": [], "rows": [], "truncated": False,
+            })
+        elif code in (1, 2):
+            self._write(404, {"error": "player not found or unavailable", "detail": detail})
+        else:
+            self._write(502, {"error": "player read failed", "detail": detail})
+        return None
+
+    def _handle_player_state(self, player: str) -> None:
+        table = self._player_reply(run_publish(["player-state", player], timeout=10))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_inventory(self, player: str) -> None:
+        table = self._player_reply(run_publish(["inventory-list", player], timeout=15))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_tags(self, player: str) -> None:
+        table = self._player_reply(run_publish(["tags-get", player], timeout=10))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_char_xp(self, player: str) -> None:
+        table = self._player_reply(run_publish(["char-xp-read", player], timeout=15))
+        if table is None:
+            return
+        # Enrich the single raw FLevelComponent row with derived level/intel.
+        summary = None
+        if table["rows"]:
+            row = dict(zip(table["headers"], table["rows"][0]))
+            try:
+                summary = admin_progression.char_xp_summary(int(row.get("total_xp") or 0))
+                summary["totalSkillPoints"] = int(row.get("total_skill_points") or 0)
+                summary["spentSkillPoints"] = int(row.get("spent_skill_points") or 0)
+            except (ValueError, TypeError):
+                summary = None
+        self._write(200, {
+            "headers": table["headers"], "rows": table["rows"], "summary": summary,
+        })
 
     # ------ POST ---------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802

@@ -1,0 +1,46 @@
+{
+  "_source": "Icehunter/dune-admin (MIT) cmd/dune-admin/db.go: factionTierThresholds[21], factionTierName(), factionDisplayName(), factionRepCap",
+  "_note": "tierThresholds[i] = cumulative reputation to reach tier i (0-20). Atreides and Harkonnen share identical thresholds.",
+  "repCap": 12474,
+  "tierThresholds": [
+    0,
+    99,
+    249,
+    499,
+    999,
+    1999,
+    2224,
+    2524,
+    2899,
+    3349,
+    3874,
+    4474,
+    5149,
+    5899,
+    6724,
+    7624,
+    8599,
+    9649,
+    10774,
+    11974,
+    12474
+  ],
+  "tierNames": {
+    "0": "Outsider",
+    "1": "Mercenary",
+    "2": "Recruit",
+    "3": "Contractor",
+    "4": "Agent",
+    "5": "House Operator"
+  },
+  "tier20Names": {
+    "1": "Envoy",
+    "2": "Enforcer"
+  },
+  "factions": {
+    "1": "Atreides",
+    "2": "Harkonnen",
+    "3": "None",
+    "4": "Smuggler"
+  }
+}

@@ -1,0 +1,1647 @@
+{
+  "_source": "Icehunter/dune-admin (MIT) cmd/dune-admin/keystones.go: keystoneMap, keystoneSPBonus()",
+  "_note": "205 keystones (id 1-205) across Combat/Crafting/Exploration/Gathering/Sabotage. spBonus mirrors keystoneSPBonus: _SkillPoint=+1, _SkillPoint_Major=+3, _SkillPoint_Super=+5.",
+  "totalSPBonus": 54,
+  "keystones": [
+    {
+      "id": 1,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 1,
+      "cost": 2,
+      "spBonus": 3
+    },
+    {
+      "id": 2,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 4,
+      "cost": 2,
+      "spBonus": 1
+    },
+    {
+      "id": 3,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 8,
+      "cost": 2,
+      "spBonus": 3
+    },
+    {
+      "id": 4,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 11,
+      "cost": 5,
+      "spBonus": 1
+    },
+    {
+      "id": 5,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 14,
+      "cost": 5,
+      "spBonus": 1
+    },
+    {
+      "id": 6,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 18,
+      "cost": 5,
+      "spBonus": 3
+    },
+    {
+      "id": 7,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 21,
+      "cost": 5,
+      "spBonus": 1
+    },
+    {
+      "id": 8,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 24,
+      "cost": 10,
+      "spBonus": 1
+    },
+    {
+      "id": 9,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 28,
+      "cost": 10,
+      "spBonus": 3
+    },
+    {
+      "id": 10,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 31,
+      "cost": 10,
+      "spBonus": 1
+    },
+    {
+      "id": 11,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 34,
+      "cost": 10,
+      "spBonus": 1
+    },
+    {
+      "id": 12,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 38,
+      "cost": 15,
+      "spBonus": 3
+    },
+    {
+      "id": 13,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 41,
+      "cost": 15,
+      "spBonus": 1
+    },
+    {
+      "id": 14,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 44,
+      "cost": 15,
+      "spBonus": 1
+    },
+    {
+      "id": 15,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 48,
+      "cost": 15,
+      "spBonus": 3
+    },
+    {
+      "id": 16,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 51,
+      "cost": 20,
+      "spBonus": 1
+    },
+    {
+      "id": 17,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 54,
+      "cost": 20,
+      "spBonus": 1
+    },
+    {
+      "id": 18,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 58,
+      "cost": 20,
+      "spBonus": 3
+    },
+    {
+      "id": 19,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 61,
+      "cost": 20,
+      "spBonus": 1
+    },
+    {
+      "id": 20,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 64,
+      "cost": 25,
+      "spBonus": 1
+    },
+    {
+      "id": 21,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 68,
+      "cost": 25,
+      "spBonus": 3
+    },
+    {
+      "id": 22,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 71,
+      "cost": 25,
+      "spBonus": 1
+    },
+    {
+      "id": 23,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 74,
+      "cost": 25,
+      "spBonus": 1
+    },
+    {
+      "id": 24,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 79,
+      "cost": 30,
+      "spBonus": 3
+    },
+    {
+      "id": 25,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 82,
+      "cost": 30,
+      "spBonus": 1
+    },
+    {
+      "id": 26,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 85,
+      "cost": 30,
+      "spBonus": 1
+    },
+    {
+      "id": 27,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Major",
+      "level": 89,
+      "cost": 35,
+      "spBonus": 3
+    },
+    {
+      "id": 28,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 93,
+      "cost": 35,
+      "spBonus": 1
+    },
+    {
+      "id": 29,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint",
+      "level": 97,
+      "cost": 35,
+      "spBonus": 1
+    },
+    {
+      "id": 30,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_SkillPoint_Super",
+      "level": 100,
+      "cost": 40,
+      "spBonus": 5
+    },
+    {
+      "id": 31,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxHealth_Major",
+      "level": 6,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 32,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxHealth",
+      "level": 26,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 33,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxHealth",
+      "level": 56,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 34,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxHealth_Super",
+      "level": 77,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 35,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxHealth",
+      "level": 91,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 36,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxStamina",
+      "level": 2,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 37,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxStamina_Major",
+      "level": 16,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 38,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxStamina",
+      "level": 36,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 39,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxStamina",
+      "level": 66,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 40,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_MaxStamina_Major",
+      "level": 95,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 41,
+      "track": "Combat",
+      "name": "DA_CombatKeystone_Hat",
+      "level": 75,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 42,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_ArmorAugment_Major",
+      "level": 10,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 43,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_ArmorAugment_Major",
+      "level": 42,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 44,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MeleeAugment_Major",
+      "level": 3,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 45,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MeleeAugment_Major",
+      "level": 30,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 46,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MeleeAugment_Major",
+      "level": 88,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 47,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RangedAugment_Major",
+      "level": 1,
+      "cost": 0,
+      "spBonus": 0
+    },
+    {
+      "id": 48,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RangedAugment_Major",
+      "level": 31,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 49,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RangedAugment_Major",
+      "level": 87,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 50,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_ConsumableBatchCrafting",
+      "level": 8,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 51,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingJackpot_Major",
+      "level": 20,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 52,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingJackpot",
+      "level": 33,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 53,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingJackpot",
+      "level": 55,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 54,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingJackpot_Major",
+      "level": 78,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 55,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingJackpot_Major",
+      "level": 96,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 56,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingSpeedIncrease",
+      "level": 18,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 57,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingSpeedIncrease",
+      "level": 93,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 58,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_GhostData_Major",
+      "level": 100,
+      "cost": 40,
+      "spBonus": 0
+    },
+    {
+      "id": 59,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_AugmentCraftingCostDecrease",
+      "level": 25,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 60,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingSpeedIncrease",
+      "level": 38,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 61,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_AugmentCraftingCostDecrease",
+      "level": 59,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 62,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_CraftingSpeedIncrease",
+      "level": 72,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 63,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_AugmentCraftingCostDecrease",
+      "level": 90,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 64,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingJackpot",
+      "level": 16,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 65,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingJackpot",
+      "level": 35,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 66,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingJackpot",
+      "level": 69,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 67,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingYield",
+      "level": 14,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 68,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingYield",
+      "level": 40,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 69,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RecyclingYield",
+      "level": 80,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 70,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RefiningYield_1",
+      "level": 12,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 71,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RefiningYield_2",
+      "level": 22,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 72,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RefiningYield_3",
+      "level": 45,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 73,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RefiningYield_4",
+      "level": 63,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 74,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_RefiningYield_5",
+      "level": 85,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 75,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MaxDurabilityLossReduction",
+      "level": 5,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 76,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MaxDurabilityLossReduction",
+      "level": 28,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 77,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MaxDurabilityLossReduction",
+      "level": 48,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 78,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MaxDurabilityLossReduction_Major",
+      "level": 66,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 79,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_MaxDurabilityLossReduction",
+      "level": 83,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 80,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_SchematicsOnRecycling_Major",
+      "level": 61,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 81,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_Hat",
+      "level": 75,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 82,
+      "track": "Crafting",
+      "name": "DA_CraftingKeystone_FragmentUpgrade_Major",
+      "level": 52,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 83,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_CrashedShipBonusLoot",
+      "level": 10,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 84,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_ClimbingStamina",
+      "level": 42,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 85,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 23,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 86,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 62,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 87,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 95,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 88,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_FogOfWarRadius",
+      "level": 38,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 89,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_WormThreatReduction",
+      "level": 74,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 90,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_WormThreatReduction",
+      "level": 98,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 91,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_LootPoolAlterations_Major",
+      "level": 40,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 92,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_PlayerInventorySlots_Major",
+      "level": 1,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 93,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_PlayerInventorySlots_Major",
+      "level": 25,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 94,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_PlayerInventorySlots_Major",
+      "level": 50,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 95,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_PlayerInventorySlots_Major",
+      "level": 77,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 96,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_PlayerInventorySlots_Major",
+      "level": 100,
+      "cost": 40,
+      "spBonus": 0
+    },
+    {
+      "id": 97,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleRecoeryCostReduction",
+      "level": 18,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 98,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleRecoeryCostReduction",
+      "level": 52,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 99,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleSandstormDamageReduction",
+      "level": 8,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 100,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleSandstormDamageReduction",
+      "level": 45,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 101,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleSandstormDamageReduction",
+      "level": 80,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 102,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_ScanningRange",
+      "level": 17,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 103,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_ScanningRange_Major",
+      "level": 71,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 104,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_SurveyTimeDecrease_Major",
+      "level": 13,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 105,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_SuspensorDrain",
+      "level": 28,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 106,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_SuspensorDrain_Major",
+      "level": 93,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 107,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleBoostHeatCostReduction",
+      "level": 3,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 108,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleBoostHeatCostReduction",
+      "level": 15,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 109,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleBoostHeatCostReduction",
+      "level": 30,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 110,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleBoostHeatCostReduction",
+      "level": 59,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 111,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleBoostHeatCostReduction",
+      "level": 90,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 112,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleDamageResistance",
+      "level": 33,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 113,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleDamageResistance",
+      "level": 88,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 114,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleFuelEfficiency_Major",
+      "level": 6,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 115,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleFuelEfficiency_Major",
+      "level": 35,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 116,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleFuelEfficiency_Major",
+      "level": 55,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 117,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleFuelEfficiency_Major",
+      "level": 65,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 118,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleFuelEfficiency_Major",
+      "level": 85,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 119,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 48,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 120,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 68,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 121,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleHeatDissipation",
+      "level": 83,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 122,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_VehicleSpeedBonus_Major",
+      "level": 20,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 123,
+      "track": "Exploration",
+      "name": "DA_ExplorationKeystone_Hat",
+      "level": 75,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 124,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_BonusBlood",
+      "level": 3,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 125,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_BonusWater",
+      "level": 2,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 126,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_PickupYield",
+      "level": 15,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 127,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_PickupYield",
+      "level": 55,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 128,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ScrapObjectsYield_Major",
+      "level": 1,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 129,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ScrapObjectsYield",
+      "level": 35,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 130,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 7,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 131,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 17,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 132,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 23,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 133,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 28,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 134,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 38,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 135,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 43,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 136,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 48,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 137,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 53,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 138,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 68,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 139,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ByProductSalvage",
+      "level": 83,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 140,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorRange",
+      "level": 13,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 141,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorRange",
+      "level": 33,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 142,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorRange",
+      "level": 63,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 143,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorRange",
+      "level": 78,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 144,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorRange_Major",
+      "level": 74,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 145,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorThreat",
+      "level": 8,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 146,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorThreat",
+      "level": 25,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 147,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorThreat",
+      "level": 65,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 148,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorThreat",
+      "level": 86,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 149,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_CompactorThreat",
+      "level": 96,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 150,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_NewCorpseType_Major",
+      "level": 58,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 151,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ToolPowerCostReduction_Major",
+      "level": 5,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 152,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ToolPowerCostReduction",
+      "level": 45,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 153,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_ToolPowerCostReduction_Major",
+      "level": 93,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 154,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 10,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 155,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 20,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 156,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 30,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 157,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 40,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 158,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 50,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 159,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 61,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 160,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 71,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 161,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 81,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 162,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 90,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 163,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_YieldJackpot_Major",
+      "level": 100,
+      "cost": 40,
+      "spBonus": 0
+    },
+    {
+      "id": 164,
+      "track": "Gathering",
+      "name": "DA_GatheringKeystone_Hat",
+      "level": 75,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 165,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost",
+      "level": 29,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 166,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost",
+      "level": 58,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 167,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost",
+      "level": 78,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 168,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost",
+      "level": 95,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 169,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadContribution",
+      "level": 19,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 170,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadContribution_Major",
+      "level": 43,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 171,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadContribution",
+      "level": 53,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 172,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadContribution",
+      "level": 72,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 173,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadContribution",
+      "level": 88,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 174,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost_Major",
+      "level": 17,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 175,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ExtraLootOnCorpses2_Major",
+      "level": 40,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 176,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus_Major",
+      "level": 60,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 177,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 1,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 178,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 27,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 179,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 50,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 180,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 74,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 181,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 100,
+      "cost": 40,
+      "spBonus": 0
+    },
+    {
+      "id": 182,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ExplosiveBarrels",
+      "level": 8,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 183,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus_Major",
+      "level": 3,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 184,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus",
+      "level": 22,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 185,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus",
+      "level": 45,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 186,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus_Major",
+      "level": 85,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 187,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ScanningRangeResistance",
+      "level": 12,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 188,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ScanningRangeResistance",
+      "level": 32,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 189,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ScanningRangeResistance",
+      "level": 55,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 190,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ScanningRangeResistance",
+      "level": 69,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 191,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ScanningRangeResistance",
+      "level": 98,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 192,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_RecognitionReduction",
+      "level": 15,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 193,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_RecognitionReduction_Major",
+      "level": 65,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 194,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_AggroRangeReduction",
+      "level": 5,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 195,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_AggroRangeReduction",
+      "level": 93,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 196,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ReducedScannedTime",
+      "level": 24,
+      "cost": 10,
+      "spBonus": 0
+    },
+    {
+      "id": 197,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ReducedScannedTime",
+      "level": 35,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 198,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ReducedScannedTime",
+      "level": 48,
+      "cost": 20,
+      "spBonus": 0
+    },
+    {
+      "id": 199,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ReducedScannedTime",
+      "level": 63,
+      "cost": 25,
+      "spBonus": 0
+    },
+    {
+      "id": 200,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_ReducedScannedTime",
+      "level": 81,
+      "cost": 30,
+      "spBonus": 0
+    },
+    {
+      "id": 201,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HeadshotDamage_Major",
+      "level": 10,
+      "cost": 5,
+      "spBonus": 0
+    },
+    {
+      "id": 202,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_HouseCreditsBonus_Major",
+      "level": 37,
+      "cost": 15,
+      "spBonus": 0
+    },
+    {
+      "id": 203,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_LandsraadBribeCost_Major",
+      "level": 90,
+      "cost": 35,
+      "spBonus": 0
+    },
+    {
+      "id": 204,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_IncreasedTrapTimer",
+      "level": 2,
+      "cost": 2,
+      "spBonus": 0
+    },
+    {
+      "id": 205,
+      "track": "Sabotage",
+      "name": "DA_SabotageKeystone_Hat",
+      "level": 75,
+      "cost": 30,
+      "spBonus": 0
+    }
+  ]
+}

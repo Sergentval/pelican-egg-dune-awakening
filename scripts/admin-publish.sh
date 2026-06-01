@@ -53,6 +53,19 @@
 #   db-search <term>                             -- find tables/columns matching a term (ILIKE)
 #   db-sql <select-query>                        -- run a read-only query (SELECT/EXPLAIN/SHOW/WITH)
 #
+# Player/character read subcommands (read-only; emit CSV for the admin UI's
+# Players tab). Queries ported from Icehunter/dune-admin cmd/dune-admin
+# {db.go,handlers_players.go,keystones.go} (MIT). See ATTRIBUTION.md. The
+# online check + actor resolution use our confirmed encrypted_*/actors schema;
+# char-xp/inventory/tags target the Funcom fgl/items/tags schema and are
+# guarded by a to_regclass preflight that degrades to a clear message if the
+# build doesn't expose those tables.
+#   player-offline <player_id>                   -- PlayerGuard: exit 0 if offline, 1 if online, 2 if unknown
+#   player-state <player_id>                     -- account/online/life-state + player-character actor + map
+#   char-xp-read <player_id>                     -- FLevelComponent TotalXPEarned/TotalSkillPoints/spent SP
+#   inventory-list <player_id>                   -- player-character inventory items + durability
+#   tags-get <player_id>                         -- player progression tags
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -256,6 +269,49 @@ resolve_player_id() {
             return 1
             ;;
     esac
+}
+
+# --------------------------------------------------------------------------
+# Player-read helpers (used by the Players-tab read subcommands). All resolve
+# against our CONFIRMED schema (encrypted_accounts + actors). FLS ids are
+# bound via psql --set/:'var'; table names passed to dune_require_tables are
+# developer-supplied constants, never user input.
+# --------------------------------------------------------------------------
+
+# FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
+dune_account_id() {
+    dune_psql --set=fls="$1" -tAc \
+        "SELECT id FROM dune.encrypted_accounts WHERE \"user\" = :'fls' LIMIT 1" \
+        2>/dev/null | tr -d '\r\n'
+}
+
+# FLS hex -> current player-character (pawn) actor id, or empty if the player
+# has no BP_DunePlayerCharacter actor (offline / never spawned). Newest wins.
+dune_pc_actor_id() {
+    dune_psql --set=fls="$1" -tAc "
+        SELECT ac.id FROM dune.actors ac
+        JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+        WHERE a.\"user\" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
+        ORDER BY ac.id DESC LIMIT 1" 2>/dev/null | tr -d '\r\n'
+}
+
+# Return 0 only if every named relation exists; else name the missing ones and
+# return 1. Uses to_regclass so a dune.* table absent on this Funcom build
+# degrades to a clear message instead of a raw 42P01 from the read query.
+dune_require_tables() {
+    local t missing=""
+    for t in "$@"; do
+        if [ "$(dune_psql -tAc "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | tr -d '\r\n')" != "t" ]; then
+            missing="$missing $t"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        echo "[admin-publish] ERROR required table(s) not present on this server build:$missing" >&2
+        echo "                This read targets the Funcom fgl/items/tags schema. Run 'admin" >&2
+        echo "                db-tables' to confirm which tables your build exposes." >&2
+        return 1
+    fi
+    return 0
 }
 
 cmd="${1:-}"
@@ -523,6 +579,171 @@ PYEOF
         dune_psql -q --csv \
             -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
             -c "$sql"
+        exit 0
+        ;;
+
+    # ----------------------------------------------------------------------
+    # Player/character read subcommands. See the header block for provenance.
+    # ----------------------------------------------------------------------
+    player-offline)
+        # PlayerGuard primitive: the precondition every Phase-3 character
+        # write must pass first. Exit 0 = offline (safe to edit), 1 = online
+        # (refuse), 2 = unknown player / usage. Built on the confirmed
+        # encrypted_* schema. A missing player_state row (LEFT JOIN -> NULL)
+        # coalesces to Offline; a missing account returns no row at all.
+        raw="${1:?usage: player-offline <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR player-offline: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        status=$(dune_psql --set=fls="$fls_id" -tAc "
+            SELECT COALESCE(ps.online_status::text, 'Offline')
+            FROM dune.encrypted_accounts a
+            LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+            WHERE a.\"user\" = :'fls'
+            ORDER BY ps.last_avatar_activity DESC NULLS LAST
+            LIMIT 1
+        " 2>/dev/null | tr -d '\r\n')
+        if [ -z "$status" ]; then
+            echo "[admin-publish] ERROR player-offline: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        if [ "$status" != "Offline" ]; then
+            echo "[admin-publish] player is currently $status — log out first, then apply the edit" >&2
+            echo "online=$status fls=$fls_id"
+            exit 1
+        fi
+        echo "offline=true fls=$fls_id"
+        exit 0
+        ;;
+    player-state)
+        # Single-player detail on the confirmed schema: account, online/life
+        # state, last activity, and the current player-character actor + map.
+        raw="${1:?usage: player-state <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR player-state: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        # Distinguish a non-existent account (exit 2 -> HTTP 404) from a found
+        # account that is merely offline / has no character. Without this a
+        # well-formed-but-unknown FLS id would return an ambiguous empty 200.
+        # Mirrors tags-get. The main query below is then guaranteed one row.
+        if [ -z "$(dune_account_id "$fls_id")" ]; then
+            echo "[admin-publish] ERROR player-state: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        dune_psql --csv --set=fls="$fls_id" -c "
+            SELECT a.\"user\"                            AS fls_id,
+                   a.id                                  AS account_id,
+                   a.platform_id                         AS platform_id,
+                   a.platform_name                       AS platform_name,
+                   COALESCE(ps.online_status::text, 'Offline') AS online,
+                   COALESCE(ps.life_state::text, '-')    AS life,
+                   ps.last_avatar_activity               AS last_activity,
+                   pc.pc_actor_id                        AS pc_actor_id,
+                   pc.map                                AS map
+            FROM dune.encrypted_accounts a
+            LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT ac.id AS pc_actor_id, ac.map
+                FROM dune.actors ac
+                WHERE ac.owner_account_id = a.id
+                  AND ac.class LIKE '%BP_DunePlayerCharacter%'
+                ORDER BY ac.id DESC LIMIT 1
+            ) pc ON true
+            WHERE a.\"user\" = :'fls'
+            LIMIT 1
+        "
+        exit 0
+        ;;
+    char-xp-read)
+        # FLevelComponent read (TotalXPEarned / TotalSkillPoints / non-starter
+        # SkillPointsSpent), ported verbatim from dune-admin readLevelComponent
+        # SkillState — but anchored on OUR confirmed actor resolution rather
+        # than its player_state controller->pawn hop. The level/intel are
+        # derived in admin_progression.py, not in SQL. A quoted heredoc avoids
+        # shell-escaping the embedded JSONB format('(TagName="%s")', ...) term.
+        raw="${1:?usage: char-xp-read <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR char-xp-read: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.fgl_entities dune.actor_fgl_entities dune.actors || exit 3
+        dune_psql --csv --set=fls="$fls_id" -f - <<'SQL'
+SELECT
+    COALESCE((fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint, 0)    AS total_xp,
+    COALESCE((fe.components->'FLevelComponent'->1->>'TotalSkillPoints')::bigint, 0) AS total_skill_points,
+    COALESCE((
+        SELECT SUM((v->>'SkillPointsSpent')::int)
+        FROM jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData') AS kv(k, v)
+        WHERE k != format('(TagName="%s")',
+            fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName')
+    ), 0) AS spent_skill_points
+FROM dune.fgl_entities fe
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.slot_name = 'DuneCharacter'
+  AND afe.actor_id = (
+    SELECT ac.id FROM dune.actors ac
+    JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+    WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
+    ORDER BY ac.id DESC LIMIT 1
+  )
+SQL
+        exit 0
+        ;;
+    inventory-list)
+        # Player-character inventory with durability extracted from the
+        # FItemStackAndDurabilityStats JSONB — ported verbatim from dune-admin
+        # cmdFetchInventory, keyed on our resolved pawn actor id.
+        raw="${1:?usage: inventory-list <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR inventory-list: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.items dune.inventories dune.actors || exit 3
+        pc_actor=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pc_actor" ]; then
+            echo "[admin-publish] ERROR inventory-list: no player-character actor for $fls_id (offline / no character)" >&2
+            exit 1
+        fi
+        # pc_actor is a DB-sourced integer id; bind it as an integer.
+        dune_psql --csv --set=actor="$pc_actor" -c "
+            SELECT i.id           AS item_id,
+                   i.template_id  AS template_id,
+                   i.stack_size   AS stack_size,
+                   i.quality_level AS quality,
+                   COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), 'N/A') AS durability,
+                   COALESCE((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'), 'N/A')     AS max_durability,
+                   i.position_index AS slot
+            FROM dune.items i
+            JOIN dune.inventories inv ON i.inventory_id = inv.id
+            WHERE inv.actor_id = :'actor'::bigint
+            ORDER BY i.template_id
+        "
+        exit 0
+        ;;
+    tags-get)
+        # Player progression tags, ported verbatim from dune-admin. Keyed on
+        # the confirmed account id.
+        raw="${1:?usage: tags-get <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR tags-get: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_tags || exit 3
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR tags-get: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        dune_psql --csv --set=aid="$aid" -c "
+            SELECT tag FROM dune.player_tags WHERE account_id = :'aid'::bigint ORDER BY tag
+        "
         exit 0
         ;;
 esac
