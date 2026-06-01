@@ -188,3 +188,15 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   `change_player_faction`, so house alignment is untouched) and restrict to the
   two Great Houses (1=Atreides, 2=Harkonnen). HTTP: POST
   /api/players/<id>/faction-rep.
+- the destructive writes (`cmdDeleteItem`, `cmdResetSpecializations` all-mode,
+  `cmdDeleteAccount`): `item-delete <item_id>` → `dune.delete_item(id)`;
+  `reset-spec <player>` → `dune.reset_specialization_tracks(controller)` +
+  `dune.reset_specialization_keystones(controller)`; `account-delete <player>
+  <confirm-fls> [reason]` → `dune.delete_account(fls, reason)`. We HARDEN beyond
+  dune-admin, which applies no server-side guard on any of these: every one is
+  offline-gated; `item-delete` additionally resolves the owning character and
+  verifies the item exists first; `account-delete` requires a `<confirm-fls>`
+  argument that exactly equals the resolved 16-hex FLS id. `reset-spec` mirrors
+  dune-admin in NOT recomputing the pawn FLevel skill points (the game
+  reconciles on next login). HTTP: POST /api/items/<id>/delete, POST
+  /api/players/<id>/reset-spec, POST /api/players/<id>/account-delete.
