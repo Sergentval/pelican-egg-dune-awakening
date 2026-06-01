@@ -171,3 +171,20 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   REFUSED (DB writes require offline) rather than DB-written into a live
   inventory. The planner's expected values are pinned by a Python port of
   dune-admin's `db_cmd_give_item_test.go` oracle in `scripts/test_give_item.py`.
+- the set-faction-reputation flow (`applyFactionRepDelta`,
+  `syncFactionComponent`/`buildFactionDataArray`/`writeFactionComponent`,
+  `repToTier`/`factionTierName`/`factionDisplayName`/`factionRepCap`/
+  `factionTierThresholds`): the pure tier math is `admin_progression.py`
+  (`clamp_faction_rep`/`rep_to_tier`/`faction_tier_name`/`faction_display_name`/
+  `faction_rep_outcome`, pinned by `scripts/test_faction_rep.py`), exposed via
+  `admin-inventory.py faction-rep`. The `faction-rep` subcommand keys on the
+  player-CONTROLLER actor, calls `dune.set_player_faction_reputation(controller,
+  faction_id, rep)`, then rebuilds `FactionPlayerComponent.m_FactionDataArray`
+  wholesale from the rep table (both Great Houses, Atreides then Harkonnen, each
+  `{"Faction":{"Name":…},"timestamp":<epoch_float>,"ReputationAmount":<int>}`) via
+  `jsonb_set(properties,'{FactionPlayerComponent,m_FactionDataArray}', …, true)` —
+  the no-clobber guarantee comes from re-reading the rep table, not patching one
+  array element. We mirror dune-admin's give-rep delta path (we do NOT call
+  `change_player_faction`, so house alignment is untouched) and restrict to the
+  two Great Houses (1=Atreides, 2=Harkonnen). HTTP: POST
+  /api/players/<id>/faction-rep.

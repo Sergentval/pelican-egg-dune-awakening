@@ -18,6 +18,10 @@ Subcommands:
              --per-item-vol F]
       Emits a line protocol (UPDATE/NEW/SUMMARY, or a single ERROR line) for
       the caller to apply as stack top-ups + new dune.items rows in a txn.
+  faction-rep --current N --delta N --faction ID
+      Emits KV lines (new_rep, tier, tier_name, faction_name, capped) for the
+      caller to set via dune.set_player_faction_reputation + rebuild the
+      m_FactionDataArray jsonb component.
 """
 import argparse
 import pathlib
@@ -55,6 +59,17 @@ def cmd_grant_keystones(args: argparse.Namespace) -> None:
         "expected_unspent_sp": unspent,
         "keystone_bonus": bonus,
         "keystone_count": len(ap.all_keystone_ids()),
+    })
+
+
+def cmd_faction_rep(args: argparse.Namespace) -> None:
+    o = ap.faction_rep_outcome(args.current, args.delta, args.faction)
+    _emit({
+        "new_rep": o["new_rep"],
+        "tier": o["tier"],
+        "tier_name": o["tier_name"],
+        "faction_name": o["faction_name"],
+        "capped": 1 if o["capped"] else 0,
     })
 
 
@@ -133,6 +148,12 @@ def main() -> None:
     gi.add_argument("--used-volume", type=float, default=0.0)
     gi.add_argument("--per-item-vol", type=float, default=0.0)
     gi.set_defaults(fn=cmd_give_item)
+
+    fr = sub.add_parser("faction-rep", help="compute new faction rep + tier after a signed delta")
+    fr.add_argument("--current", type=int, required=True)
+    fr.add_argument("--delta", type=int, required=True)
+    fr.add_argument("--faction", type=int, required=True, help="faction id (1=Atreides, 2=Harkonnen)")
+    fr.set_defaults(fn=cmd_faction_rep)
 
     args = parser.parse_args()
     args.fn(args)
