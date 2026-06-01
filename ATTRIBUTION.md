@@ -127,3 +127,10 @@ Phase 2 (Players/Character reads + PlayerGuard) lifts, with thanks:
   keystone definitions, and the 21 faction-tier thresholds. These are
   mechanically derived from `db.go`/`keystones.go` (each file records its
   `_source`), not hand-transcribed.
+
+Phase 3 (Players/Character writes) lifts, with thanks:
+- the give-currency flow (`cmdGiveCurrency`): the audited proc call
+  `dune.adjust_player_virtual_currency_balance(controller_id, get_solaris_id(),
+  delta)` + balance read-back, ported as the `give-currency` subcommand. We
+  resolve the player-CONTROLLER actor (verified live as the currency key) via
+  our `encrypted_accounts`/`actors` join and gate it on `assert_player_offline`.

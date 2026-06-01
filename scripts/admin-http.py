@@ -345,6 +345,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
         or "publish=db-delete" in result.stdout
+        or "publish=db-write" in result.stdout
         or argv[0] in (
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
@@ -1168,6 +1169,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "actor_id (positive int) required"})
                 return
             entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: adjust Solaris balance. Offline-gated + reversible.
+        # POST /api/players/<id>/give-currency  body {"amount": <int>}
+        if path.startswith("/api/players/") and path.endswith("/give-currency"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/give-currency")])
+            amount = body.get("amount") if isinstance(body, dict) else None
+            # bool is an int subclass — reject it explicitly.
+            if not isinstance(amount, int) or isinstance(amount, bool):
+                self._write(400, {"error": "amount (integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["give-currency", player, str(amount)], timeout=15)
             self._write(200 if entry["ok"] else 502, entry)
             return
 

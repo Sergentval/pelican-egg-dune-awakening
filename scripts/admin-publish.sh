@@ -66,6 +66,11 @@
 #   inventory-list <player_id>                   -- player-character inventory items + durability
 #   tags-get <player_id>                         -- player progression tags
 #
+# Player/character WRITE subcommands (Phase 3; mutate persisted state via
+# Funcom stored procs, gated on assert_player_offline). Ported from
+# Icehunter/dune-admin cmd/dune-admin/db.go (MIT). See ATTRIBUTION.md.
+#   give-currency <player_id> <amount>           -- adjust Solaris balance (signed; offline only)
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -312,6 +317,51 @@ JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
 WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
 ORDER BY ac.id DESC LIMIT 1
 SQL
+}
+
+# FLS hex -> player-CONTROLLER actor id, or empty if none. The controller (not
+# the pawn) is the key for currency/faction/journey state — e.g.
+# dune.player_virtual_currency_balances.player_controller_id. Confirmed live:
+# an account owns BP_DunePlayerController + DunePlayerState + BP_DunePlayer
+# Character actors; writes that say "controller_id" mean this one.
+dune_controller_actor_id() {
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT ac.id FROM dune.actors ac
+JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerController%'
+ORDER BY ac.id DESC LIMIT 1
+SQL
+}
+
+# FLS hex -> current online status text (Offline/Online/...), or empty if the
+# account doesn't exist. A missing player_state row coalesces to Offline.
+# Confirmed encrypted_* schema.
+dune_online_status() {
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT COALESCE(ps.online_status::text, 'Offline')
+FROM dune.encrypted_accounts a
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+WHERE a."user" = :'fls'
+ORDER BY ps.last_avatar_activity DESC NULLS LAST
+LIMIT 1
+SQL
+}
+
+# PlayerGuard precondition shared by every Phase-3 character write. Returns 0
+# if offline (safe to edit), 1 if online (refuse, message on stderr), 2 if the
+# account is unknown. Writes MUST call this before mutating.
+assert_player_offline() {
+    local fls="$1" st
+    st=$(dune_online_status "$fls")
+    if [ -z "$st" ]; then
+        echo "[admin-publish] ERROR no account for $fls (run 'admin players')" >&2
+        return 2
+    fi
+    if [ "$st" != "Offline" ]; then
+        echo "[admin-publish] player is currently $st — log out first, then apply the edit" >&2
+        return 1
+    fi
+    return 0
 }
 
 # Return 0 only if every named relation exists; else name the missing ones and
@@ -617,26 +667,16 @@ SQL
             echo "[admin-publish] ERROR player-offline: needs a single player, not '*'" >&2
             exit 2
         fi
-        status=$(dune_psql_q --set=fls="$fls_id" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
-SELECT COALESCE(ps.online_status::text, 'Offline')
-FROM dune.encrypted_accounts a
-LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
-WHERE a."user" = :'fls'
-ORDER BY ps.last_avatar_activity DESC NULLS LAST
-LIMIT 1
-SQL
-)
-        if [ -z "$status" ]; then
-            echo "[admin-publish] ERROR player-offline: no account for $fls_id (run 'admin players')" >&2
-            exit 2
+        # assert_player_offline does the work (shared with the Phase-3 writes);
+        # it prints the refusal/unknown message on stderr and returns 0/1/2.
+        if assert_player_offline "$fls_id"; then
+            echo "offline=true fls=$fls_id"
+            exit 0
+        else
+            rc=$?
+            [ "$rc" -eq 1 ] && echo "online=true fls=$fls_id"
+            exit "$rc"
         fi
-        if [ "$status" != "Offline" ]; then
-            echo "[admin-publish] player is currently $status — log out first, then apply the edit" >&2
-            echo "online=$status fls=$fls_id"
-            exit 1
-        fi
-        echo "offline=true fls=$fls_id"
-        exit 0
         ;;
     player-state)
         # Single-player detail on the confirmed schema: account, online/life
@@ -765,6 +805,57 @@ SQL
         dune_psql_q --csv --set=aid="$aid" <<'SQL'
 SELECT tag FROM dune.player_tags WHERE account_id = :'aid'::bigint ORDER BY tag
 SQL
+        exit 0
+        ;;
+
+    # ----------------------------------------------------------------------
+    # Player/character WRITE subcommands (Phase 3). Each mutates persisted
+    # player state and MUST pass assert_player_offline first. Ported from
+    # Icehunter/dune-admin cmd/dune-admin/db.go (MIT) — see ATTRIBUTION.md.
+    # ----------------------------------------------------------------------
+    give-currency)
+        # Adjust a player's Solaris balance via the audited stored proc
+        # dune.adjust_player_virtual_currency_balance(controller_id, currency_id,
+        # delta), keyed on the player-CONTROLLER actor (not the pawn), then read
+        # the new balance back. amount may be negative to deduct; the proc
+        # enforces non-negative balances. Ported from dune-admin cmdGiveCurrency.
+        raw="${1:?usage: give-currency <fls_id|me|steam:<id>|name:<n>> <amount>}"
+        amount="${2:?usage: give-currency <player> <amount>}"
+        # Signed-integer validation: strip one optional leading '-', rest digits.
+        amt_digits="${amount#-}"
+        case "$amt_digits" in
+            ''|*[!0-9]*)
+                echo "[admin-publish] ERROR give-currency: amount must be an integer, got '$amount'" >&2
+                exit 2
+                ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR give-currency: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_virtual_currency_balances dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR give-currency: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        # Proc call + read-back in one stdin batch so :'var' interpolates.
+        # Both statements print under -tA (proc return, then balance); the
+        # read-back is authoritative, so keep the last line.
+        new_balance=$(dune_psql_q --set=ctrl="$ctrl" --set=amt="$amount" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.adjust_player_virtual_currency_balance(:'ctrl'::bigint, dune.get_solaris_id(), :'amt'::bigint);
+SELECT balance FROM dune.player_virtual_currency_balances
+WHERE player_controller_id = :'ctrl'::bigint AND currency_id = dune.get_solaris_id();
+SQL
+)
+        if [ -z "$new_balance" ]; then
+            echo "[admin-publish] ERROR give-currency: proc call failed (no balance read back)" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK give-currency fls=$fls_id controller=$ctrl delta=$amount solaris_balance=$new_balance"
+        echo "publish=db-write currency=solaris controller=$ctrl delta=$amount balance=$new_balance"
         exit 0
         ;;
 esac
