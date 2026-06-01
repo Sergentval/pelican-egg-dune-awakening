@@ -19,6 +19,7 @@ package battlegroup
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -92,12 +93,12 @@ func LoadFromFile(path string, name string, p Placeholders) (map[string]any, err
 // validation passes.
 func defaultBattleGroupStatus() map[string]any {
 	return map[string]any{
-		"phase":              "Running",
-		"observedGeneration": int64(1),
-		"conditions":         []any{},
-		"partitions":         []any{},
+		"phase":               "Running",
+		"observedGeneration":  int64(1),
+		"conditions":          []any{},
+		"partitions":          []any{},
 		"battlegroupRevision": int64(0),
-		"serverSetScales":    []any{},
+		"serverSetScales":     []any{},
 	}
 }
 
@@ -112,40 +113,62 @@ type MapInfo struct {
 	PartitionID int64
 }
 
-// ExtractMapPartitions walks the BattleGroup spec for every entry
-// under .spec...worldPartitions[*].(map, partitions[0].id) and
-// returns them as a deduplicated, stable-ordered slice. Stable
-// ordering matters because mock-k8s pre-creates ServerSetScales in
-// this order and the operator's mental model maps "first" → "main
-// world".
+// ExtractMapPartitions walks the BattleGroup spec for every `map:` entry and
+// returns each map name paired with its real partition id, ordered by
+// ascending partition id (which reproduces the authoritative worldPartitions
+// order, so "first" → "main world").
 //
-// Multi-partition maps (rare) collapse to their first partition id.
-// If the spec changes between versions, callers should treat the
-// returned list as authoritative: never invent partition ids.
+// The same map name appears more than once in world-template.yaml: under
+// .spec...worldPartitions[] (a list-of-maps carrying the real partitions[].id)
+// and again under the server-set spec (a bare-scalar partitions list with no
+// id field). We take the MAX partition id seen per map: max(realID, 0) ==
+// realID regardless of which occurrence the (map-iteration-order-randomized)
+// walk visits first, so the result is deterministic. A "first occurrence wins"
+// dedup here was a per-process coin flip that, when it lost, assigned every map
+// partition 0 — making every UE5 instance claim IGW server-index 0 and
+// crash-loop.
+//
+// Multi-partition maps collapse to their first partition id. If the spec
+// changes between versions, callers should treat the returned list as
+// authoritative: never invent partition ids.
 func ExtractMapPartitions(obj map[string]any) []MapInfo {
-	seen := make(map[string]struct{})
-	var out []MapInfo
-	walkForMapPartitions(obj, seen, &out)
+	best := make(map[string]int64)
+	walkForMapPartitions(obj, best)
+	out := make([]MapInfo, 0, len(best))
+	for name, pid := range best {
+		out = append(out, MapInfo{MapName: name, PartitionID: pid})
+	}
+	// Deterministic order independent of Go's randomized map iteration:
+	// ascending partition id, map name as a stable tiebreak (only maps that
+	// share an id — the 0 placeholder bucket, in practice — need the tiebreak).
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PartitionID != out[j].PartitionID {
+			return out[i].PartitionID < out[j].PartitionID
+		}
+		return out[i].MapName < out[j].MapName
+	})
 	return out
 }
 
-func walkForMapPartitions(v any, seen map[string]struct{}, out *[]MapInfo) {
+// walkForMapPartitions accumulates the largest partition id seen for each map
+// name into best. Taking the max is what makes extraction order-independent
+// (see ExtractMapPartitions). A map whose only occurrences yield 0 is still
+// recorded (via best's zero value), so no referenced map is dropped.
+func walkForMapPartitions(v any, best map[string]int64) {
 	switch t := v.(type) {
 	case map[string]any:
-		mapName, isMap := t["map"].(string)
-		if isMap && mapName != "" {
-			if _, dupe := seen[mapName]; !dupe {
-				pid := firstPartitionID(t["partitions"])
-				seen[mapName] = struct{}{}
-				*out = append(*out, MapInfo{MapName: mapName, PartitionID: pid})
+		if mapName, ok := t["map"].(string); ok && mapName != "" {
+			pid := firstPartitionID(t["partitions"])
+			if prev, seen := best[mapName]; !seen || pid > prev {
+				best[mapName] = pid
 			}
 		}
 		for _, child := range t {
-			walkForMapPartitions(child, seen, out)
+			walkForMapPartitions(child, best)
 		}
 	case []any:
 		for _, child := range t {
-			walkForMapPartitions(child, seen, out)
+			walkForMapPartitions(child, best)
 		}
 	}
 }
