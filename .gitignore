@@ -24,3 +24,8 @@ logs/
 .idea/
 scripts/mock-k8s-go
 scripts/__pycache__/
+
+# Local secrets / access notes — NEVER commit. Pelican Panel API keys,
+# SFTP creds, and admin tokens for the experimental server live in
+# *.local.md files (e.g. PELICAN-ACCESS.local.md) and stay on this box only.
+*.local.md

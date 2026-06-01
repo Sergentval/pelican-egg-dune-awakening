@@ -94,3 +94,36 @@ grants, vehicle spawns, player lookup, scheduled restarts), check out
 their app directly. Our bash wrapper is intentionally minimal — meant
 for ad-hoc admin from inside the Pelican container, not as a
 replacement for their work.
+
+## Icehunter/dune-admin (MIT) — ported admin capabilities
+
+Portions of the admin tooling are ported from
+[Icehunter/dune-admin](https://github.com/Icehunter/dune-admin) (MIT). We
+reimplement against our own stack (admin-publish.sh + admin-http.py + the
+web SPA) rather than running dune-admin as a dependency.
+
+Phase 1 (Database tab) lifts, with thanks:
+- the read-only SQL guard `is_read_only_sql()` in `scripts/admin-http.py`
+  (from `cmd/dune-admin/handlers_database.go`), and
+- the table-list / describe / sample / column-search / read-only-SQL
+  queries, ported as the `db-*` subcommands in `scripts/admin-publish.sh`
+  (from `handlers_database.go` + `db.go`).
+
+Phase 2 (Players/Character reads + PlayerGuard) lifts, with thanks:
+- the FLevelComponent character-XP read (`readLevelComponentSkillState`), the
+  inventory durability read (`cmdFetchInventory`), and the player-tags read —
+  ported as the `char-xp-read` / `inventory-list` / `tags-get` subcommands in
+  `scripts/admin-publish.sh` (from `cmd/dune-admin/db.go`). We anchor them on
+  our confirmed `encrypted_accounts`/`actors` resolution instead of
+  dune-admin's `player_state` controller→pawn hop, and guard the
+  Funcom-schema-dependent reads behind a `to_regclass` preflight.
+- the PlayerGuard offline precondition (`checkPlayerOffline`), ported as the
+  `player-offline` subcommand (our confirmed `encrypted_player_state` schema).
+- the pure progression math in `scripts/admin_progression.py` — `xpToLevel`
+  binary search, the `intelAtLevel` curve, and `keystoneSPBonus` /
+  `grantAllKeystoneTargets` (from `db.go` + `keystones.go`).
+- the static data tables in `data/admin/{skill-xp-per-level,keystones,
+  factions}.json` — the 201-level cumulative-XP table + `maxCharXP`, the 205
+  keystone definitions, and the 21 faction-tier thresholds. These are
+  mechanically derived from `db.go`/`keystones.go` (each file records its
+  `_source`), not hand-transcribed.

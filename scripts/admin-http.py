@@ -26,11 +26,14 @@ from __future__ import annotations
 
 import base64
 import collections
+import csv
 import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shlex
 import subprocess
@@ -41,6 +44,11 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
+
+# Ensure sibling modules (admin_progression) import regardless of CWD —
+# whether this file is run as a script, via importlib in tests, or -m.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import admin_progression  # noqa: E402  # type: ignore[import-not-found]  (resolved at runtime via sys.path; pure XP/keystone math, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -337,7 +345,11 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
         or "publish=db-delete" in result.stdout
-        or argv[0] in ("players", "resolve", "pos", "vehicles", "items", "skills", "items-json", "vehicle-list")
+        or argv[0] in (
+            "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
+            "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
+            "player-state", "char-xp-read", "inventory-list", "tags-get",
+        )
     )
     entry = {
         "ts": int(time.time()),
@@ -349,6 +361,44 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     }
     HISTORY.append(entry)
     return entry
+
+
+# --------------------------------------------------------------------------
+# Database-tab helpers (Phase 1 port of Icehunter/dune-admin, MIT).
+#
+# is_read_only_sql is lifted verbatim from dune-admin
+# cmd/dune-admin/handlers_database.go:11-22 — strip comments, lowercase,
+# and only accept queries that start with select/explain/show/with so a
+# mutating statement never reaches Postgres. The db-sql subcommand ALSO
+# pins a read-only psql session as a second layer; this guard rejects
+# early with a clear 400. See ATTRIBUTION.md.
+# --------------------------------------------------------------------------
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
+_SQL_READONLY = re.compile(r"^(select|explain|show|with)[\s(]")
+
+
+def is_read_only_sql(sql: str) -> bool:
+    """True if sql is a read-only statement (SELECT/EXPLAIN/SHOW/WITH)."""
+    s = _SQL_BLOCK_COMMENT.sub(" ", sql)
+    s = _SQL_LINE_COMMENT.sub(" ", s)
+    s = s.strip().lower()
+    return bool(_SQL_READONLY.match(s))
+
+
+def csv_to_table(text: str, truncate: "int | None" = None) -> dict:
+    """Parse psql --csv output (header row + data rows) into the Database-tab
+    response shape {headers, rows, truncated}. Values stay strings exactly as
+    psql emits them (SQL NULL -> empty field), matching dune-admin's
+    stringified table response."""
+    parsed = list(csv.reader(io.StringIO(text)))
+    headers = parsed[0] if parsed else []
+    body = parsed[1:] if len(parsed) > 1 else []
+    truncated = False
+    if truncate is not None and len(body) > truncate:
+        body = body[:truncate]
+        truncated = True
+    return {"headers": headers, "rows": body, "truncated": truncated}
 
 
 # --------------------------------------------------------------------------
@@ -875,6 +925,29 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Per-player reads: /api/players/<id>/{state,inventory,char-xp,tags}.
+        # <id> is URL-encoded (e.g. name%3AFoo); the online list stays on the
+        # existing /api/players?filter=online. These sit after the auth gate.
+        if path.startswith("/api/players/"):
+            rest = path[len("/api/players/"):]
+            if "/" in rest:
+                pid_enc, sub = rest.rsplit("/", 1)
+                player = unquote(pid_enc)
+                if player and sub == "state":
+                    self._handle_player_state(player)
+                    return
+                if player and sub == "inventory":
+                    self._handle_player_inventory(player)
+                    return
+                if player and sub == "char-xp":
+                    self._handle_player_char_xp(player)
+                    return
+                if player and sub == "tags":
+                    self._handle_player_tags(player)
+                    return
+            self._write(404, {"error": "unknown player sub-resource"})
+            return
+
         if path == "/api/vehicles/list":
             entry = run_publish(["vehicle-list"], timeout=10)
             self._write(200 if entry["ok"] else 502, entry)
@@ -910,6 +983,20 @@ class Handler(BaseHTTPRequestHandler):
                 entry["stdout"] + entry["stderr"],
                 content_type="text/plain",
             )
+            return
+
+        # Database tab (read-only). These sit after the do_GET auth gate.
+        if path == "/api/database/tables":
+            self._handle_db_tables()
+            return
+        if path == "/api/database/describe":
+            self._handle_db_describe(query.get("table", [""])[0])
+            return
+        if path == "/api/database/sample":
+            self._handle_db_sample(query.get("table", [""])[0], query.get("limit", ["20"])[0])
+            return
+        if path == "/api/database/search":
+            self._handle_db_search(query.get("term", [""])[0])
             return
 
         if path == "/":
@@ -948,6 +1035,104 @@ class Handler(BaseHTTPRequestHandler):
             self._write(500, {"error": "io", "detail": str(exc)})
             return
         self._write(200, data, content_type=ctype)
+
+    # ------ Database tab (read-only inspection) --------------------------
+    # Ported from Icehunter/dune-admin handlers_database.go (MIT). Each
+    # handler shells out to a db-* subcommand (CSV out) via run_publish and
+    # returns {headers, rows, truncated}. The GET routes sit after the
+    # do_GET auth gate; the db-sql POST route is behind auth+csrf.
+    def _db_reply(self, entry: dict, truncate: "int | None" = None) -> None:
+        if entry["ok"]:
+            self._write(200, csv_to_table(entry["stdout"], truncate))
+            return
+        detail = (entry.get("stderr") or "").strip()[:400]
+        self._write(502, {"error": "db query failed", "detail": detail})
+
+    def _handle_db_tables(self) -> None:
+        self._db_reply(run_publish(["db-tables"], timeout=15))
+
+    def _handle_db_describe(self, table: str) -> None:
+        if not table:
+            self._write(400, {"error": "table required"})
+            return
+        self._db_reply(run_publish(["db-describe", table], timeout=15))
+
+    def _handle_db_sample(self, table: str, limit: str) -> None:
+        if not table:
+            self._write(400, {"error": "table required"})
+            return
+        self._db_reply(run_publish(["db-sample", table, limit], timeout=15))
+
+    def _handle_db_search(self, term: str) -> None:
+        if not term:
+            self._write(400, {"error": "term required"})
+            return
+        self._db_reply(run_publish(["db-search", term], timeout=15))
+
+    def _handle_db_sql(self, sql: str) -> None:
+        sql = (sql or "").strip()
+        if not sql:
+            self._write(400, {"error": "sql required"})
+            return
+        if not is_read_only_sql(sql):
+            self._write(400, {"error": "only SELECT, EXPLAIN, SHOW, and WITH statements are allowed"})
+            return
+        # dune-admin truncates the result set at 200 rows for the UI.
+        self._db_reply(run_publish(["db-sql", sql], timeout=20), truncate=200)
+
+    # ------ Players-tab reads -------------------------------------------
+    # Player-read subcommands signal via exit code: 0 = data (CSV on stdout),
+    # 3 = the targeted Funcom table isn't present on this build (a capability
+    # gap, not an error), 1/2 = no such player / offline / usage. _player_reply
+    # maps those to responses and returns the parsed table only on success.
+    def _player_reply(self, entry: dict, truncate: "int | None" = None) -> "dict | None":
+        code = entry["exit_code"]
+        if code == 0:
+            return csv_to_table(entry["stdout"], truncate)
+        detail = (entry.get("stderr") or "").strip()[:400]
+        if code == 3:
+            self._write(200, {
+                "available": False, "detail": detail,
+                "headers": [], "rows": [], "truncated": False,
+            })
+        elif code in (1, 2):
+            self._write(404, {"error": "player not found or unavailable", "detail": detail})
+        else:
+            self._write(502, {"error": "player read failed", "detail": detail})
+        return None
+
+    def _handle_player_state(self, player: str) -> None:
+        table = self._player_reply(run_publish(["player-state", player], timeout=10))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_inventory(self, player: str) -> None:
+        table = self._player_reply(run_publish(["inventory-list", player], timeout=15))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_tags(self, player: str) -> None:
+        table = self._player_reply(run_publish(["tags-get", player], timeout=10))
+        if table is not None:
+            self._write(200, table)
+
+    def _handle_player_char_xp(self, player: str) -> None:
+        table = self._player_reply(run_publish(["char-xp-read", player], timeout=15))
+        if table is None:
+            return
+        # Enrich the single raw FLevelComponent row with derived level/intel.
+        summary = None
+        if table["rows"]:
+            row = dict(zip(table["headers"], table["rows"][0]))
+            try:
+                summary = admin_progression.char_xp_summary(int(row.get("total_xp") or 0))
+                summary["totalSkillPoints"] = int(row.get("total_skill_points") or 0)
+                summary["spentSkillPoints"] = int(row.get("spent_skill_points") or 0)
+            except (ValueError, TypeError):
+                summary = None
+        self._write(200, {
+            "headers": table["headers"], "rows": table["rows"], "summary": summary,
+        })
 
     # ------ POST ---------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802
@@ -1063,6 +1248,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._csrf_ok():
             self._write(403, {"error": "csrf token missing or invalid"})
+            return
+
+        # Database tab read-only SQL (auth + csrf already enforced above).
+        if path == "/api/database/sql":
+            self._handle_db_sql(body.get("sql", "") if isinstance(body, dict) else "")
             return
 
         if not path.startswith("/admin/"):
