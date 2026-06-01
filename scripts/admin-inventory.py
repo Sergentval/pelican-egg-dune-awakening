@@ -39,6 +39,16 @@ def cmd_award_char_xp(args: argparse.Namespace) -> None:
     })
 
 
+def cmd_grant_keystones(args: argparse.Namespace) -> None:
+    total, unspent, bonus = ap.grant_all_keystone_targets(args.current_xp, args.spent_sp)
+    _emit({
+        "expected_total_sp": total,
+        "expected_unspent_sp": unspent,
+        "keystone_bonus": bonus,
+        "keystone_count": len(ap.all_keystone_ids()),
+    })
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="player-write compute helpers (no DB)")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -49,6 +59,11 @@ def main() -> None:
     ax.add_argument("--keystones", default="", help="CSV of purchased keystone ids")
     ax.add_argument("--amount", type=int, required=True)
     ax.set_defaults(fn=cmd_award_char_xp)
+
+    gk = sub.add_parser("grant-keystones", help="compute FLevel SP after granting all keystones")
+    gk.add_argument("--current-xp", type=int, required=True)
+    gk.add_argument("--spent-sp", type=int, required=True)
+    gk.set_defaults(fn=cmd_grant_keystones)
 
     args = parser.parse_args()
     args.fn(args)

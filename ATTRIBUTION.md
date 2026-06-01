@@ -146,3 +146,10 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   fgl entity) + TechKnowledgePlayerComponent intel (pawn actor). Ported as the
   `award-char-xp` subcommand; the pure math is `admin_progression.award_char_xp
   _outcome` and the argv-only compute lives in `scripts/admin-inventory.py`.
+- the grant-all-keystones flow (`cmdGrantAllKeystones`,
+  `insertAllPurchasedKeystones`, `grantAllKeystoneTargets`,
+  `updateLevelComponentSkillPoints`): insert `generate_series(1,205)` into
+  `purchased_specialization_keystones` (controller) and re-derive FLevel
+  TotalSkillPoints/UnspentSkillPoints (level + 54 bonus) on the pawn. Ported as
+  the `grant-keystones` subcommand; math is `admin_progression.grant_all_keystone
+  _targets` via `admin-inventory.py`.

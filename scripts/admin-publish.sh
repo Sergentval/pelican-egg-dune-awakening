@@ -73,6 +73,7 @@
 #   rename <player_id> <new-name>                -- set character name (offline only)
 #   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
 #   award-char-xp <player_id> <amount>           -- award/deduct char XP; recompute level/SP/intel (offline only)
+#   grant-keystones <player_id>                  -- grant all 205 keystones + recompute SP (offline only)
 #
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
@@ -1044,6 +1045,82 @@ SQL
 )
         echo "[admin-publish] OK award-char-xp fls=$fls_id pawn=$pawn level=$new_level xp=$applied_xp total_sp=$new_tsp unspent_sp=$new_usp intel=$new_intel"
         echo "publish=db-write award-char-xp pawn=$pawn xp=$applied_xp level=$new_level"
+        exit 0
+        ;;
+    grant-keystones)
+        # Grant all 205 specialization keystones (insert into purchased_
+        # specialization_keystones on the CONTROLLER, ON CONFLICT DO NOTHING)
+        # and re-derive FLevel skill points (level + 54 keystone bonus) on the
+        # PAWN's fgl entity. Ported from dune-admin cmdGrantAllKeystones
+        # (insertAllPurchasedKeystones + grantAllKeystoneTargets +
+        # updateLevelComponentSkillPoints). XP/intel are unchanged.
+        raw="${1:?usage: grant-keystones <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR grant-keystones: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.purchased_specialization_keystones dune.fgl_entities dune.actor_fgl_entities dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no player-character actor for $fls_id" >&2
+            exit 1
+        fi
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        # Current FLevel XP + non-starter spent SP (via pawn) — same read as award-char-xp.
+        state=$(dune_psql_q --set=pawn="$pawn" -tAF $'\t' 2>/dev/null <<'SQL'
+SELECT
+  COALESCE((fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint, 0),
+  COALESCE((SELECT SUM((v->>'SkillPointsSpent')::int)
+            FROM jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData') AS kv(k, v)
+            WHERE k != format('(TagName="%s")',
+                fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName')), 0)
+FROM dune.fgl_entities fe
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter'
+SQL
+)
+        cur_xp=$(printf '%s' "$state" | cut -f1)
+        spent_sp=$(printf '%s' "$state" | cut -f2)
+        if [ -z "$cur_xp" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no FLevelComponent for $fls_id" >&2
+            exit 1
+        fi
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" grant-keystones \
+              --current-xp "$cur_xp" --spent-sp "$spent_sp") || {
+            echo "[admin-publish] ERROR grant-keystones: compute failed" >&2; exit 1; }
+        exp_total=""; exp_unspent=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                expected_total_sp) exp_total=$v ;;
+                expected_unspent_sp) exp_unspent=$v ;;
+            esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$exp_total" ] || [ -z "$exp_unspent" ]; then
+            echo "[admin-publish] ERROR grant-keystones: malformed compute output" >&2
+            exit 1
+        fi
+        # Insert all 205 keystones (controller) + set FLevel SP (pawn), read count back.
+        count=$(dune_psql_q --set=ctrl="$ctrl" --set=pawn="$pawn" --set=tsp="$exp_total" --set=usp="$exp_unspent" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+INSERT INTO dune.purchased_specialization_keystones (player_id, keystone_id)
+SELECT :'ctrl'::bigint, generate_series(1, 205) ON CONFLICT DO NOTHING;
+UPDATE dune.fgl_entities SET components = jsonb_set(jsonb_set(components,
+    '{FLevelComponent,1,TotalSkillPoints}',   to_jsonb(:'tsp'::bigint)),
+    '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb(:'usp'::bigint))
+WHERE entity_id = (SELECT entity_id FROM dune.actor_fgl_entities
+                   WHERE actor_id = :'pawn'::bigint AND slot_name = 'DuneCharacter');
+SELECT count(*) FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint;
+SQL
+)
+        echo "[admin-publish] OK grant-keystones fls=$fls_id controller=$ctrl pawn=$pawn keystones=$count total_sp=$exp_total unspent_sp=$exp_unspent"
+        echo "publish=db-write grant-keystones controller=$ctrl keystones=$count"
         exit 0
         ;;
 esac

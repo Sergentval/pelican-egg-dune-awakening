@@ -1263,6 +1263,23 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Player WRITE: grant all 205 keystones + recompute SP. Offline-gated.
+        # POST /api/players/<id>/grant-keystones  (no body)
+        if path.startswith("/api/players/") and path.endswith("/grant-keystones"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/grant-keystones")])
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["grant-keystones", player], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # /api/login is the only POST that bypasses Bearer auth.
         if path == "/api/login":
             if not UI_ENABLED:
