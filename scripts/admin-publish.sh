@@ -1499,7 +1499,7 @@ SQL
 $before
 EOF2
         rc=0
-        dune_psql_q --set=ctrl="$ctrl" -tA >/dev/null <<'SQL' || rc=$?
+        dune_psql_q --set=ctrl="$ctrl" -v ON_ERROR_STOP=1 -tA >/dev/null <<'SQL' || rc=$?
 SELECT dune.reset_specialization_tracks(:'ctrl'::bigint);
 SELECT dune.reset_specialization_keystones(:'ctrl'::bigint);
 SQL
@@ -1515,6 +1515,12 @@ SQL
         IFS='|' read -r tracks_after ks_after <<EOF2
 $after
 EOF2
+        # Confirm the reset actually cleared both tables — a proc that silently
+        # no-ops (or a future schema change) must not be reported as "OK".
+        if [ "${tracks_after:-x}" != "0" ] || [ "${ks_after:-x}" != "0" ]; then
+            echo "[admin-publish] ERROR reset-spec: reset left rows behind (tracks=$tracks_after keystones=$ks_after) — proc may have silently failed" >&2
+            exit 1
+        fi
         echo "[admin-publish] OK reset-spec fls=$fls_id controller=$ctrl tracks=${tracks_before}->${tracks_after} keystones=${ks_before}->${ks_after}"
         echo "publish=db-write reset-spec controller=$ctrl tracks_cleared=$tracks_before keystones_cleared=$ks_before"
         exit 0
@@ -1551,7 +1557,10 @@ EOF2
         # resolves the 3 player actors via dune.player_state. Confirmed live that
         # accounts."user" == encrypted_accounts."user" on this build.
         rc=0
-        result=$(dune_psql_q --set=fls="$fls_id" --set=reason="$reason" -tA <<'SQL' | tail -n1 | tr -d '\r\n'
+        # Capture psql's own exit (ON_ERROR_STOP surfaces a proc error as rc 3).
+        # Do NOT pipe the heredoc — a pipe masks psql's exit behind tail's, so a
+        # failed irreversible delete could slip past the rc check below.
+        raw_out=$(dune_psql_q --set=fls="$fls_id" --set=reason="$reason" -v ON_ERROR_STOP=1 -tA <<'SQL'
 SELECT dune.delete_account(:'fls'::text, :'reason'::text)
 SQL
 ) || rc=$?
@@ -1559,6 +1568,7 @@ SQL
             echo "[admin-publish] ERROR account-delete: delete_account proc failed (rc=$rc)" >&2
             exit 1
         fi
+        result=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
         if [ "$result" != "t" ]; then
             echo "[admin-publish] WARN account-delete: proc returned '$result' (no matching player_state actors — nothing cascaded)" >&2
         fi
