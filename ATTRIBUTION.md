@@ -134,3 +134,8 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   delta)` + balance read-back, ported as the `give-currency` subcommand. We
   resolve the player-CONTROLLER actor (verified live as the currency key) via
   our `encrypted_accounts`/`actors` join and gate it on `assert_player_offline`.
+- `cmdRenameCharacter` (`dune.set_character_name(account_id, name)`) → the
+  `rename` subcommand, and `cmdUpdatePlayerTags`
+  (`dune.update_player_tags(account_id, add[], remove[])`) → the `tags-update`
+  subcommand. Both account-keyed, gated on `assert_player_offline`, with
+  read-back. Live-verified reversibly (rename round-trip; tag add/remove).

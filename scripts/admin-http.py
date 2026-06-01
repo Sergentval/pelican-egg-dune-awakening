@@ -1194,6 +1194,54 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Player WRITE: rename character. Offline-gated + reversible.
+        # POST /api/players/<id>/rename  body {"name": "<new>"}
+        if path.startswith("/api/players/") and path.endswith("/rename"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/rename")])
+            name = body.get("name") if isinstance(body, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                self._write(400, {"error": "name (non-empty string) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["rename", player, name], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: add/remove progression tags. Offline-gated + reversible.
+        # POST /api/players/<id>/tags  body {"add": [...], "remove": [...]}
+        if path.startswith("/api/players/") and path.endswith("/tags"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/tags")])
+            add = body.get("add", []) if isinstance(body, dict) else []
+            remove = body.get("remove", []) if isinstance(body, dict) else []
+            if not isinstance(add, list) or not isinstance(remove, list) \
+                    or not all(isinstance(t, str) for t in (*add, *remove)):
+                self._write(400, {"error": "add/remove must be arrays of strings"})
+                return
+            if not add and not remove:
+                self._write(400, {"error": "nothing to add or remove"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            # CLI takes comma-separated lists; tags contain no commas.
+            entry = run_publish(["tags-update", player, ",".join(add), ",".join(remove)], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # /api/login is the only POST that bypasses Bearer auth.
         if path == "/api/login":
             if not UI_ENABLED:

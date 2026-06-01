@@ -70,6 +70,8 @@
 # Funcom stored procs, gated on assert_player_offline). Ported from
 # Icehunter/dune-admin cmd/dune-admin/db.go (MIT). See ATTRIBUTION.md.
 #   give-currency <player_id> <amount>           -- adjust Solaris balance (signed; offline only)
+#   rename <player_id> <new-name>                -- set character name (offline only)
+#   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
 #
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
@@ -856,6 +858,93 @@ SQL
         fi
         echo "[admin-publish] OK give-currency fls=$fls_id controller=$ctrl delta=$amount solaris_balance=$new_balance"
         echo "publish=db-write currency=solaris controller=$ctrl delta=$amount balance=$new_balance"
+        exit 0
+        ;;
+    rename)
+        # Rename a character via dune.set_character_name(account_id, name) +
+        # read the stored name back. Account-keyed. Ported from dune-admin
+        # cmdRenameCharacter.
+        raw="${1:?usage: rename <fls_id|me|steam:<id>|name:<n>> <new-name>}"
+        new_name="${2:?usage: rename <player> <new-name>}"
+        if [ -z "${new_name//[[:space:]]/}" ]; then
+            echo "[admin-publish] ERROR rename: name is empty" >&2
+            exit 2
+        fi
+        if [ "${#new_name}" -gt 64 ]; then
+            echo "[admin-publish] ERROR rename: name too long (${#new_name} chars, max 64)" >&2
+            exit 2
+        fi
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR rename: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR rename: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        # Proc then read-back the stored name (encrypted_character_name is plain
+        # UTF-8 when User-data encryption is 'As-is'). Last line = the name.
+        stored=$(dune_psql_q --set=aid="$aid" --set=nm="$new_name" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.set_character_name(:'aid'::bigint, :'nm');
+SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
+FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
+SQL
+)
+        echo "[admin-publish] OK rename fls=$fls_id account=$aid stored_name=$stored"
+        echo "publish=db-write rename account=$aid name=$stored"
+        exit 0
+        ;;
+    tags-update)
+        # Add and/or remove player progression tags via
+        # dune.update_player_tags(account_id, add[], remove[]). Add/remove are
+        # comma-separated tag lists ("" for none). Account-keyed. Ported from
+        # dune-admin cmdUpdatePlayerTags.
+        raw="${1:?usage: tags-update <player> <add-csv> <remove-csv>}"
+        add_csv="${2-}"
+        rem_csv="${3-}"
+        if [ -z "$add_csv" ] && [ -z "$rem_csv" ]; then
+            echo "[admin-publish] ERROR tags-update: nothing to add or remove" >&2
+            exit 2
+        fi
+        # Tags are dotted identifiers; validate to a safe charset (also the CSV
+        # separator). The :'var' binding is injection-safe; this is defence in depth.
+        for v in "$add_csv" "$rem_csv"; do
+            case "$v" in
+                '') : ;;
+                *[!A-Za-z0-9._,]*)
+                    echo "[admin-publish] ERROR tags-update: tags must match [A-Za-z0-9._] (comma-separated), got '$v'" >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR tags-update: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_tags || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR tags-update: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        # COALESCE(string_to_array(NULLIF(:'x',''),','),'{}') -> {} for empty,
+        # else the split array. Read the new tag count back (last line).
+        count=$(dune_psql_q --set=aid="$aid" --set=add="$add_csv" --set=rem="$rem_csv" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.update_player_tags(
+    :'aid'::bigint,
+    COALESCE(string_to_array(NULLIF(:'add',''), ','), '{}')::text[],
+    COALESCE(string_to_array(NULLIF(:'rem',''), ','), '{}')::text[]
+);
+SELECT count(*) FROM dune.player_tags WHERE account_id = :'aid'::bigint;
+SQL
+)
+        echo "[admin-publish] OK tags-update fls=$fls_id account=$aid add='$add_csv' remove='$rem_csv' tag_count=$count"
+        echo "publish=db-write tags-update account=$aid tag_count=$count"
         exit 0
         ;;
 esac
