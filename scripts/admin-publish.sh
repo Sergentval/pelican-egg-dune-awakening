@@ -673,6 +673,25 @@ SQL
         exit 0
         ;;
 
+    server-status)
+        # Phase 4: per-map live player count for the server status grid. Counts
+        # online players' BP_DunePlayerCharacter actors grouped by their current
+        # map. Read-only (session pinned READ ONLY); emits CSV `map,players`
+        # (header included). admin-http.py GET /api/status merges this with
+        # mock-k8s /status (instance/scale status) via admin_status.merge_status.
+        # No user input -> the static query is safe to pass via -c.
+        dune_psql -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
+            -c "SELECT ac.map AS map, COUNT(*) AS players
+                FROM dune.actors ac
+                JOIN dune.encrypted_player_state ps ON ps.account_id = ac.owner_account_id
+                WHERE ac.class LIKE '%BP_DunePlayerCharacter%'
+                  AND ps.online_status = 'Online'
+                GROUP BY ac.map
+                ORDER BY ac.map"
+        exit 0
+        ;;
+
     # ----------------------------------------------------------------------
     # Player/character read subcommands. See the header block for provenance.
     # ----------------------------------------------------------------------

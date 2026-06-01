@@ -36,6 +36,7 @@ import os
 import re
 import secrets
 import shlex
+import ssl
 import subprocess
 import sys
 import time
@@ -49,6 +50,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 # whether this file is run as a script, via importlib in tests, or -m.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import admin_progression  # noqa: E402  # type: ignore[import-not-found]  (resolved at runtime via sys.path; pure XP/keystone math, no DB/network)
+from admin_status import merge_status, parse_player_counts  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure status-grid merge, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -59,6 +61,11 @@ LISTEN_PORT = int(os.environ.get("DUNE_ADMIN_HTTP_PORT", "8089"))
 SHARED_AUTH = os.environ.get("DUNE_ADMIN_HTTP_AUTH", "")
 BASE_DIR = os.environ.get("DUNE_BASE_DIR", "/home/container")
 SCRIPTS_DIR = BASE_DIR + "/scripts"
+# mock-k8s serves its /status (per-map instance/scale) over HTTPS on this port.
+MOCK_K8S_PORT = int(os.environ.get("K8S_MOCK_PORT", "6443"))
+# mock-k8s writes its self-signed cert here (in-cluster SA mount); we pin the
+# /status fetch to it rather than disabling TLS verification.
+SA_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 STATE_DIR = BASE_DIR + "/state"
 PUBLISH_SH = SCRIPTS_DIR + "/admin-publish.sh"
 REVOCATION_FILE = STATE_DIR + "/admin-ui-revoked-jtis.json"
@@ -350,6 +357,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
+            "server-status",
         )
     )
     entry = {
@@ -362,6 +370,35 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     }
     HISTORY.append(entry)
     return entry
+
+
+def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
+    """GET mock-k8s's /status (HTTPS with a self-signed cert -> verification
+    disabled) and return the parsed snapshot, or None if it is unreachable or
+    unparseable. /status needs no auth. Used by GET /api/status to read per-map
+    instance/scale state; a None result is surfaced to the caller (not silently
+    swallowed) via the route's `sources` flags."""
+    # Pin to mock-k8s's own self-signed cert (written to the in-cluster SA
+    # ca.crt). The cert carries 127.0.0.1 + localhost SANs, so default hostname
+    # verification holds and the connection is cryptographically bound to
+    # mock-k8s. Only if that ca.crt is absent (mock-k8s not up yet) do we fall
+    # back to an unverified loopback fetch.
+    ca = os.path.join(SA_MOUNT_PATH, "ca.crt")
+    ctx = ssl.create_default_context()
+    if os.path.exists(ca):
+        try:
+            ctx.load_verify_locations(ca)
+        except (ssl.SSLError, OSError):
+            return None
+    else:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    url = f"https://127.0.0.1:{port}/status"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:  # noqa: S310 (localhost, CA-pinned)
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -856,6 +893,22 @@ class Handler(BaseHTTPRequestHandler):
         # Anything else requires auth.
         if not self._auth_ok():
             self._write(401, {"error": "auth required"})
+            return
+
+        # Phase 4: live server status grid — mock-k8s per-map instance/scale
+        # status merged with per-map online player counts (from Postgres via
+        # admin-publish server-status; admin-http holds no PG connection). A
+        # missing source degrades gracefully and is flagged in `sources`.
+        if path == "/api/status":
+            mock = fetch_mock_status(MOCK_K8S_PORT)
+            entry = run_publish(["server-status"], timeout=10)
+            counts = parse_player_counts(entry["stdout"]) if entry["ok"] else {}
+            grid = merge_status(mock or {}, counts)
+            grid["ok"] = True
+            grid["sources"] = {"mockK8s": mock is not None, "playerCounts": entry["ok"]}
+            if mock is None:
+                grid["warning"] = "mock-k8s /status unreachable; showing player counts only"
+            self._write(200, grid)
             return
 
         if path == "/api/me":
