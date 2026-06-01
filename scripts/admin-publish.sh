@@ -81,6 +81,17 @@
 #                                                -- adjust Great-House reputation (offline only); rebuilds the
 #                                                   FactionPlayerComponent.m_FactionDataArray jsonb on the controller
 #
+# Player/character DESTRUCTIVE write subcommands (offline-gated; hardened beyond
+# dune-admin, which applies no server-side guard). Ported from Icehunter/
+# dune-admin (MIT). See ATTRIBUTION.md.
+#   item-delete <item_id>                        -- hard-delete one item stack by dune.items.id
+#                                                   (offline-gated on the owner + existence-checked; no DB backup)
+#   reset-spec <player_id>                       -- DESTRUCTIVE: wipe ALL spec tracks + purchased keystones
+#                                                   (controller-keyed, offline only; does not recompute FLevel SP)
+#   account-delete <player_id> <confirm-fls> [reason]
+#                                                -- IRREVERSIBLE: delete the whole account/character + cascade.
+#                                                   <confirm-fls> MUST equal the resolved 16-hex FLS id; offline only.
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -1399,6 +1410,170 @@ SQL
         fi
         echo "[admin-publish] OK faction-rep fls=$fls_id controller=$ctrl faction=$fname rep=$applied tier=$tier ($tier_name)"
         echo "publish=db-write faction-rep controller=$ctrl faction=$fname rep=$applied tier=$tier"
+        exit 0
+        ;;
+    item-delete)
+        # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
+        # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:
+        # we resolve the OWNING character and require it offline (the running
+        # server caches inventory in memory and would overwrite / ghost a live
+        # edit), and we verify the item exists first (dune-admin silently
+        # "succeeds" on a missing id). Hard delete — no DB backup; capture the
+        # row first (inventory-list shows item_id) if you might want it back.
+        item_id="${1:?usage: item-delete <item_id>}"
+        case "$item_id" in
+            ''|*[!0-9]*) echo "[admin-publish] ERROR item-delete: item_id must be a positive integer, got '$item_id'" >&2; exit 2 ;;
+        esac
+        [ "$item_id" -ge 1 ] || { echo "[admin-publish] ERROR item-delete: item_id must be >= 1" >&2; exit 2; }
+        dune_require_tables dune.items dune.inventories dune.actors || exit 3
+        # Resolve item -> template/stack + owning FLS (via inventory.actor_id ->
+        # actor.owner_account_id). Empty result => item (or its inventory) absent.
+        row=$(dune_psql_q --set=iid="$item_id" -tAF'|' <<'SQL'
+SELECT i.template_id, i.stack_size, COALESCE(ea."user", '')
+FROM dune.items i
+JOIN dune.inventories inv ON inv.id = i.inventory_id
+JOIN dune.actors ac ON ac.id = inv.actor_id
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = ac.owner_account_id
+WHERE i.id = :'iid'::bigint
+SQL
+)
+        if [ -z "$row" ]; then
+            echo "[admin-publish] ERROR item-delete: no item with id $item_id (or it has no valid inventory)" >&2
+            exit 1
+        fi
+        IFS='|' read -r it_template it_stack it_fls <<EOF2
+$row
+EOF2
+        # Offline-gate the owning character when one is resolvable (skip for
+        # container/vehicle inventories with no player owner).
+        if [ -n "$it_fls" ]; then
+            assert_player_offline "$it_fls" || exit $?
+        fi
+        rc=0
+        dune_psql_q --set=iid="$item_id" -tA >/dev/null <<'SQL' || rc=$?
+SELECT dune.delete_item(:'iid'::bigint)
+SQL
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR item-delete: delete_item proc failed (rc=$rc)" >&2
+            exit 1
+        fi
+        still=$(dune_psql_q --set=iid="$item_id" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.items WHERE id = :'iid'::bigint
+SQL
+)
+        if [ "$still" != "0" ]; then
+            echo "[admin-publish] ERROR item-delete: item $item_id still present after delete (count=$still)" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK item-delete id=$item_id template=$it_template stack=$it_stack owner=${it_fls:-none}"
+        echo "publish=db-write item-delete id=$item_id template=$it_template"
+        exit 0
+        ;;
+    reset-spec)
+        # Reset ALL specialization tracks + purchased keystones for a player via
+        # dune.reset_specialization_tracks + dune.reset_specialization_keystones
+        # (both keyed on the player-CONTROLLER actor). Ported from dune-admin
+        # cmdResetSpecializations all-mode (MIT). Hardened: offline-gated
+        # (dune-admin is not). Mirrors dune-admin in NOT recomputing the pawn
+        # FLevel skill points — the game reconciles level/SP on next login.
+        # DESTRUCTIVE: wipes spec XP + every keystone purchase.
+        raw="${1:?usage: reset-spec <player>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR reset-spec: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.specialization_tracks dune.purchased_specialization_keystones dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR reset-spec: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        before=$(dune_psql_q --set=ctrl="$ctrl" -tAF'|' <<'SQL'
+SELECT (SELECT count(*) FROM dune.specialization_tracks WHERE player_id = :'ctrl'::bigint),
+       (SELECT count(*) FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint)
+SQL
+)
+        IFS='|' read -r tracks_before ks_before <<EOF2
+$before
+EOF2
+        rc=0
+        dune_psql_q --set=ctrl="$ctrl" -v ON_ERROR_STOP=1 -tA >/dev/null <<'SQL' || rc=$?
+SELECT dune.reset_specialization_tracks(:'ctrl'::bigint);
+SELECT dune.reset_specialization_keystones(:'ctrl'::bigint);
+SQL
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR reset-spec: reset proc(s) failed (rc=$rc)" >&2
+            exit 1
+        fi
+        after=$(dune_psql_q --set=ctrl="$ctrl" -tAF'|' <<'SQL'
+SELECT (SELECT count(*) FROM dune.specialization_tracks WHERE player_id = :'ctrl'::bigint),
+       (SELECT count(*) FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint)
+SQL
+)
+        IFS='|' read -r tracks_after ks_after <<EOF2
+$after
+EOF2
+        # Confirm the reset actually cleared both tables — a proc that silently
+        # no-ops (or a future schema change) must not be reported as "OK".
+        if [ "${tracks_after:-x}" != "0" ] || [ "${ks_after:-x}" != "0" ]; then
+            echo "[admin-publish] ERROR reset-spec: reset left rows behind (tracks=$tracks_after keystones=$ks_after) — proc may have silently failed" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK reset-spec fls=$fls_id controller=$ctrl tracks=${tracks_before}->${tracks_after} keystones=${ks_before}->${ks_after}"
+        echo "publish=db-write reset-spec controller=$ctrl tracks_cleared=$tracks_before keystones_cleared=$ks_before"
+        exit 0
+        ;;
+    account-delete)
+        # DELETE AN ENTIRE ACCOUNT/CHARACTER via dune.delete_account(fls, reason).
+        # Ported from dune-admin cmdDeleteAccount (MIT). IRREVERSIBLE: cascades to
+        # every per-character table (items, currency, faction, spec, journey,
+        # buildings, vehicles, land claims, ...) and mutates shared guild/party/
+        # ownership state. dune-admin applies NO server-side guard; we REQUIRE
+        #   (1) a <confirm-fls> arg that exactly equals the resolved 16-hex FLS id, and
+        #   (2) the character to be offline.
+        # There is NO DB backup — export the character first if you might want it back.
+        raw="${1:?usage: account-delete <player> <confirm-fls> [reason]}"
+        confirm="${2:?usage: account-delete <player> <confirm-fls> [reason] — pass the exact 16-hex FLS id to confirm}"
+        reason="${3:-admin delete via admin-publish.sh}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR account-delete: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        # Confirmation: the caller must pass the exact resolved FLS id (case-
+        # insensitive). Blocks accidental / fat-fingered invocation of an
+        # irreversible wipe.
+        confirm_uc=$(printf '%s' "$confirm" | tr '[:lower:]' '[:upper:]')
+        if [ "$confirm_uc" != "$fls_id" ]; then
+            echo "[admin-publish] ERROR account-delete: confirmation '$confirm' does not match the resolved FLS id ($fls_id) for '$raw' — refusing." >&2
+            echo "                Pass the exact 16-hex FLS id as the 2nd argument to confirm the deletion." >&2
+            exit 2
+        fi
+        dune_require_tables dune.accounts dune.player_state || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        # dune.delete_account keys on dune.accounts."user" (the hex FLS id) and
+        # resolves the 3 player actors via dune.player_state. Confirmed live that
+        # accounts."user" == encrypted_accounts."user" on this build.
+        rc=0
+        # Capture psql's own exit (ON_ERROR_STOP surfaces a proc error as rc 3).
+        # Do NOT pipe the heredoc — a pipe masks psql's exit behind tail's, so a
+        # failed irreversible delete could slip past the rc check below.
+        raw_out=$(dune_psql_q --set=fls="$fls_id" --set=reason="$reason" -v ON_ERROR_STOP=1 -tA <<'SQL'
+SELECT dune.delete_account(:'fls'::text, :'reason'::text)
+SQL
+) || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR account-delete: delete_account proc failed (rc=$rc)" >&2
+            exit 1
+        fi
+        result=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
+        if [ "$result" != "t" ]; then
+            echo "[admin-publish] WARN account-delete: proc returned '$result' (no matching player_state actors — nothing cascaded)" >&2
+        fi
+        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason"
+        echo "publish=db-write account-delete fls=$fls_id found=$result"
         exit 0
         ;;
 esac

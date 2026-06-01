@@ -1344,6 +1344,68 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated
+        # on the owner + existence-checked in the bash layer.
+        # POST /api/items/<item_id>/delete
+        if path.startswith("/api/items/") and path.endswith("/delete"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            item_id = unquote(path[len("/api/items/"):-len("/delete")])
+            if not item_id.isdigit() or int(item_id) < 1:
+                self._write(400, {"error": "item_id (positive integer) required"})
+                return
+            entry = run_publish(["item-delete", item_id], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # DESTRUCTIVE: wipe all specialization tracks + purchased keystones.
+        # Offline-gated; controller-keyed. POST /api/players/<id>/reset-spec
+        if path.startswith("/api/players/") and path.endswith("/reset-spec"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/reset-spec")])
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["reset-spec", player], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # IRREVERSIBLE: delete the whole account/character + cascade. Requires a
+        # `confirm` field that the bash layer checks equals the resolved FLS id,
+        # and the character to be offline. POST /api/players/<id>/account-delete
+        #   body {"confirm": "<exact 16-hex FLS id>", "reason"?: "<text>"}
+        if path.startswith("/api/players/") and path.endswith("/account-delete"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/account-delete")])
+            confirm = body.get("confirm") if isinstance(body, dict) else None
+            reason = body.get("reason", "admin delete via admin-http") if isinstance(body, dict) else "admin delete via admin-http"
+            if not isinstance(confirm, str) or not confirm.strip():
+                self._write(400, {"error": "confirm (the exact 16-hex FLS id) required"})
+                return
+            if not isinstance(reason, str) or not reason.strip():
+                self._write(400, {"error": "reason must be a non-empty string"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["account-delete", player, confirm, reason], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # /api/login is the only POST that bypasses Bearer auth.
         if path == "/api/login":
             if not UI_ENABLED:
