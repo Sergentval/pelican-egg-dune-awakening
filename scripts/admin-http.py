@@ -345,6 +345,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
         or "publish=db-delete" in result.stdout
+        or "publish=db-write" in result.stdout
         or argv[0] in (
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
@@ -1168,6 +1169,178 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "actor_id (positive int) required"})
                 return
             entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: adjust Solaris balance. Offline-gated + reversible.
+        # POST /api/players/<id>/give-currency  body {"amount": <int>}
+        if path.startswith("/api/players/") and path.endswith("/give-currency"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/give-currency")])
+            amount = body.get("amount") if isinstance(body, dict) else None
+            # bool is an int subclass — reject it explicitly.
+            if not isinstance(amount, int) or isinstance(amount, bool):
+                self._write(400, {"error": "amount (integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["give-currency", player, str(amount)], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: rename character. Offline-gated + reversible.
+        # POST /api/players/<id>/rename  body {"name": "<new>"}
+        if path.startswith("/api/players/") and path.endswith("/rename"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/rename")])
+            name = body.get("name") if isinstance(body, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                self._write(400, {"error": "name (non-empty string) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["rename", player, name], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: add/remove progression tags. Offline-gated + reversible.
+        # POST /api/players/<id>/tags  body {"add": [...], "remove": [...]}
+        if path.startswith("/api/players/") and path.endswith("/tags"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/tags")])
+            add = body.get("add", []) if isinstance(body, dict) else []
+            remove = body.get("remove", []) if isinstance(body, dict) else []
+            if not isinstance(add, list) or not isinstance(remove, list) \
+                    or not all(isinstance(t, str) for t in (*add, *remove)):
+                self._write(400, {"error": "add/remove must be arrays of strings"})
+                return
+            if not add and not remove:
+                self._write(400, {"error": "nothing to add or remove"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            # CLI takes comma-separated lists; tags contain no commas.
+            entry = run_publish(["tags-update", player, ",".join(add), ",".join(remove)], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: award/deduct character XP (recomputes level/SP/intel).
+        # Offline-gated. POST /api/players/<id>/award-char-xp  body {"amount": <int>}
+        if path.startswith("/api/players/") and path.endswith("/award-char-xp"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/award-char-xp")])
+            amount = body.get("amount") if isinstance(body, dict) else None
+            if not isinstance(amount, int) or isinstance(amount, bool):
+                self._write(400, {"error": "amount (integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["award-char-xp", player, str(amount)], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: grant all 205 keystones + recompute SP. Offline-gated.
+        # POST /api/players/<id>/grant-keystones  (no body)
+        if path.startswith("/api/players/") and path.endswith("/grant-keystones"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/grant-keystones")])
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["grant-keystones", player], timeout=20)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: grant items. Online+quality0 -> RMQ AddItemToInventory;
+        # offline -> direct dune.items INSERT (stack/slot/volume planned). The
+        # bash layer enforces the offline gate for the DB path.
+        # POST /api/players/<id>/give-item  body {"template": str, "qty"?: int, "quality"?: int}
+        if path.startswith("/api/players/") and path.endswith("/give-item"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/give-item")])
+            template = body.get("template") if isinstance(body, dict) else None
+            qty = body.get("qty", 1) if isinstance(body, dict) else 1
+            quality = body.get("quality", 0) if isinstance(body, dict) else 0
+            if not isinstance(template, str) or not template.strip():
+                self._write(400, {"error": "template (non-empty string) required"})
+                return
+            # bool is an int subclass — reject it explicitly for both numbers.
+            if not isinstance(qty, int) or isinstance(qty, bool) or qty < 1:
+                self._write(400, {"error": "qty (positive integer) required"})
+                return
+            if not isinstance(quality, int) or isinstance(quality, bool) or quality < 0:
+                self._write(400, {"error": "quality (non-negative integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(
+                ["give-item", player, template, str(qty), str(quality)], timeout=20
+            )
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: adjust Great-House reputation by a signed delta.
+        # Offline-gated; rebuilds the controller's m_FactionDataArray jsonb.
+        # POST /api/players/<id>/faction-rep  body {"faction": "atreides"|"harkonnen"|1|2, "amount": <int>}
+        if path.startswith("/api/players/") and path.endswith("/faction-rep"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/faction-rep")])
+            faction = body.get("faction") if isinstance(body, dict) else None
+            amount = body.get("amount") if isinstance(body, dict) else None
+            # faction may be a name string or an int id; bash maps + validates it.
+            if isinstance(faction, bool) or not isinstance(faction, (str, int)) or \
+                    (isinstance(faction, str) and not faction.strip()):
+                self._write(400, {"error": "faction (atreides|harkonnen|1|2) required"})
+                return
+            if not isinstance(amount, int) or isinstance(amount, bool):
+                self._write(400, {"error": "amount (integer) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(
+                ["faction-rep", player, str(faction), str(amount)], timeout=20
+            )
             self._write(200 if entry["ok"] else 502, entry)
             return
 

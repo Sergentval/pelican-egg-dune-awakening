@@ -127,3 +127,64 @@ Phase 2 (Players/Character reads + PlayerGuard) lifts, with thanks:
   keystone definitions, and the 21 faction-tier thresholds. These are
   mechanically derived from `db.go`/`keystones.go` (each file records its
   `_source`), not hand-transcribed.
+
+Phase 3 (Players/Character writes) lifts, with thanks:
+- the give-currency flow (`cmdGiveCurrency`): the audited proc call
+  `dune.adjust_player_virtual_currency_balance(controller_id, get_solaris_id(),
+  delta)` + balance read-back, ported as the `give-currency` subcommand. We
+  resolve the player-CONTROLLER actor (verified live as the currency key) via
+  our `encrypted_accounts`/`actors` join and gate it on `assert_player_offline`.
+- `cmdRenameCharacter` (`dune.set_character_name(account_id, name)`) → the
+  `rename` subcommand, and `cmdUpdatePlayerTags`
+  (`dune.update_player_tags(account_id, add[], remove[])`) → the `tags-update`
+  subcommand. Both account-keyed, gated on `assert_player_offline`, with
+  read-back. Live-verified reversibly (rename round-trip; tag add/remove).
+- the award-char-xp flow (`cmdAwardCharXP`, `computeAwardCharXPOutcome`,
+  `applyAwardCharXPFLevelUpdate`/`applyAwardCharXPIntelUpdate`): cap at
+  `maxCharXP=344440`, re-derive level/skill-points (from the controller's
+  purchased-keystone bonus) and intel, then `jsonb_set` FLevelComponent (pawn
+  fgl entity) + TechKnowledgePlayerComponent intel (pawn actor). Ported as the
+  `award-char-xp` subcommand; the pure math is `admin_progression.award_char_xp
+  _outcome` and the argv-only compute lives in `scripts/admin-inventory.py`.
+- the grant-all-keystones flow (`cmdGrantAllKeystones`,
+  `insertAllPurchasedKeystones`, `grantAllKeystoneTargets`,
+  `updateLevelComponentSkillPoints`): insert `generate_series(1,205)` into
+  `purchased_specialization_keystones` (controller) and re-derive FLevel
+  TotalSkillPoints/UnspentSkillPoints (level + 54 bonus) on the pawn. Ported as
+  the `grant-keystones` subcommand; math is `admin_progression.grant_all_keystone
+  _targets` via `admin-inventory.py`.
+- the give-item flow (`runGiveItem`, `planGiveItemStacks`/`fillExistingStacks`,
+  `ensureGiveItemSlotCapacity`/`ensureGiveItemVolumeCapacity`,
+  `maxItemsByVolume`/`requiredStackCount`/`formatGiveItemResult`/
+  `validateGiveItemInput`, `findGiveItemInventory`/`applyGiveItemChanges`, and
+  the `handleGiveItem` RMQ-vs-DB routing): the pure stack/slot/volume planner is
+  `scripts/admin_inventory_plan.py` (argv-only compute exposed via
+  `admin-inventory.py give-item`), and the INSERT-into-`dune.items` transaction
+  (top-up existing matching stacks largest-first, then new stacks at
+  MAX(position_index)+1, `stats='{}'`) + the `inventory_type=0` backpack
+  resolution are the `give-item` subcommand. We DROP dune-admin's
+  item-definition JSON resolvers (`resolveStackMax`/`resolveItemVolume`) because
+  our catalogue carries no stack_max/volume, and instead use dune-admin's
+  secondary DB fallback (`MAX(stack_size)`/`MAX(volume_override)` over existing
+  world items). Routing diverges deliberately: we are STRICTER — online+quality0
+  delegates to the RMQ `give` (AddItemToInventory) path, but online+quality>0 is
+  REFUSED (DB writes require offline) rather than DB-written into a live
+  inventory. The planner's expected values are pinned by a Python port of
+  dune-admin's `db_cmd_give_item_test.go` oracle in `scripts/test_give_item.py`.
+- the set-faction-reputation flow (`applyFactionRepDelta`,
+  `syncFactionComponent`/`buildFactionDataArray`/`writeFactionComponent`,
+  `repToTier`/`factionTierName`/`factionDisplayName`/`factionRepCap`/
+  `factionTierThresholds`): the pure tier math is `admin_progression.py`
+  (`clamp_faction_rep`/`rep_to_tier`/`faction_tier_name`/`faction_display_name`/
+  `faction_rep_outcome`, pinned by `scripts/test_faction_rep.py`), exposed via
+  `admin-inventory.py faction-rep`. The `faction-rep` subcommand keys on the
+  player-CONTROLLER actor, calls `dune.set_player_faction_reputation(controller,
+  faction_id, rep)`, then rebuilds `FactionPlayerComponent.m_FactionDataArray`
+  wholesale from the rep table (both Great Houses, Atreides then Harkonnen, each
+  `{"Faction":{"Name":…},"timestamp":<epoch_float>,"ReputationAmount":<int>}`) via
+  `jsonb_set(properties,'{FactionPlayerComponent,m_FactionDataArray}', …, true)` —
+  the no-clobber guarantee comes from re-reading the rep table, not patching one
+  array element. We mirror dune-admin's give-rep delta path (we do NOT call
+  `change_player_faction`, so house alignment is untouched) and restrict to the
+  two Great Houses (1=Atreides, 2=Harkonnen). HTTP: POST
+  /api/players/<id>/faction-rep.

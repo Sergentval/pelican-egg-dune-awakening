@@ -42,6 +42,7 @@ def _load(name: str) -> dict:
 
 _XP = _load("skill-xp-per-level.json")
 _KEYSTONES = _load("keystones.json")
+_FACTIONS = _load("factions.json")
 
 CUMULATIVE_XP: tuple[int, ...] = tuple(_XP["cumulativeXPByLevel"])
 MAX_CHAR_XP: int = int(_XP["maxCharXP"])
@@ -56,6 +57,14 @@ _KEYSTONE_SP: dict[int, int] = {
     int(k["id"]): int(k["spBonus"]) for k in _KEYSTONES["keystones"]
 }
 _ALL_KEYSTONE_IDS: tuple[int, ...] = tuple(sorted(_KEYSTONE_SP))
+
+# Faction reputation tiers (great houses share one threshold table).
+FACTION_REP_CAP: int = int(_FACTIONS["repCap"])
+_FACTION_TIER_THRESHOLDS: tuple[int, ...] = tuple(_FACTIONS["tierThresholds"])
+_FACTION_MAX_TIER: int = len(_FACTION_TIER_THRESHOLDS) - 1  # 20
+_FACTION_TIER_NAMES: dict[int, str] = {int(k): v for k, v in _FACTIONS["tierNames"].items()}
+_FACTION_TIER20_NAMES: dict[int, str] = {int(k): v for k, v in _FACTIONS["tier20Names"].items()}
+_FACTION_NAMES: dict[int, str] = {int(k): v for k, v in _FACTIONS["factions"].items()}
 
 
 # --------------------------------------------------------------------------
@@ -117,6 +126,68 @@ def grant_all_keystone_targets(xp: int, spent_sp: int) -> tuple[int, int, int]:
 
 
 # --------------------------------------------------------------------------
+# Faction reputation. Ported from dune-admin db.go: factionRepCap,
+# factionTierThresholds[21], repToTier, factionTierName, factionDisplayName.
+# Reputation/rank keys on the player-CONTROLLER actor; the live SQL (proc call
+# + m_FactionDataArray jsonb rebuild) lives in admin-publish.sh, this module
+# only does the arithmetic + naming on the values it reads/writes.
+# --------------------------------------------------------------------------
+def clamp_faction_rep(rep: int) -> int:
+    """Clamp reputation to [0, FACTION_REP_CAP] (tier-20 threshold)."""
+    if rep < 0:
+        return 0
+    if rep > FACTION_REP_CAP:
+        return FACTION_REP_CAP
+    return rep
+
+
+def rep_to_tier(rep: int) -> int:
+    """Highest tier i in 0..20 whose cumulative threshold the rep has reached
+    (mirrors dune-admin repToTier; thresholds are monotonic, saturates at 20)."""
+    tier = 0
+    for i in range(1, _FACTION_MAX_TIER + 1):
+        if rep >= _FACTION_TIER_THRESHOLDS[i]:
+            tier = i
+        else:
+            break
+    return tier
+
+
+def faction_display_name(faction_id: int) -> str:
+    """House display name; unknown ids fall through to 'Faction<id>'."""
+    return _FACTION_NAMES.get(int(faction_id), f"Faction{int(faction_id)}")
+
+
+def faction_tier_name(faction_id: int, tier: int) -> str:
+    """Tier rank name: the named map for 0..5, faction-specific names at tier 20
+    (Atreides=Envoy, Harkonnen=Enforcer), else 'Tier <n>' (mirrors dune-admin
+    factionTierName)."""
+    if tier == _FACTION_MAX_TIER and int(faction_id) in _FACTION_TIER20_NAMES:
+        return _FACTION_TIER20_NAMES[int(faction_id)]
+    if tier in _FACTION_TIER_NAMES:
+        return _FACTION_TIER_NAMES[tier]
+    return f"Tier {tier}"
+
+
+def faction_rep_outcome(current_rep: int, delta: int, faction_id: int) -> dict:
+    """Apply a signed reputation delta on the canonical give-faction-rep path
+    (dune-admin applyFactionRepDelta): new_rep = clamp(current + delta) to
+    [0, cap], then derive tier + tier name. `capped` flags that the clamp moved
+    the value (under 0 or over cap). Pure — the caller writes new_rep via the
+    proc and rebuilds the jsonb component."""
+    raw = current_rep + delta
+    new_rep = clamp_faction_rep(raw)
+    tier = rep_to_tier(new_rep)
+    return {
+        "new_rep": new_rep,
+        "tier": tier,
+        "tier_name": faction_tier_name(faction_id, tier),
+        "faction_name": faction_display_name(faction_id),
+        "capped": new_rep != raw,
+    }
+
+
+# --------------------------------------------------------------------------
 # Character-XP summary used to enrich the read-only char-xp endpoint.
 # --------------------------------------------------------------------------
 def char_xp_summary(total_xp: int) -> dict:
@@ -128,4 +199,32 @@ def char_xp_summary(total_xp: int) -> dict:
         "maxXP": MAX_CHAR_XP,
         "maxLevel": MAX_LEVEL,
         "atCap": total_xp >= MAX_CHAR_XP,
+    }
+
+
+# --------------------------------------------------------------------------
+# award-char-xp outcome (Phase 3). Ported from dune-admin computeAwardCharXP
+# Outcome: new XP = clamp(current + amount, 0, maxCharXP); skill points are
+# re-derived from the new level + the player's keystone bonus (starter job
+# always occupies 1 SP, excluded from spent_sp). Pure — the caller reads
+# current_xp/spent_sp + the keystone bonus from the DB and writes the result
+# back via jsonb_set. (We clamp to >=0; dune-admin only caps the upper bound.)
+# --------------------------------------------------------------------------
+def award_char_xp_outcome(current_xp: int, spent_sp: int,
+                          keystone_bonus: int, amount: int) -> dict:
+    new_xp = current_xp + amount
+    if new_xp > MAX_CHAR_XP:
+        new_xp = MAX_CHAR_XP
+    if new_xp < 0:
+        new_xp = 0
+    level = xp_to_level(new_xp)
+    total_sp = level + keystone_bonus
+    unspent_sp = max(0, total_sp - spent_sp - 1)
+    return {
+        "new_xp": new_xp,
+        "new_level": level,
+        "new_total_sp": total_sp,
+        "new_unspent_sp": unspent_sp,
+        "new_intel": intel_at_level(level),
+        "capped": new_xp == MAX_CHAR_XP,
     }

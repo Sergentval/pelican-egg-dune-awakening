@@ -66,6 +66,21 @@
 #   inventory-list <player_id>                   -- player-character inventory items + durability
 #   tags-get <player_id>                         -- player progression tags
 #
+# Player/character WRITE subcommands (Phase 3; mutate persisted state via
+# Funcom stored procs, gated on assert_player_offline). Ported from
+# Icehunter/dune-admin cmd/dune-admin/db.go (MIT). See ATTRIBUTION.md.
+#   give-currency <player_id> <amount>           -- adjust Solaris balance (signed; offline only)
+#   rename <player_id> <new-name>                -- set character name (offline only)
+#   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
+#   award-char-xp <player_id> <amount>           -- award/deduct char XP; recompute level/SP/intel (offline only)
+#   grant-keystones <player_id>                  -- grant all 205 keystones + recompute SP (offline only)
+#   give-item <player_id> <ItemTemplate> [qty=1] [quality=0]
+#                                                -- grant items: online+quality0 -> RMQ AddItemToInventory;
+#                                                   offline -> direct dune.items INSERT (stack/slot/volume planned)
+#   faction-rep <player_id> <atreides|harkonnen|1|2> <signed-amount>
+#                                                -- adjust Great-House reputation (offline only); rebuilds the
+#                                                   FactionPlayerComponent.m_FactionDataArray jsonb on the controller
+#
 # AMQP publish subcommands:
 #   broadcast <title> <body> [duration_secs=30]              -- ServiceBroadcast (Generic)
 #   shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
@@ -312,6 +327,51 @@ JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
 WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerCharacter%'
 ORDER BY ac.id DESC LIMIT 1
 SQL
+}
+
+# FLS hex -> player-CONTROLLER actor id, or empty if none. The controller (not
+# the pawn) is the key for currency/faction/journey state — e.g.
+# dune.player_virtual_currency_balances.player_controller_id. Confirmed live:
+# an account owns BP_DunePlayerController + DunePlayerState + BP_DunePlayer
+# Character actors; writes that say "controller_id" mean this one.
+dune_controller_actor_id() {
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT ac.id FROM dune.actors ac
+JOIN dune.encrypted_accounts a ON a.id = ac.owner_account_id
+WHERE a."user" = :'fls' AND ac.class LIKE '%BP_DunePlayerController%'
+ORDER BY ac.id DESC LIMIT 1
+SQL
+}
+
+# FLS hex -> current online status text (Offline/Online/...), or empty if the
+# account doesn't exist. A missing player_state row coalesces to Offline.
+# Confirmed encrypted_* schema.
+dune_online_status() {
+    dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT COALESCE(ps.online_status::text, 'Offline')
+FROM dune.encrypted_accounts a
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
+WHERE a."user" = :'fls'
+ORDER BY ps.last_avatar_activity DESC NULLS LAST
+LIMIT 1
+SQL
+}
+
+# PlayerGuard precondition shared by every Phase-3 character write. Returns 0
+# if offline (safe to edit), 1 if online (refuse, message on stderr), 2 if the
+# account is unknown. Writes MUST call this before mutating.
+assert_player_offline() {
+    local fls="$1" st
+    st=$(dune_online_status "$fls")
+    if [ -z "$st" ]; then
+        echo "[admin-publish] ERROR no account for $fls (run 'admin players')" >&2
+        return 2
+    fi
+    if [ "$st" != "Offline" ]; then
+        echo "[admin-publish] player is currently $st — log out first, then apply the edit" >&2
+        return 1
+    fi
+    return 0
 }
 
 # Return 0 only if every named relation exists; else name the missing ones and
@@ -617,26 +677,16 @@ SQL
             echo "[admin-publish] ERROR player-offline: needs a single player, not '*'" >&2
             exit 2
         fi
-        status=$(dune_psql_q --set=fls="$fls_id" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
-SELECT COALESCE(ps.online_status::text, 'Offline')
-FROM dune.encrypted_accounts a
-LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = a.id
-WHERE a."user" = :'fls'
-ORDER BY ps.last_avatar_activity DESC NULLS LAST
-LIMIT 1
-SQL
-)
-        if [ -z "$status" ]; then
-            echo "[admin-publish] ERROR player-offline: no account for $fls_id (run 'admin players')" >&2
-            exit 2
+        # assert_player_offline does the work (shared with the Phase-3 writes);
+        # it prints the refusal/unknown message on stderr and returns 0/1/2.
+        if assert_player_offline "$fls_id"; then
+            echo "offline=true fls=$fls_id"
+            exit 0
+        else
+            rc=$?
+            [ "$rc" -eq 1 ] && echo "online=true fls=$fls_id"
+            exit "$rc"
         fi
-        if [ "$status" != "Offline" ]; then
-            echo "[admin-publish] player is currently $status — log out first, then apply the edit" >&2
-            echo "online=$status fls=$fls_id"
-            exit 1
-        fi
-        echo "offline=true fls=$fls_id"
-        exit 0
         ;;
     player-state)
         # Single-player detail on the confirmed schema: account, online/life
@@ -765,6 +815,590 @@ SQL
         dune_psql_q --csv --set=aid="$aid" <<'SQL'
 SELECT tag FROM dune.player_tags WHERE account_id = :'aid'::bigint ORDER BY tag
 SQL
+        exit 0
+        ;;
+
+    # ----------------------------------------------------------------------
+    # Player/character WRITE subcommands (Phase 3). Each mutates persisted
+    # player state and MUST pass assert_player_offline first. Ported from
+    # Icehunter/dune-admin cmd/dune-admin/db.go (MIT) — see ATTRIBUTION.md.
+    # ----------------------------------------------------------------------
+    give-currency)
+        # Adjust a player's Solaris balance via the audited stored proc
+        # dune.adjust_player_virtual_currency_balance(controller_id, currency_id,
+        # delta), keyed on the player-CONTROLLER actor (not the pawn), then read
+        # the new balance back. amount may be negative to deduct; the proc
+        # enforces non-negative balances. Ported from dune-admin cmdGiveCurrency.
+        raw="${1:?usage: give-currency <fls_id|me|steam:<id>|name:<n>> <amount>}"
+        amount="${2:?usage: give-currency <player> <amount>}"
+        # Signed-integer validation: strip one optional leading '-', rest digits.
+        amt_digits="${amount#-}"
+        case "$amt_digits" in
+            ''|*[!0-9]*)
+                echo "[admin-publish] ERROR give-currency: amount must be an integer, got '$amount'" >&2
+                exit 2
+                ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR give-currency: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_virtual_currency_balances dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR give-currency: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        # Proc call + read-back in one stdin batch so :'var' interpolates.
+        # Both statements print under -tA (proc return, then balance); the
+        # read-back is authoritative, so keep the last line.
+        new_balance=$(dune_psql_q --set=ctrl="$ctrl" --set=amt="$amount" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.adjust_player_virtual_currency_balance(:'ctrl'::bigint, dune.get_solaris_id(), :'amt'::bigint);
+SELECT balance FROM dune.player_virtual_currency_balances
+WHERE player_controller_id = :'ctrl'::bigint AND currency_id = dune.get_solaris_id();
+SQL
+)
+        if [ -z "$new_balance" ]; then
+            echo "[admin-publish] ERROR give-currency: proc call failed (no balance read back)" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK give-currency fls=$fls_id controller=$ctrl delta=$amount solaris_balance=$new_balance"
+        echo "publish=db-write currency=solaris controller=$ctrl delta=$amount balance=$new_balance"
+        exit 0
+        ;;
+    rename)
+        # Rename a character via dune.set_character_name(account_id, name) +
+        # read the stored name back. Account-keyed. Ported from dune-admin
+        # cmdRenameCharacter.
+        raw="${1:?usage: rename <fls_id|me|steam:<id>|name:<n>> <new-name>}"
+        new_name="${2:?usage: rename <player> <new-name>}"
+        if [ -z "${new_name//[[:space:]]/}" ]; then
+            echo "[admin-publish] ERROR rename: name is empty" >&2
+            exit 2
+        fi
+        if [ "${#new_name}" -gt 64 ]; then
+            echo "[admin-publish] ERROR rename: name too long (${#new_name} chars, max 64)" >&2
+            exit 2
+        fi
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR rename: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR rename: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        # Proc then read-back the stored name (encrypted_character_name is plain
+        # UTF-8 when User-data encryption is 'As-is'). Last line = the name.
+        stored=$(dune_psql_q --set=aid="$aid" --set=nm="$new_name" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.set_character_name(:'aid'::bigint, :'nm');
+SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
+FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
+SQL
+)
+        echo "[admin-publish] OK rename fls=$fls_id account=$aid stored_name=$stored"
+        echo "publish=db-write rename account=$aid name=$stored"
+        exit 0
+        ;;
+    tags-update)
+        # Add and/or remove player progression tags via
+        # dune.update_player_tags(account_id, add[], remove[]). Add/remove are
+        # comma-separated tag lists ("" for none). Account-keyed. Ported from
+        # dune-admin cmdUpdatePlayerTags.
+        raw="${1:?usage: tags-update <player> <add-csv> <remove-csv>}"
+        add_csv="${2-}"
+        rem_csv="${3-}"
+        if [ -z "$add_csv" ] && [ -z "$rem_csv" ]; then
+            echo "[admin-publish] ERROR tags-update: nothing to add or remove" >&2
+            exit 2
+        fi
+        # Tags are dotted identifiers; validate to a safe charset (also the CSV
+        # separator). The :'var' binding is injection-safe; this is defence in depth.
+        for v in "$add_csv" "$rem_csv"; do
+            case "$v" in
+                '') : ;;
+                *[!A-Za-z0-9._,]*)
+                    echo "[admin-publish] ERROR tags-update: tags must match [A-Za-z0-9._] (comma-separated), got '$v'" >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR tags-update: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_tags || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR tags-update: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        # COALESCE(string_to_array(NULLIF(:'x',''),','),'{}') -> {} for empty,
+        # else the split array. Read the new tag count back (last line).
+        count=$(dune_psql_q --set=aid="$aid" --set=add="$add_csv" --set=rem="$rem_csv" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+SELECT dune.update_player_tags(
+    :'aid'::bigint,
+    COALESCE(string_to_array(NULLIF(:'add',''), ','), '{}')::text[],
+    COALESCE(string_to_array(NULLIF(:'rem',''), ','), '{}')::text[]
+);
+SELECT count(*) FROM dune.player_tags WHERE account_id = :'aid'::bigint;
+SQL
+)
+        echo "[admin-publish] OK tags-update fls=$fls_id account=$aid add='$add_csv' remove='$rem_csv' tag_count=$count"
+        echo "publish=db-write tags-update account=$aid tag_count=$count"
+        exit 0
+        ;;
+    award-char-xp)
+        # Award (or deduct) character XP and re-derive level / skill points /
+        # intel, then jsonb_set FLevelComponent (XP + both SP fields) on the
+        # PAWN's fgl entity and TechKnowledgePlayerComponent intel on the pawn
+        # actor. Ported from dune-admin cmdAwardCharXP: read current XP+spent
+        # SP (pawn), keystone bonus (controller's purchased keystones), compute
+        # via admin-inventory.py (capped at maxCharXP=344440), write back.
+        raw="${1:?usage: award-char-xp <fls_id|me|steam:<id>|name:<n>> <amount>}"
+        amount="${2:?usage: award-char-xp <player> <amount>}"
+        amt_digits="${amount#-}"
+        case "$amt_digits" in
+            ''|*[!0-9]*)
+                echo "[admin-publish] ERROR award-char-xp: amount must be an integer, got '$amount'" >&2
+                exit 2
+                ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR award-char-xp: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.fgl_entities dune.actor_fgl_entities dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR award-char-xp: no player-character actor for $fls_id" >&2
+            exit 1
+        fi
+        ctrl=$(dune_controller_actor_id "$fls_id")   # may be empty -> 0 keystones
+        # Current FLevel state (TotalXPEarned <TAB> non-starter SkillPointsSpent), via pawn.
+        state=$(dune_psql_q --set=pawn="$pawn" -tAF $'\t' 2>/dev/null <<'SQL'
+SELECT
+  COALESCE((fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint, 0),
+  COALESCE((SELECT SUM((v->>'SkillPointsSpent')::int)
+            FROM jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData') AS kv(k, v)
+            WHERE k != format('(TagName="%s")',
+                fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName')), 0)
+FROM dune.fgl_entities fe
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter'
+SQL
+)
+        cur_xp=$(printf '%s' "$state" | cut -f1)
+        spent_sp=$(printf '%s' "$state" | cut -f2)
+        if [ -z "$cur_xp" ]; then
+            echo "[admin-publish] ERROR award-char-xp: no FLevelComponent for $fls_id (DuneCharacter fgl entity not found)" >&2
+            exit 1
+        fi
+        # Purchased keystone ids (controller) -> CSV for the SP bonus.
+        ks_csv=""
+        if [ -n "$ctrl" ]; then
+            ks_csv=$(dune_psql_q --set=ctrl="$ctrl" -tA 2>/dev/null <<'SQL' | paste -sd, -
+SELECT keystone_id FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint
+SQL
+)
+        fi
+        # Compute the new values (pure, no DB) via the argv-only helper.
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" award-char-xp \
+              --current-xp "$cur_xp" --spent-sp "$spent_sp" --keystones "$ks_csv" --amount "$amount") || {
+            echo "[admin-publish] ERROR award-char-xp: compute failed" >&2; exit 1; }
+        new_xp=""; new_level=""; new_tsp=""; new_usp=""; new_intel=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                new_xp) new_xp=$v ;;
+                new_level) new_level=$v ;;
+                new_total_sp) new_tsp=$v ;;
+                new_unspent_sp) new_usp=$v ;;
+                new_intel) new_intel=$v ;;
+            esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$new_xp" ] || [ -z "$new_tsp" ] || [ -z "$new_usp" ] || [ -z "$new_intel" ]; then
+            echo "[admin-publish] ERROR award-char-xp: malformed compute output" >&2
+            exit 1
+        fi
+        # Apply: FLevel XP+SP (pawn fgl entity) and intel (pawn actor properties),
+        # then read the stored XP back (last line, after the UPDATE tags).
+        applied_xp=$(dune_psql_q --set=pawn="$pawn" --set=xp="$new_xp" --set=tsp="$new_tsp" \
+                     --set=usp="$new_usp" --set=intel="$new_intel" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+UPDATE dune.fgl_entities SET components = jsonb_set(jsonb_set(jsonb_set(components,
+    '{FLevelComponent,1,TotalXPEarned}',      to_jsonb(:'xp'::bigint)),
+    '{FLevelComponent,1,TotalSkillPoints}',   to_jsonb(:'tsp'::bigint)),
+    '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb(:'usp'::bigint))
+WHERE entity_id = (SELECT entity_id FROM dune.actor_fgl_entities
+                   WHERE actor_id = :'pawn'::bigint AND slot_name = 'DuneCharacter');
+UPDATE dune.actors SET properties = jsonb_set(properties,
+    '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb(:'intel'::bigint))
+WHERE id = :'pawn'::bigint AND properties ? 'TechKnowledgePlayerComponent';
+SELECT (fe.components->'FLevelComponent'->1->>'TotalXPEarned')
+FROM dune.fgl_entities fe JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter';
+SQL
+)
+        echo "[admin-publish] OK award-char-xp fls=$fls_id pawn=$pawn level=$new_level xp=$applied_xp total_sp=$new_tsp unspent_sp=$new_usp intel=$new_intel"
+        echo "publish=db-write award-char-xp pawn=$pawn xp=$applied_xp level=$new_level"
+        exit 0
+        ;;
+    grant-keystones)
+        # Grant all 205 specialization keystones (insert into purchased_
+        # specialization_keystones on the CONTROLLER, ON CONFLICT DO NOTHING)
+        # and re-derive FLevel skill points (level + 54 keystone bonus) on the
+        # PAWN's fgl entity. Ported from dune-admin cmdGrantAllKeystones
+        # (insertAllPurchasedKeystones + grantAllKeystoneTargets +
+        # updateLevelComponentSkillPoints). XP/intel are unchanged.
+        raw="${1:?usage: grant-keystones <fls_id|me|steam:<id>|name:<n>>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR grant-keystones: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.purchased_specialization_keystones dune.fgl_entities dune.actor_fgl_entities dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no player-character actor for $fls_id" >&2
+            exit 1
+        fi
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        # Current FLevel XP + non-starter spent SP (via pawn) — same read as award-char-xp.
+        state=$(dune_psql_q --set=pawn="$pawn" -tAF $'\t' 2>/dev/null <<'SQL'
+SELECT
+  COALESCE((fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint, 0),
+  COALESCE((SELECT SUM((v->>'SkillPointsSpent')::int)
+            FROM jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData') AS kv(k, v)
+            WHERE k != format('(TagName="%s")',
+                fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName')), 0)
+FROM dune.fgl_entities fe
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+WHERE afe.actor_id = :'pawn'::bigint AND afe.slot_name = 'DuneCharacter'
+SQL
+)
+        cur_xp=$(printf '%s' "$state" | cut -f1)
+        spent_sp=$(printf '%s' "$state" | cut -f2)
+        if [ -z "$cur_xp" ]; then
+            echo "[admin-publish] ERROR grant-keystones: no FLevelComponent for $fls_id" >&2
+            exit 1
+        fi
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" grant-keystones \
+              --current-xp "$cur_xp" --spent-sp "$spent_sp") || {
+            echo "[admin-publish] ERROR grant-keystones: compute failed" >&2; exit 1; }
+        exp_total=""; exp_unspent=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                expected_total_sp) exp_total=$v ;;
+                expected_unspent_sp) exp_unspent=$v ;;
+            esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$exp_total" ] || [ -z "$exp_unspent" ]; then
+            echo "[admin-publish] ERROR grant-keystones: malformed compute output" >&2
+            exit 1
+        fi
+        # Insert all 205 keystones (controller) + set FLevel SP (pawn), read count back.
+        count=$(dune_psql_q --set=ctrl="$ctrl" --set=pawn="$pawn" --set=tsp="$exp_total" --set=usp="$exp_unspent" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
+INSERT INTO dune.purchased_specialization_keystones (player_id, keystone_id)
+SELECT :'ctrl'::bigint, generate_series(1, 205) ON CONFLICT DO NOTHING;
+UPDATE dune.fgl_entities SET components = jsonb_set(jsonb_set(components,
+    '{FLevelComponent,1,TotalSkillPoints}',   to_jsonb(:'tsp'::bigint)),
+    '{FLevelComponent,1,UnspentSkillPoints}', to_jsonb(:'usp'::bigint))
+WHERE entity_id = (SELECT entity_id FROM dune.actor_fgl_entities
+                   WHERE actor_id = :'pawn'::bigint AND slot_name = 'DuneCharacter');
+SELECT count(*) FROM dune.purchased_specialization_keystones WHERE player_id = :'ctrl'::bigint;
+SQL
+)
+        echo "[admin-publish] OK grant-keystones fls=$fls_id controller=$ctrl pawn=$pawn keystones=$count total_sp=$exp_total unspent_sp=$exp_unspent"
+        echo "publish=db-write grant-keystones controller=$ctrl keystones=$count"
+        exit 0
+        ;;
+    give-item)
+        # Grant items to a player. Ported from dune-admin handleGiveItem +
+        # runGiveItem + applyGiveItemChanges (MIT). Stack/slot/volume planning
+        # is pure math in admin-inventory.py; stack_max + per-item volume are
+        # LEARNED from existing world items (dune-admin's MAX(stack_size) /
+        # MAX(volume_override) fallback) because our catalogue carries no
+        # stack_max/volume.
+        #
+        # Routing — our stack is STRICTER than dune-admin (we never DB-write a
+        # live inventory, which the running server holds in memory):
+        #   Online  + quality 0  -> RMQ AddItemToInventory (delegate to `give`)
+        #   Online  + quality >0 -> refuse (log out first; DB write needs offline)
+        #   Offline (any quality)-> INSERT into dune.items (this path), topping
+        #                           up existing matching stacks first.
+        raw="${1:?usage: give-item <player> <ItemTemplate> [qty=1] [quality=0]}"
+        template="${2:?usage: give-item <player> <ItemTemplate> [qty=1] [quality=0]}"
+        qty="${3:-1}"
+        quality="${4:-0}"
+        case "$qty" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: qty must be a positive integer, got '$qty'" >&2; exit 2 ;; esac
+        [ "$qty" -ge 1 ] || { echo "[admin-publish] ERROR give-item: qty must be >= 1" >&2; exit 2; }
+        case "$quality" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: quality must be a non-negative integer, got '$quality'" >&2; exit 2 ;; esac
+        # Item template ids look like OrnithopterLightLauncher_6 / T6_Augment_Acuracy1:
+        # letters, digits, underscore, dot only. Also bound via :'tmpl' in SQL.
+        case "$template" in ''|*[!A-Za-z0-9_.]*) echo "[admin-publish] ERROR give-item: invalid item template '$template'" >&2; exit 2 ;; esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR give-item: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.items dune.inventories dune.actors || exit 3
+
+        # ---- Route on live online status (mirrors assert_player_offline) ----
+        status=$(dune_online_status "$fls_id")
+        if [ -z "$status" ]; then
+            echo "[admin-publish] ERROR give-item: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        if [ "$status" != "Offline" ]; then
+            if [ "$quality" -eq 0 ]; then
+                # Live player: hand off to the RMQ server-command path so the
+                # running server adds the item to its in-memory inventory.
+                exec bash "$BASE/scripts/admin-publish.sh" give "$fls_id" "$template" "$qty"
+            fi
+            echo "[admin-publish] ERROR give-item: $fls_id is $status; quality>0 grants need a DB write — have them log out first" >&2
+            exit 1
+        fi
+
+        # ---- Offline DB INSERT path ----
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR give-item: no player-character actor for $fls_id (never spawned a character)" >&2
+            exit 1
+        fi
+
+        # Target inventory: the player's backpack (inventory_type=0), falling
+        # back to any inventory of the pawn. Returns "id|maxslots|maxvol".
+        inv_row=$(dune_psql_q --set=actor="$pawn" -tAF'|' <<'SQL'
+SELECT id, COALESCE(max_item_count, -1), COALESCE(max_item_volume, -1)
+FROM dune.inventories WHERE actor_id = :'actor'::bigint AND inventory_type = 0
+LIMIT 1
+SQL
+)
+        if [ -z "$inv_row" ]; then
+            inv_row=$(dune_psql_q --set=actor="$pawn" -tAF'|' <<'SQL'
+SELECT id, COALESCE(max_item_count, -1), COALESCE(max_item_volume, -1)
+FROM dune.inventories WHERE actor_id = :'actor'::bigint
+LIMIT 1
+SQL
+)
+        fi
+        if [ -z "$inv_row" ]; then
+            echo "[admin-publish] ERROR give-item: no inventory for pawn $pawn" >&2
+            exit 1
+        fi
+        IFS='|' read -r inv_id max_slots max_volume <<EOF2
+$inv_row
+EOF2
+
+        # Existing matching stacks (same template + quality) as "id:size,..." .
+        stacks=$(dune_psql_q --set=inv="$inv_id" --set=tmpl="$template" --set=q="$quality" -tA <<'SQL'
+SELECT COALESCE(string_agg(id || ':' || stack_size, ','), '')
+FROM dune.items
+WHERE inventory_id = :'inv'::bigint AND template_id = :'tmpl' AND quality_level = :'q'::bigint
+SQL
+)
+        # Inventory usage: row count, max position, used volume (per-row override only).
+        agg=$(dune_psql_q --set=inv="$inv_id" -tAF'|' <<'SQL'
+SELECT COUNT(*),
+       COALESCE(MAX(position_index), -1),
+       COALESCE(SUM(CASE WHEN volume_override IS NOT NULL AND volume_override > 0
+                         THEN volume_override * stack_size ELSE 0 END), 0)
+FROM dune.items WHERE inventory_id = :'inv'::bigint
+SQL
+)
+        IFS='|' read -r used_slots max_pos used_volume <<EOF2
+$agg
+EOF2
+
+        # stack_max: largest existing stack of this template+quality, floored at 1.
+        stack_max=$(dune_psql_q --set=tmpl="$template" --set=q="$quality" -tA <<'SQL'
+SELECT GREATEST(COALESCE(MAX(stack_size), 0), 1)
+FROM dune.items WHERE template_id = :'tmpl' AND quality_level = :'q'::bigint
+SQL
+)
+        # per-item volume: largest stored override for this template, else 0.
+        per_item_vol=$(dune_psql_q --set=tmpl="$template" -tA <<'SQL'
+SELECT COALESCE(MAX(volume_override), 0)
+FROM dune.items WHERE template_id = :'tmpl' AND volume_override IS NOT NULL
+SQL
+)
+        [ -n "$stack_max" ] || stack_max=1
+        [ -n "$per_item_vol" ] || per_item_vol=0
+        [ -n "$used_slots" ] || used_slots=0
+        [ -n "$max_pos" ] || max_pos=-1
+        [ -n "$used_volume" ] || used_volume=0
+
+        # Pure planner: emits UPDATE/NEW/SUMMARY lines, or a single ERROR line.
+        plan=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" give-item \
+               --qty "$qty" --stack-max "$stack_max" --template "$template" \
+               --stacks "$stacks" --max-pos "$max_pos" \
+               --max-slots "$max_slots" --used-slots "$used_slots" \
+               --max-volume "$max_volume" --used-volume "$used_volume" \
+               --per-item-vol "$per_item_vol") || {
+            echo "[admin-publish] ERROR give-item: plan compute failed" >&2; exit 1; }
+
+        if printf '%s\n' "$plan" | grep -q '^ERROR '; then
+            msg=$(printf '%s\n' "$plan" | sed -n 's/^ERROR //p')
+            echo "[admin-publish] ERROR give-item: $msg" >&2
+            exit 4
+        fi
+
+        # Build the transaction from the plan. The planner emits ONLY integers
+        # for stack ids / adds / sizes / positions (re-validated below); the
+        # template, quality and inventory id are bound via :'var'.
+        txn="BEGIN;"
+        topped=0; created=0
+        while read -r kind a b; do
+            case "$kind" in
+                UPDATE)
+                    case "$a$b" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: malformed UPDATE plan line" >&2; exit 1 ;; esac
+                    txn+=$'\n'"UPDATE dune.items SET stack_size = stack_size + ${b}::bigint WHERE id = ${a}::bigint;"
+                    topped=$((topped + 1))
+                    ;;
+                NEW)
+                    case "$a$b" in ''|*[!0-9]*) echo "[admin-publish] ERROR give-item: malformed NEW plan line" >&2; exit 1 ;; esac
+                    txn+=$'\n'"INSERT INTO dune.items (inventory_id, stack_size, position_index, template_id, quality_level, stats) VALUES (:'inv'::bigint, ${a}::bigint, ${b}::bigint, :'tmpl', :'q'::bigint, '{}'::jsonb);"
+                    created=$((created + 1))
+                    ;;
+            esac
+        done <<EOF2
+$plan
+EOF2
+        txn+=$'\n'"COMMIT;"
+        txn+=$'\n'"SELECT COALESCE(SUM(stack_size), 0) FROM dune.items WHERE inventory_id = :'inv'::bigint AND template_id = :'tmpl' AND quality_level = :'q'::bigint;"
+
+        # Run the txn. ON_ERROR_STOP aborts before COMMIT on any failure, so the
+        # whole grant rolls back atomically; -q suppresses command tags so only
+        # the final read-back total reaches stdout.
+        rc=0
+        out=$(printf '%s\n' "$txn" | dune_psql_q -q -v ON_ERROR_STOP=1 \
+              --set=inv="$inv_id" --set=tmpl="$template" --set=q="$quality" -tA 2>&1) || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR give-item: transaction failed (rolled back)" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        fi
+        total_now=$(printf '%s\n' "$out" | tail -n1 | tr -d '\r\n')
+        echo "[admin-publish] OK give-item fls=$fls_id pawn=$pawn inv=$inv_id template=$template quality=$quality qty=$qty topped_up=$topped created=$created total_now=$total_now"
+        echo "publish=db-write give-item pawn=$pawn template=$template qty=$qty topped_up=$topped created=$created"
+        exit 0
+        ;;
+    faction-rep)
+        # Adjust a player's Great-House reputation by a signed delta on the
+        # player-CONTROLLER actor, then rebuild the FactionPlayerComponent.
+        # m_FactionDataArray jsonb cache from the rep table (always both houses,
+        # Atreides then Harkonnen — never clobbering the other). Ported from
+        # dune-admin applyFactionRepDelta + syncFactionComponent/
+        # buildFactionDataArray (MIT). Only the two Great Houses (1=Atreides,
+        # 2=Harkonnen) have a tier/reputation system + the jsonb component;
+        # this is a pure rep change (it does NOT call change_player_faction, so
+        # an unaligned character's house alignment is left untouched).
+        raw="${1:?usage: faction-rep <player> <atreides|harkonnen|1|2> <signed-amount>}"
+        fac="${2:?usage: faction-rep <player> <atreides|harkonnen|1|2> <signed-amount>}"
+        delta="${3:?usage: faction-rep <player> <atreides|harkonnen|1|2> <signed-amount>}"
+        case "$(printf '%s' "$fac" | tr '[:upper:]' '[:lower:]')" in
+            1|atreides)  fid=1; fname=Atreides ;;
+            2|harkonnen) fid=2; fname=Harkonnen ;;
+            *) echo "[admin-publish] ERROR faction-rep: faction must be atreides|harkonnen (1|2) — only the two Great Houses have reputation tiers" >&2; exit 2 ;;
+        esac
+        d_digits="${delta#-}"
+        case "$d_digits" in
+            ''|*[!0-9]*)
+                echo "[admin-publish] ERROR faction-rep: amount must be an integer, got '$delta'" >&2
+                exit 2
+                ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR faction-rep: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.player_faction_reputation dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR faction-rep: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        # Current absolute rep (0 if no row yet) for this house.
+        cur=$(dune_psql_q --set=ctrl="$ctrl" --set=fid="$fid" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
+SELECT COALESCE(reputation_amount, 0) FROM dune.player_faction_reputation
+WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint
+SQL
+)
+        [ -n "$cur" ] || cur=0
+        # Compute the clamped new rep + tier (pure math).
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" faction-rep \
+              --current "$cur" --delta "$delta" --faction "$fid") || {
+            echo "[admin-publish] ERROR faction-rep: compute failed" >&2; exit 1; }
+        new_rep=""; tier=""; tier_name=""
+        while IFS='=' read -r k v; do
+            case "$k" in
+                new_rep) new_rep=$v ;;
+                tier) tier=$v ;;
+                tier_name) tier_name=$v ;;
+            esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$new_rep" ]; then
+            echo "[admin-publish] ERROR faction-rep: malformed compute output" >&2
+            exit 1
+        fi
+        # Set the rep via the audited proc, then rebuild m_FactionDataArray from
+        # the rep table (both Great Houses, Atreides first), all in one txn so
+        # the in-game jsonb cache never diverges from the rep row. Read the
+        # stored rep back as the last line. ON_ERROR_STOP rolls back atomically.
+        rc=0
+        applied=$(dune_psql_q -q -v ON_ERROR_STOP=1 \
+                  --set=ctrl="$ctrl" --set=fid="$fid" --set=newrep="$new_rep" -tA 2>&1 <<'SQL'
+BEGIN;
+SELECT dune.set_player_faction_reputation(:'ctrl'::bigint, :'fid'::smallint, :'newrep'::integer);
+UPDATE dune.actors SET properties = jsonb_set(
+    properties,
+    '{FactionPlayerComponent,m_FactionDataArray}',
+    (SELECT jsonb_agg(
+         jsonb_build_object(
+             'Faction', jsonb_build_object('Name', gh.name),
+             'timestamp', extract(epoch FROM clock_timestamp()),
+             'ReputationAmount', COALESCE(r.reputation_amount, 0)
+         ) ORDER BY gh.id)
+     FROM (VALUES (1::smallint, 'Atreides'), (2::smallint, 'Harkonnen')) AS gh(id, name)
+     LEFT JOIN dune.player_faction_reputation r
+       ON r.actor_id = :'ctrl'::bigint AND r.faction_id = gh.id),
+    true)
+WHERE id = :'ctrl'::bigint;
+COMMIT;
+SELECT reputation_amount FROM dune.player_faction_reputation
+WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint;
+SQL
+) || rc=$?
+        applied=$(printf '%s\n' "$applied" | tail -n1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR faction-rep: transaction failed (rolled back)" >&2
+            printf '%s\n' "$applied" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK faction-rep fls=$fls_id controller=$ctrl faction=$fname rep=$applied tier=$tier ($tier_name)"
+        echo "publish=db-write faction-rep controller=$ctrl faction=$fname rep=$applied tier=$tier"
         exit 0
         ;;
 esac
