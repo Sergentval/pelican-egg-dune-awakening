@@ -40,9 +40,10 @@ sys.path.insert(0, f"{BASE}/scripts")
 import admin_ini_merge as ini  # faithful, unit-tested INI upsert engine
 
 FILES = {
-    "UserEngine": f"{BASE}/server/state/ue5-saved/UserSettings/UserEngine.ini",
-    "UserGame":   f"{BASE}/server/state/ue5-saved/UserSettings/UserGame.ini",
-    "ondemand":   f"{BASE}/server/state/ondemand.ini",
+    "UserEngine":    f"{BASE}/server/state/ue5-saved/UserSettings/UserEngine.ini",
+    "UserGame":      f"{BASE}/server/state/ue5-saved/UserSettings/UserGame.ini",
+    "UserOverrides": f"{BASE}/server/state/UserOverrides.ini",
+    "ondemand":      f"{BASE}/server/state/ondemand.ini",
 }
 SCHEMA = f"{BASE}/data/admin/settings-schema.json"
 

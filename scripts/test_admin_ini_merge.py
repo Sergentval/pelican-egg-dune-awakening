@@ -158,6 +158,26 @@ class TestNormalizeValue(unittest.TestCase):
     def test_string_passthrough(self):
         self.assertEqual(normalize_value("hello world", "string"), "hello world")
 
+    def test_struct_passthrough(self):
+        # single-line struct values are written verbatim (no numeric coercion)
+        v = "(Player=7.000000,Building=7.000000,Placeable=7.000000,Vehicle=7.000000)"
+        self.assertEqual(normalize_value(v, "struct"), v)
+        self.assertEqual(normalize_value("  (a=1)  ", "struct"), "(a=1)")
+
+    def test_array_passthrough(self):
+        self.assertEqual(normalize_value("(Name=\"Foo\")", "array"), '(Name="Foo")')
+
+    def test_struct_array_reject_newline(self):
+        # INI is line-based; a multi-line value cannot be a single key=value line
+        for t in ("struct", "array"):
+            with self.assertRaises(ValueError):
+                normalize_value("line1\nline2", t)
+
+    def test_struct_array_reject_empty(self):
+        for t in ("struct", "array"):
+            with self.assertRaises(ValueError):
+                normalize_value("   ", t)
+
 
 if __name__ == "__main__":
     unittest.main()
