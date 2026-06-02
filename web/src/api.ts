@@ -234,6 +234,32 @@ export const fetchInventory = (playerId: string) =>
 export const deleteItem = (itemId: string) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/delete`);
 
+// ---- Live map (Phase 2-4) ----------------------------------------------
+export interface MapMarker {
+  id: string;
+  name: string;
+  online: boolean;
+  partition: number;
+  fls: string;
+  x: number;
+  y: number;
+  z: number;
+  kind: string;
+}
+export interface MapMarkersResp { ok: boolean; map: string; markers: MapMarker[]; }
+export const fetchMapMarkers = (map: string) =>
+  api<MapMarkersResp>("GET", `/api/map/markers?map=${encodeURIComponent(map)}`);
+
+export interface MapLocation { name: string; map: string; x: number; y: number; z: number; }
+export interface LocationsResp { ok: boolean; locations: MapLocation[]; }
+export const fetchLocations = () => api<LocationsResp>("GET", "/api/map/locations");
+export const addLocation = (location: MapLocation) =>
+  api<LocationsResp>("POST", "/api/map/locations", { action: "add", location });
+export const removeLocation = (name: string) =>
+  api<LocationsResp>("POST", "/api/map/locations", { action: "remove", name });
+export const teleportToLocation = (player: string, location: string) =>
+  api<PublishResult>("POST", "/api/map/teleport", { player, location });
+
 export const fetchVehicles = () => api<{ vehicles: VehicleClass[] }>("GET", "/api/lookup/vehicles");
 
 export interface ItemCategoryBucket {
