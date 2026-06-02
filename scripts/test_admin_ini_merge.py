@@ -120,6 +120,14 @@ class TestNormalizeValue(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_value("maybe", "bool")
 
+    def test_cvarbool(self):
+        for t in ("true", "1", "yes", "on"):
+            self.assertEqual(normalize_value(t, "cvarbool"), "1")
+        for f in ("false", "0", "no", "off"):
+            self.assertEqual(normalize_value(f, "cvarbool"), "0")
+        with self.assertRaises(ValueError):
+            normalize_value("maybe", "cvarbool")
+
     def test_int(self):
         self.assertEqual(normalize_value("42", "int"), "42")
         self.assertEqual(normalize_value(" -3 ", "int"), "-3")
