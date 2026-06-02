@@ -828,6 +828,34 @@ ORDER BY inv.inventory_type, i.position_index
 SQL
         exit 0
         ;;
+    map-markers)
+        # Live-map player markers on one map (read-only). Map is whitelisted so
+        # caller input never reaches the query as an unexpected value. Position
+        # is the player's PAWN actor transform; fls is accounts."user" (the
+        # canonical PlayerId), matching admin_map.parse_markers' expected header.
+        map_name="${1:?map name required: HaggaBasin|DeepDesert|Arrakeen|HarkoVillage}"
+        case "$map_name" in
+            HaggaBasin|DeepDesert|Arrakeen|HarkoVillage) ;;
+            *) echo "[admin-publish] ERROR map-markers: unsupported map '$map_name'" >&2; exit 2 ;;
+        esac
+        dune_require_tables dune.actors dune.player_state dune.accounts || exit 3
+        dune_psql_q --csv --set=map="$map_name" <<'SQL'
+SELECT a.id AS id,
+       COALESCE(NULLIF(ps.character_name, ''), 'Unknown') AS name,
+       COALESCE(ps.online_status::text, '') AS online,
+       COALESCE(a.partition_id, 0) AS partition,
+       COALESCE(ac."user", '') AS fls,
+       ((a.transform).location).x AS x,
+       ((a.transform).location).y AS y,
+       ((a.transform).location).z AS z
+FROM dune.actors a
+JOIN dune.player_state ps ON ps.player_pawn_id = a.id
+LEFT JOIN dune.accounts ac ON ac.id = ps.account_id
+WHERE a.map = :'map' AND a.transform IS NOT NULL
+ORDER BY name
+SQL
+        exit 0
+        ;;
     tags-get)
         # Player progression tags, ported verbatim from dune-admin. Keyed on
         # the confirmed account id.

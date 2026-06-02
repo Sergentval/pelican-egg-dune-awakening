@@ -52,6 +52,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import admin_progression  # noqa: E402  # type: ignore[import-not-found]  (resolved at runtime via sys.path; pure XP/keystone math, no DB/network)
 from admin_status import merge_status, parse_player_counts  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure status-grid merge, no DB/network)
 import admin_ini_merge  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure INI read/upsert engine, no DB/network)
+import admin_map  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure map-key validation + marker CSV parse, no DB/network)
+import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure JSON locations store, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -1021,6 +1023,27 @@ class Handler(BaseHTTPRequestHandler):
             self._write(401, {"error": "auth required"})
             return
 
+        # Live map: player markers (positions) on one map. Map key is
+        # whitelisted in admin_map; the position read runs in admin-publish.
+        if path == "/api/map/markers":
+            map_key = (query.get("map") or [""])[0]
+            if not admin_map.validate_map_key(map_key):
+                self._write(400, {"error": "map query param required: " + "|".join(admin_map.MAP_KEYS)})
+                return
+            entry = run_publish(["map-markers", map_key], timeout=10)
+            if entry["exit_code"] != 0:
+                self._write(502, {"error": "map markers read failed",
+                                  "detail": (entry.get("stderr") or "").strip()[:300]})
+                return
+            self._write(200, {"ok": True, "map": map_key,
+                              "markers": admin_map.parse_markers(entry["stdout"])})
+            return
+
+        # Saved teleport locations (operator-defined named coords).
+        if path == "/api/map/locations":
+            self._write(200, {"ok": True, "locations": admin_locations.load_locations(BASE_DIR)})
+            return
+
         # Phase 4: live server status grid — mock-k8s per-map instance/scale
         # status merged with per-map online player counts (from Postgres via
         # admin-publish server-status; admin-http holds no PG connection). A
@@ -1677,6 +1700,55 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "item_id (positive integer) required"})
                 return
             entry = run_publish(["item-delete", item_id], timeout=15)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Saved teleport locations: add/replace or remove. Body is one of:
+        #   {"action":"add","location":{"name","map","x","y","z"}}
+        #   {"action":"remove","name":"..."}
+        if path == "/api/map/locations":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            action = body.get("action") if isinstance(body, dict) else None
+            if action == "add":
+                locs, err = admin_locations.upsert_location(BASE_DIR, body.get("location"))
+                if err:
+                    self._write(400, {"error": err})
+                    return
+                self._write(200, {"ok": True, "locations": locs})
+                return
+            if action == "remove":
+                name = body.get("name") or ""
+                if not name:
+                    self._write(400, {"error": "name required"})
+                    return
+                self._write(200, {"ok": True, "locations": admin_locations.remove_location(BASE_DIR, name)})
+                return
+            self._write(400, {"error": 'action must be "add" or "remove"'})
+            return
+
+        # Teleport a player to a saved location (snap-to-safe). The player must
+        # be online (teleport is an RMQ command). Body: {"player","location"}.
+        if path == "/api/map/teleport":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = (body.get("player") if isinstance(body, dict) else "") or ""
+            loc = admin_locations.find_location(BASE_DIR, body.get("location") if isinstance(body, dict) else "")
+            if not player:
+                self._write(400, {"error": "player required"})
+                return
+            if loc is None:
+                self._write(404, {"error": "unknown location"})
+                return
+            entry = run_publish(["tpsafe", player, str(loc["x"]), str(loc["y"]), str(loc["z"])], timeout=15)
             self._write(200 if entry["ok"] else 502, entry)
             return
 
