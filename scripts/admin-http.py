@@ -74,6 +74,10 @@ SETTINGS_SCHEMA_PATH = BASE_DIR + "/data/admin/settings-schema.json"
 INI_FILES = {
     "UserEngine": BASE_DIR + "/server/state/ue5-saved/UserSettings/UserEngine.ini",
     "UserGame": BASE_DIR + "/server/state/ue5-saved/UserSettings/UserGame.ini",
+    # Operator UClass overrides. prestart.sh strips + re-appends this verbatim
+    # into UserGame.ini on every boot, so it takes precedence and round-trips
+    # cleanly — the designed sink for the [/Script/...] catalogue (no env vars).
+    "UserOverrides": BASE_DIR + "/server/state/UserOverrides.ini",
     "ondemand": BASE_DIR + "/server/state/ondemand.ini",
 }
 STATE_DIR = BASE_DIR + "/state"
@@ -1031,6 +1035,10 @@ class Handler(BaseHTTPRequestHandler):
                     "value": cur,
                     "isDefault": cur is None,
                     "verified": st.get("verified", False),
+                    "section": st.get("section"),
+                    "key": st.get("key"),
+                    "clientGated": st.get("client_gated", "no") == "yes",
+                    "advanced": bool(st.get("advanced", False)),
                 })
             self._write(200, {
                 "ok": True,

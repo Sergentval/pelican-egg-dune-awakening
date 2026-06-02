@@ -2923,6 +2923,17 @@ export function SettingsTab({ setConsoleEntries }: TabProps) {
 
   function renderInput(s: SettingItem) {
     const cur = edits[s.id] ?? (s.value ?? "");
+    if (s.advanced) {
+      // struct/array values are written verbatim — one full-width raw field.
+      return (
+        <input
+          className="input-field text-xs font-mono w-full"
+          value={cur}
+          placeholder={s.default || "single-line value; multi-line arrays: edit UserGame.ini directly"}
+          onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
+        />
+      );
+    }
     if (s.type === "bool" || s.type === "cvarbool") {
       return (
         <select className="input-field text-xs" value={cur} onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}>
@@ -2969,7 +2980,10 @@ export function SettingsTab({ setConsoleEntries }: TabProps) {
         <p className="p-4 text-xs text-slate-400">
           Edit a value and hit apply — it writes to the server INI and takes effect on the next{" "}
           <span className="font-mono text-slate-300">restart</span>. A{" "}
-          <span className="pill-warn text-[10px]">candidate</span> tag means the mapping isn't game-verified yet.
+          <span className="pill-warn text-[10px]">candidate</span> tag means the mapping isn't game-verified yet;{" "}
+          <span className="pill-warn text-[10px]">⚠ client-side</span> means clients clamp to their own default unless each
+          player also edits their <span className="font-mono text-slate-300">Game.ini</span>;{" "}
+          <span className="text-amber-400/80">advanced</span> values are written verbatim.
         </p>
       </div>
       {!resp && <p className="text-sm text-slate-500 italic">loading…</p>}
@@ -2981,18 +2995,31 @@ export function SettingsTab({ setConsoleEntries }: TabProps) {
           </header>
           <div className="divide-y divide-slate-900">
             {items.map((s) => (
-              <div key={s.id} className="flex items-center gap-3 px-4 py-2">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm flex items-center gap-2">
-                    {s.label}
-                    {!s.verified && <span className="pill-warn text-[10px]">candidate</span>}
-                    {!s.isDefault && <span className="pill-ok text-[10px]">set</span>}
+              <div key={s.id} className="px-4 py-2">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm flex items-center gap-2 flex-wrap">
+                      {s.label}
+                      {!s.verified && <span className="pill-warn text-[10px]">candidate</span>}
+                      {!s.isDefault && <span className="pill-ok text-[10px]">set</span>}
+                      {s.clientGated && (
+                        <span
+                          className="pill-warn text-[10px]"
+                          title="The server applies this, but each client clamps to its own default unless the player also edits %localappdata%\DuneSandbox\Saved\Config\WindowsClient\Game.ini"
+                        >
+                          ⚠ client-side
+                        </span>
+                      )}
+                      {s.advanced && <span className="text-[10px] text-amber-400/80">advanced</span>}
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono truncate">
+                      {s.section ? `${s.section.split(".").pop()} · ` : ""}{s.key} · {s.type}
+                      {s.default !== null ? ` · default ${s.default || '""'}` : ""}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono truncate">
-                    {s.id} · {s.type}{s.default !== null ? ` · default ${s.default || '""'}` : ""}
-                  </div>
+                  {!s.advanced && <div className="w-40 shrink-0">{renderInput(s)}</div>}
                 </div>
-                <div className="w-40 shrink-0">{renderInput(s)}</div>
+                {s.advanced && <div className="mt-1.5">{renderInput(s)}</div>}
               </div>
             ))}
           </div>

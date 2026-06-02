@@ -610,6 +610,10 @@ export interface SettingItem {
   value: string | null;
   isDefault: boolean;
   verified: boolean;
+  section: string | null;
+  key: string;
+  clientGated: boolean;
+  advanced: boolean;
 }
 export interface SettingsResponse {
   ok: boolean;

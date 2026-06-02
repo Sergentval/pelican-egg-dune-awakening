@@ -174,4 +174,14 @@ def normalize_value(raw, vtype: str, enum: list[str] | None = None) -> str:
         return ",".join(str(int(p.strip())) for p in s.split(","))
     if t == "string":
         return s
+    if t in ("struct", "array"):
+        # Advanced UClass values (e.g. damage configs, tax-multiplier arrays):
+        # written verbatim, no numeric coercion. INI is line-based, so a value
+        # must fit one key=value line — reject newlines and empties. Genuinely
+        # multi-line arrays (several +key= lines) are edited in UserGame.ini.
+        if "\n" in s or "\r" in s:
+            raise ValueError(f"{vtype} value must be a single line; edit UserGame.ini directly for multi-line arrays")
+        if not s:
+            raise ValueError(f"{vtype} value is empty; set it verbatim from DefaultGame.ini")
+        return s
     raise ValueError(f"unknown setting type: {vtype}")
