@@ -3,6 +3,7 @@ import {
   BroadcastTab,
   Dashboard,
   HistoryTab,
+  InventoryTab,
   ItemsTab,
   KitsTab,
   MaintenanceTab,
@@ -22,6 +23,7 @@ type TabId =
   | "dashboard"
   | "broadcast"
   | "players"
+  | "inventory"
   | "kits"
   | "items"
   | "skills"
@@ -46,6 +48,7 @@ const TABS: TabDef[] = [
   { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
+  { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
@@ -184,6 +187,7 @@ export default function App() {
           {tab === "kits" && <KitsTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
+          {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}

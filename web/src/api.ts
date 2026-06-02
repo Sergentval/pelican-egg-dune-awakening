@@ -213,6 +213,27 @@ export const fetchPlayers = (filter: "all" | "online" = "all") =>
 
 export const fetchPos = (playerId: string) => api<PublishResult>("GET", `/api/pos/${encodeURIComponent(playerId)}`);
 
+// A CSV-derived table reply (headers + rows) as returned by the per-player
+// read endpoints (inventory, state, tags). `available:false` means the
+// underlying tables are missing on this build.
+export interface PlayerTable {
+  headers: string[];
+  rows: string[][];
+  truncated?: boolean;
+  available?: boolean;
+  detail?: string;
+}
+
+// Player inventory (dune.items for the target's character), enriched with a
+// `name` column server-side. Each row carries item_id for targeted deletes.
+export const fetchInventory = (playerId: string) =>
+  api<PlayerTable>("GET", `/api/players/${encodeURIComponent(playerId)}/inventory`);
+
+// DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated on
+// the backend (rejects while the owning character is connected).
+export const deleteItem = (itemId: string) =>
+  api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/delete`);
+
 export const fetchVehicles = () => api<{ vehicles: VehicleClass[] }>("GET", "/api/lookup/vehicles");
 
 export interface ItemCategoryBucket {

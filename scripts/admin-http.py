@@ -459,6 +459,26 @@ def load_settings_schema() -> list[dict]:
         return []
 
 
+_ITEM_NAMES: "dict[str, str] | None" = None
+
+
+def load_item_names() -> "dict[str, str]":
+    """template_id -> display name, lazily loaded + cached from item-data.json
+    (the same catalogue admin_market uses). Empty dict if the file is missing."""
+    global _ITEM_NAMES
+    if _ITEM_NAMES is None:
+        try:
+            with open(os.path.join(BASE_DIR, "data", "admin", "item-data.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            names = data.get("names") or {}
+            if not names:
+                names = {k: (v.get("name") or "") for k, v in (data.get("items") or {}).items()}
+            _ITEM_NAMES = {str(k): str(v) for k, v in names.items()}
+        except (OSError, ValueError):
+            _ITEM_NAMES = {}
+    return _ITEM_NAMES
+
+
 def _read_ini_text(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -1334,8 +1354,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_player_inventory(self, player: str) -> None:
         table = self._player_reply(run_publish(["inventory-list", player], timeout=15))
-        if table is not None:
-            self._write(200, table)
+        if table is None:
+            return
+        # Enrich each row with a human item name from the catalogue, inserted
+        # right after template_id, so the SPA can show names without bundling
+        # the 1658-item catalogue client-side.
+        headers = table.get("headers", [])
+        names = load_item_names()
+        if "template_id" in headers and "name" not in headers and names:
+            ti = headers.index("template_id")
+            table["headers"] = headers[:ti + 1] + ["name"] + headers[ti + 1:]
+            table["rows"] = [
+                (r[:ti + 1] + [names.get(str(r[ti]), "")] + r[ti + 1:]) if ti < len(r) else r
+                for r in table.get("rows", [])
+            ]
+        self._write(200, table)
 
     def _handle_player_tags(self, player: str) -> None:
         table = self._player_reply(run_publish(["tags-get", player], timeout=10))

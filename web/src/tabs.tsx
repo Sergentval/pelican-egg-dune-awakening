@@ -7,7 +7,9 @@ import {
   armorSetLabel,
   armorSetTier,
   clampNum,
+  deleteItem,
   deleteVehicleActor,
+  fetchInventory,
   detectSkillType,
   detectTier,
   isUniqueItem,
@@ -38,6 +40,7 @@ import {
   skillTypeIcon,
   vehicleActorToClass,
   vehicleIcon,
+  type PlayerTable,
   vehicleImageFilename,
   type ArmorSet,
   type VehicleActor,
@@ -2879,6 +2882,144 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- Inventory (Phase 1: view + per-item delete) ----------------------
+
+export function InventoryTab({ setConsoleEntries }: TabProps) {
+  const target = useTarget();
+  const [table, setTable] = useState<PlayerTable | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{ id: string; name: string } | null>(null);
+
+  async function load() {
+    if (!target.playerId) return;
+    setLoading(true);
+    setError(null);
+    const res = await fetchInventory(target.playerId);
+    setLoading(false);
+    if (res.ok) {
+      setTable(res.body as PlayerTable);
+    } else {
+      setTable(null);
+      setError((res.body as { error?: string }).error || "inventory load failed");
+    }
+  }
+
+  async function doDelete(id: string, name: string) {
+    const res = await deleteItem(id);
+    const ok = res.ok && (res.body as PublishResult).ok;
+    pushToConsole(setConsoleEntries, `item-delete #${id} (${name})`, res.body as PublishResult, ok);
+    setConfirm(null);
+    if (ok) load();
+  }
+
+  const headers = table?.headers ?? [];
+  const rows = table?.rows ?? [];
+  const cell = (row: string[], h: string) => {
+    const i = headers.indexOf(h);
+    return i >= 0 && i < row.length ? row[i] : "";
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Player inventory</h2>
+          <button className="btn-ghost text-xs" onClick={load} disabled={loading}>
+            {loading ? "…" : "load"}
+          </button>
+        </header>
+        <div className="p-4 space-y-3">
+          <PlayerPicker />
+          <p className="text-xs text-slate-500">
+            Reads <span className="font-mono text-slate-300">dune.items</span> for the target character. Deleting a
+            stack is <span className="text-red-300">permanent</span> and requires the player to be{" "}
+            <span className="font-mono text-slate-300">offline</span> — the server rejects deletes on a connected
+            character.
+          </p>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+          {table && table.available === false && (
+            <p className="text-sm text-amber-400">unavailable: {table.detail || "inventory tables missing"}</p>
+          )}
+        </div>
+      </div>
+
+      {table && rows.length > 0 && (
+        <div className="card">
+          <header className="card-header">
+            <h3 className="font-semibold text-sm">{rows.length} item stacks</h3>
+            <span className="text-xs text-slate-500 font-mono">{target.playerId}</span>
+          </header>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-slate-500 border-b border-slate-800">
+                <tr>
+                  <th className="py-1 px-3">Item</th>
+                  <th className="px-3">Qty</th>
+                  <th className="px-3">Quality</th>
+                  <th className="px-3">Durability</th>
+                  <th className="px-3">Slot</th>
+                  <th className="px-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const id = cell(r, "item_id");
+                  const tmpl = cell(r, "template_id");
+                  const name = cell(r, "name") || tmpl;
+                  const dura = cell(r, "durability");
+                  const maxd = cell(r, "max_durability");
+                  return (
+                    <tr key={id} className="border-b border-slate-900">
+                      <td className="py-1.5 px-3">
+                        <div className="text-slate-200">{name}</div>
+                        <div className="text-[10px] text-slate-600 font-mono">{tmpl} · #{id}</div>
+                      </td>
+                      <td className="px-3 font-mono">{cell(r, "stack_size")}</td>
+                      <td className="px-3">{cell(r, "quality")}</td>
+                      <td className="px-3 font-mono text-slate-400">
+                        {dura}
+                        {maxd && maxd !== "N/A" ? ` / ${maxd}` : ""}
+                      </td>
+                      <td className="px-3 font-mono text-slate-500">{cell(r, "slot")}</td>
+                      <td className="px-3 text-right">
+                        <button
+                          className="btn-ghost text-xs text-red-300 hover:text-red-200"
+                          onClick={() => setConfirm({ id, name })}
+                        >
+                          delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {table && rows.length === 0 && !loading && (
+        <p className="text-sm text-slate-500 italic">
+          No item stacks (empty inventory, or the character has no offline-readable items).
+        </p>
+      )}
+
+      <Confirm
+        open={confirm !== null}
+        title="Delete item stack?"
+        message={
+          confirm
+            ? `Permanently delete "${confirm.name}" (item #${confirm.id}) from ${target.playerId}'s inventory. The player must be offline. Unrecoverable.`
+            : ""
+        }
+        confirmLabel="Delete"
+        onConfirm={() => confirm && doDelete(confirm.id, confirm.name)}
+        onCancel={() => setConfirm(null)}
+      />
     </div>
   );
 }
