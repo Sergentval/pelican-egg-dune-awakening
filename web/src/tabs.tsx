@@ -2888,6 +2888,23 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
 
 // ---- Inventory (Phase 1: view + per-item delete) ----------------------
 
+// dune.inventories.inventory_type -> human container label. Values + meaning
+// lifted from Icehunter/dune-admin (repairGearInventoryTypes {0,1,14,15,27,30}
+// = "backpack, equipment, emote wheel, equipped weapons, action wheel, bank")
+// and confirmed against live character data.
+const INV_TYPE_LABELS: Record<string, string> = {
+  "0": "Backpack",
+  "1": "Equipped (armor & modules)",
+  "15": "Hotbar (held tools / weapons)",
+  "27": "Action wheel",
+  "14": "Emote wheel",
+  "30": "Bank",
+};
+const INV_TYPE_ORDER = ["0", "15", "1", "27", "14", "30"];
+function invTypeLabel(t: string): string {
+  return INV_TYPE_LABELS[t] || `Other (type ${t})`;
+}
+
 export function InventoryTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [table, setTable] = useState<PlayerTable | null>(null);
@@ -2924,6 +2941,19 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
     return i >= 0 && i < row.length ? row[i] : "";
   };
 
+  // Group item stacks by their container (inventory_type).
+  const groups = new Map<string, string[][]>();
+  for (const r of rows) {
+    const t = cell(r, "inv_type");
+    const arr = groups.get(t) ?? [];
+    arr.push(r);
+    groups.set(t, arr);
+  }
+  const orderedTypes = [
+    ...INV_TYPE_ORDER.filter((t) => groups.has(t)),
+    ...[...groups.keys()].filter((t) => !INV_TYPE_ORDER.includes(t)).sort(),
+  ];
+
   return (
     <div className="space-y-4">
       <div className="card">
@@ -2949,57 +2979,65 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
       </div>
 
       {table && rows.length > 0 && (
-        <div className="card">
-          <header className="card-header">
-            <h3 className="font-semibold text-sm">{rows.length} item stacks</h3>
-            <span className="text-xs text-slate-500 font-mono">{target.playerId}</span>
-          </header>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-left text-slate-500 border-b border-slate-800">
-                <tr>
-                  <th className="py-1 px-3">Item</th>
-                  <th className="px-3">Qty</th>
-                  <th className="px-3">Quality</th>
-                  <th className="px-3">Durability</th>
-                  <th className="px-3">Slot</th>
-                  <th className="px-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const id = cell(r, "item_id");
-                  const tmpl = cell(r, "template_id");
-                  const name = cell(r, "name") || tmpl;
-                  const dura = cell(r, "durability");
-                  const maxd = cell(r, "max_durability");
-                  return (
-                    <tr key={id} className="border-b border-slate-900">
-                      <td className="py-1.5 px-3">
-                        <div className="text-slate-200">{name}</div>
-                        <div className="text-[10px] text-slate-600 font-mono">{tmpl} · #{id}</div>
-                      </td>
-                      <td className="px-3 font-mono">{cell(r, "stack_size")}</td>
-                      <td className="px-3">{cell(r, "quality")}</td>
-                      <td className="px-3 font-mono text-slate-400">
-                        {dura}
-                        {maxd && maxd !== "N/A" ? ` / ${maxd}` : ""}
-                      </td>
-                      <td className="px-3 font-mono text-slate-500">{cell(r, "slot")}</td>
-                      <td className="px-3 text-right">
-                        <button
-                          className="btn-ghost text-xs text-red-300 hover:text-red-200"
-                          onClick={() => setConfirm({ id, name })}
-                        >
-                          delete
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div className="space-y-3">
+          <div className="text-xs text-slate-500 font-mono">{rows.length} item stacks · {target.playerId}</div>
+          {orderedTypes.map((t) => {
+            const items = groups.get(t) ?? [];
+            return (
+              <div key={t} className="card">
+                <header className="card-header">
+                  <h3 className="font-semibold text-sm">{invTypeLabel(t)}</h3>
+                  <span className="text-xs text-slate-500">{items.length}</span>
+                </header>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-left text-slate-500 border-b border-slate-800">
+                      <tr>
+                        <th className="py-1 px-3">Item</th>
+                        <th className="px-3">Qty</th>
+                        <th className="px-3">Quality</th>
+                        <th className="px-3">Durability</th>
+                        <th className="px-3">Slot</th>
+                        <th className="px-3"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((r) => {
+                        const id = cell(r, "item_id");
+                        const tmpl = cell(r, "template_id");
+                        const name = cell(r, "name") || tmpl;
+                        const dura = cell(r, "durability");
+                        const maxd = cell(r, "max_durability");
+                        return (
+                          <tr key={id} className="border-b border-slate-900">
+                            <td className="py-1.5 px-3">
+                              <div className="text-slate-200">{name}</div>
+                              <div className="text-[10px] text-slate-600 font-mono">{tmpl} · #{id}</div>
+                            </td>
+                            <td className="px-3 font-mono">{cell(r, "stack_size")}</td>
+                            <td className="px-3">{cell(r, "quality")}</td>
+                            <td className="px-3 font-mono text-slate-400">
+                              {dura}
+                              {maxd && maxd !== "N/A" ? ` / ${maxd}` : ""}
+                            </td>
+                            <td className="px-3 font-mono text-slate-500">{cell(r, "slot")}</td>
+                            <td className="px-3 text-right">
+                              <button
+                                className="btn-ghost text-xs text-red-300 hover:text-red-200"
+                                onClick={() => setConfirm({ id, name })}
+                              >
+                                delete
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
       {table && rows.length === 0 && !loading && (

@@ -814,6 +814,7 @@ SQL
         # pc_actor is a DB-sourced integer id; bind it as an integer.
         dune_psql_q --csv --set=actor="$pc_actor" <<'SQL'
 SELECT i.id           AS item_id,
+       inv.inventory_type AS inv_type,
        i.template_id  AS template_id,
        i.stack_size   AS stack_size,
        i.quality_level AS quality,
@@ -823,7 +824,7 @@ SELECT i.id           AS item_id,
 FROM dune.items i
 JOIN dune.inventories inv ON i.inventory_id = inv.id
 WHERE inv.actor_id = :'actor'::bigint
-ORDER BY i.template_id
+ORDER BY inv.inventory_type, i.position_index
 SQL
         exit 0
         ;;
