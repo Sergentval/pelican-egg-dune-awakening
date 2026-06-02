@@ -382,6 +382,21 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
     return entry
 
 
+def run_welcome(sub: str, timeout: int = 60) -> dict:
+    """Run scripts/admin_welcome.py <sub> <BASE_DIR> out-of-process (it shells to
+    give-item, so keep it isolated + timeout-bounded). Returns {ok, data, ...}
+    where `data` is the script's parsed JSON output."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_welcome.py"), sub, BASE_DIR],
+        capture_output=True, text=True, timeout=timeout)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
     """GET mock-k8s's /status (HTTPS with a self-signed cert -> verification
     disabled) and return the parsed snapshot, or None if it is unreachable or
@@ -1010,6 +1025,17 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        # Phase 6: welcome-kit config + ledger status + recent grants.
+        if path == "/api/welcome":
+            status = run_welcome("status", timeout=15)
+            grants = run_welcome("list", timeout=15)
+            self._write(200, {
+                "ok": True,
+                "config": status.get("data", {}),
+                "grants": grants.get("data", []),
+            })
+            return
+
         if path == "/api/me":
             if UI_ENABLED:
                 token, _ = self._session_token_from_request()
@@ -1342,6 +1368,31 @@ class Handler(BaseHTTPRequestHandler):
                 "errors": errors,
                 "restartRequired": bool(applied),
             })
+            return
+
+        # Phase 6: run one welcome-kit scan now (grants the active package to
+        # online players not yet recorded). No-op while the kit is disabled.
+        if path == "/api/welcome/scan":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_welcome("scan", timeout=120)
+            self._write(200 if r["ok"] else 502, r.get("data", r))
+            return
+
+        # Phase 6: clear failed grant rows so the next scan retries them.
+        if path == "/api/welcome/retry-failed":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_welcome("retry-failed", timeout=15)
+            self._write(200 if r["ok"] else 502, r.get("data", r))
             return
 
         if path == "/api/vehicles/delete":
