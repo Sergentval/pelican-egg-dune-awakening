@@ -578,3 +578,88 @@ export function parsePosOutput(stdout: string, source: string): PosInfo | null {
     ts: Date.now(),
   };
 }
+
+// ---- Phase 4: server status grid ----
+
+export interface StatusMapRow {
+  map: string;
+  status?: string;
+  desired?: number;
+  current?: number;
+  players: number;
+}
+export interface StatusGrid {
+  ok: boolean;
+  maps: StatusMapRow[];
+  totalServers: number;
+  totalPlayers: number;
+  uptimeSeconds: number;
+  sources?: { mockK8s: boolean; playerCounts: boolean };
+  warning?: string;
+}
+export const fetchStatus = () => api<StatusGrid>("GET", "/api/status");
+
+// ---- Phase 5: server settings ----
+
+export interface SettingItem {
+  id: string;
+  label: string;
+  type: string;
+  default: string | null;
+  enum: string[] | null;
+  value: string | null;
+  isDefault: boolean;
+  verified: boolean;
+}
+export interface SettingsResponse {
+  ok: boolean;
+  count: number;
+  categories: Record<string, SettingItem[]>;
+  note?: string;
+}
+export interface SettingsSaveResult {
+  ok: boolean;
+  applied: string[];
+  errors: { id: string; error: string }[];
+  restartRequired: boolean;
+}
+export const fetchSettings = () => api<SettingsResponse>("GET", "/api/settings");
+export const saveSettings = (settings: Record<string, string>) =>
+  api<SettingsSaveResult>("POST", "/api/settings", { settings });
+
+// ---- Phase 6: welcome kits ----
+
+export interface WelcomeGrant {
+  fls_id: string;
+  package_version: string;
+  account_id: number;
+  character_name: string;
+  status: string;
+  granted_at: string;
+  attempts: number;
+  last_error: string;
+  updated_at: string;
+}
+export interface WelcomeResponse {
+  ok: boolean;
+  config: {
+    enabled: boolean;
+    active_version: string;
+    packages: string[];
+    ledger: { granted: number; failed: number };
+  };
+  grants: WelcomeGrant[];
+}
+export interface WelcomeScanResult {
+  ok: boolean;
+  disabled?: boolean;
+  granted?: number;
+  failed?: number;
+  skipped?: number;
+  online?: number;
+  version?: string;
+  error?: string;
+}
+export const fetchWelcome = () => api<WelcomeResponse>("GET", "/api/welcome");
+export const welcomeScan = () => api<WelcomeScanResult>("POST", "/api/welcome/scan");
+export const welcomeRetryFailed = () => api<{ cleared: number }>("POST", "/api/welcome/retry-failed");
