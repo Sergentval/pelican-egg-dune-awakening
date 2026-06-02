@@ -151,6 +151,15 @@ def normalize_value(raw, vtype: str, enum: list[str] | None = None) -> str:
         if low in _BOOL_FALSE:
             return "False"
         raise ValueError(f"invalid bool: {raw!r}")
+    if t == "cvarbool":
+        # Console variables take 1/0, not True/False — 1/0 is accepted for every
+        # bool/int cvar, so it's the unambiguous form for [ConsoleVariables].
+        low = s.lower()
+        if low in _BOOL_TRUE:
+            return "1"
+        if low in _BOOL_FALSE:
+            return "0"
+        raise ValueError(f"invalid cvarbool: {raw!r}")
     if t == "int":
         return str(int(s))
     if t == "float":
