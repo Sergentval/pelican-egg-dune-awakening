@@ -200,3 +200,13 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   dune-admin in NOT recomputing the pawn FLevel skill points (the game
   reconciles on next login). HTTP: POST /api/items/<id>/delete, POST
   /api/players/<id>/reset-spec, POST /api/players/<id>/account-delete.
+- the market-bot pricing engine (`internal/marketbot/pricing.go`) ported to
+  `scripts/admin_market.py`, with the **Coastal "sane pricing"** model from
+  coastal-ms/DST-DuneServerTool's `0001-sane-pricing-100k-cap.patch` (Apache-2.0):
+  per-quality grade multipliers `[1, 1.25, 1.55, 2, 2.6, 3.3]` and a hard 100k
+  cap. Verified against dune-admin's `pricing_test.go` golden values in
+  `scripts/test_admin_market.py`. The item catalogue `data/admin/item-data.json`
+  (vendor prices + categories + tiers/rarities for ~1.6k items) is lifted
+  verbatim from dune-admin's `item-data.json` (MIT, © 2026 Ryan Wilson). Phase 7a
+  is pricing + read-only market view; the order-posting / d12-gamble-buy bot
+  (`exchange.go`, `bot.go`) is deferred to 7b.

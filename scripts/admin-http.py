@@ -397,6 +397,21 @@ def run_welcome(sub: str, timeout: int = 60) -> dict:
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
+def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
+    """Run scripts/admin_market.py <sub> [args] <BASE_DIR> out-of-process.
+    Returns {ok, data, ...} where `data` is the script's parsed JSON output.
+    Read-only (pricing + market summary); no exchange writes in Phase 7a."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_market.py"), sub, *args, BASE_DIR],
+        capture_output=True, text=True, timeout=timeout)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
     """GET mock-k8s's /status (HTTPS with a self-signed cert -> verification
     disabled) and return the parsed snapshot, or None if it is unreachable or
@@ -1034,6 +1049,30 @@ class Handler(BaseHTTPRequestHandler):
                 "config": status.get("data", {}),
                 "grants": grants.get("data", []),
             })
+            return
+
+        # Phase 7a: market-bot config + catalog stats + live order summary
+        # (read-only — pricing engine, no economy writes). Optional price
+        # preview via ?template=<id>&grade=<n>.
+        if path == "/api/market":
+            cfg = {}
+            try:
+                with open(os.path.join(BASE_DIR, "data", "admin", "market-bot.json"), encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except (OSError, ValueError):
+                pass
+            cfg.pop("_comment", None)
+            out = {
+                "ok": True,
+                "config": cfg,
+                "catalog": run_market("catalog-stats").get("data", {}),
+                "orders": run_market("orders").get("data", {}),
+            }
+            tmpl = (query.get("template") or [""])[0]
+            if tmpl:
+                grade = (query.get("grade") or ["0"])[0]
+                out["price"] = run_market("price", tmpl, grade if grade.isdigit() else "0").get("data", {})
+            self._write(200, out)
             return
 
         if path == "/api/me":
