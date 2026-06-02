@@ -8,8 +8,11 @@ import {
   MaintenanceTab,
   MovementTab,
   PlayersTab,
+  SettingsTab,
   SkillsTab,
+  StatusTab,
   VehiclesTab,
+  WelcomeTab,
 } from "./tabs";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
@@ -24,6 +27,9 @@ type TabId =
   | "skills"
   | "vehicles"
   | "movement"
+  | "status"
+  | "settings"
+  | "welcome"
   | "maintenance"
   | "history";
 
@@ -36,6 +42,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
+  { id: "status", label: "Status", icon: "📊", group: "overview" },
   { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
@@ -43,6 +50,8 @@ const TABS: TabDef[] = [
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
   { id: "movement", label: "Movement", icon: "🧭", group: "commands" },
+  { id: "welcome", label: "Welcome Kits", icon: "🎉", group: "commands" },
+  { id: "settings", label: "Settings", icon: "⚙", group: "system" },
   { id: "maintenance", label: "Maintenance", icon: "🛠", group: "system" },
   { id: "history", label: "History", icon: "🗒", group: "system" },
 ];
@@ -179,6 +188,9 @@ export default function App() {
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
           {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}
+          {tab === "status" && <StatusTab setConsoleEntries={setEntries} />}
+          {tab === "welcome" && <WelcomeTab setConsoleEntries={setEntries} />}
+          {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "history" && <HistoryTab />}
 

@@ -21,6 +21,12 @@ import {
   fetchSpawnedVehicles,
   fetchSteamInfo,
   fetchVehicles,
+  fetchStatus,
+  fetchSettings,
+  saveSettings,
+  fetchWelcome,
+  welcomeScan,
+  welcomeRetryFailed,
   isUniqueArmor,
   itemCategoryStyle,
   parsePlayerTable,
@@ -43,6 +49,12 @@ import {
   type SkillRow,
   type SteamPersona,
   type VehicleClass,
+  type StatusGrid,
+  type SettingItem,
+  type SettingsResponse,
+  type SettingsSaveResult,
+  type WelcomeResponse,
+  type WelcomeScanResult,
 } from "./api";
 import {
   awakeningImageUrl,
@@ -2786,6 +2798,310 @@ export function HistoryTab() {
           <div className="p-8 text-center text-slate-500">No history yet</div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- Status (Phase 4: live server grid) -------------------------------
+
+export function StatusTab({ setConsoleEntries }: TabProps) {
+  const [grid, setGrid] = useState<StatusGrid | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    const res = await fetchStatus();
+    setLoading(false);
+    if (res.ok) setGrid(res.body as StatusGrid);
+    else pushToConsole(setConsoleEntries, "GET /api/status", JSON.stringify(res.body), false);
+  }
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 15000);
+    return () => clearInterval(t);
+  }, []);
+
+  const statusPill = (s?: string) =>
+    s === "healthy" ? "pill-ok" : s === "failing" ? "pill-err" : "pill-warn";
+
+  return (
+    <div className="card">
+      <header className="card-header">
+        <div className="flex items-center gap-2">
+          <h2 className="font-semibold">Server status</h2>
+          {grid && (
+            <span className="text-xs text-slate-500">
+              {grid.totalServers} servers · {grid.totalPlayers} online
+            </span>
+          )}
+        </div>
+        <button className="btn-ghost text-xs" onClick={refresh} disabled={loading}>
+          {loading ? "…" : "refresh"}
+        </button>
+      </header>
+      <div className="p-4 space-y-3">
+        {grid?.sources && !grid.sources.mockK8s && (
+          <p className="text-xs text-amber-300">mock-k8s status unreachable — showing player counts only.</p>
+        )}
+        {!grid && <p className="text-sm text-slate-500 italic">loading…</p>}
+        {grid && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-slate-500 border-b border-slate-800">
+                <tr>
+                  <th className="py-1 pr-4">Map / Sietch</th>
+                  <th className="pr-4">Status</th>
+                  <th className="pr-4">Replicas</th>
+                  <th className="pr-4">Players</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grid.maps.map((m) => (
+                  <tr key={m.map} className="border-b border-slate-900">
+                    <td className="py-1.5 pr-4 font-mono">{m.map}</td>
+                    <td className="pr-4"><span className={statusPill(m.status)}>{m.status || "?"}</span></td>
+                    <td className="pr-4 text-slate-400">{m.current ?? 0}/{m.desired ?? 0}</td>
+                    <td className="pr-4">
+                      {m.players > 0
+                        ? <span className="text-emerald-300 font-semibold">{m.players}</span>
+                        : <span className="text-slate-500">0</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {grid && (
+          <p className="text-xs text-slate-500">
+            uptime {Math.floor(grid.uptimeSeconds / 60)}m · auto-refresh 15s
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- Settings (Phase 5: server config) --------------------------------
+
+export function SettingsTab({ setConsoleEntries }: TabProps) {
+  const [resp, setResp] = useState<SettingsResponse | null>(null);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    const res = await fetchSettings();
+    setLoading(false);
+    if (res.ok) {
+      setResp(res.body as SettingsResponse);
+      setEdits({});
+    } else {
+      pushToConsole(setConsoleEntries, "GET /api/settings", JSON.stringify(res.body), false);
+    }
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  const dirty = Object.keys(edits).length;
+
+  async function apply() {
+    if (!dirty) return;
+    setSaving(true);
+    const res = await saveSettings(edits);
+    setSaving(false);
+    const b = res.body as SettingsSaveResult;
+    const ok = res.ok && b.ok;
+    const lines = [`applied: ${(b.applied || []).join(", ") || "none"}`];
+    if ((b.errors || []).length) lines.push("errors: " + b.errors.map((e) => `${e.id}: ${e.error}`).join("; "));
+    if (b.restartRequired) lines.push("⚠ restart the server for changes to take effect");
+    pushToConsole(setConsoleEntries, `settings apply (${dirty})`, lines.join("\n"), ok);
+    refresh();
+  }
+
+  function renderInput(s: SettingItem) {
+    const cur = edits[s.id] ?? (s.value ?? "");
+    if (s.type === "bool" || s.type === "cvarbool") {
+      return (
+        <select className="input-field text-xs" value={cur} onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}>
+          <option value="">(unset)</option>
+          <option value="1">on</option>
+          <option value="0">off</option>
+        </select>
+      );
+    }
+    if (s.type === "enum" && s.enum) {
+      return (
+        <select className="input-field text-xs" value={cur} onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}>
+          <option value="">(unset)</option>
+          {s.enum.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      );
+    }
+    return (
+      <input
+        className="input-field text-xs font-mono"
+        value={cur}
+        inputMode={s.type === "int" || s.type === "float" ? "decimal" : "text"}
+        placeholder={s.default ?? ""}
+        onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="card">
+        <header className="card-header">
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold">Server settings</h2>
+            {resp && <span className="text-xs text-slate-500">{resp.count} settings</span>}
+          </div>
+          <div className="flex gap-2">
+            <button className="btn-ghost text-xs" onClick={refresh} disabled={loading}>{loading ? "…" : "reload"}</button>
+            <button className="btn-primary text-xs" onClick={apply} disabled={!dirty || saving}>
+              {saving ? "saving…" : `apply${dirty ? ` (${dirty})` : ""}`}
+            </button>
+          </div>
+        </header>
+        <p className="p-4 text-xs text-slate-400">
+          Edit a value and hit apply — it writes to the server INI and takes effect on the next{" "}
+          <span className="font-mono text-slate-300">restart</span>. A{" "}
+          <span className="pill-warn text-[10px]">candidate</span> tag means the mapping isn't game-verified yet.
+        </p>
+      </div>
+      {!resp && <p className="text-sm text-slate-500 italic">loading…</p>}
+      {resp && Object.entries(resp.categories).sort(([a], [b]) => a.localeCompare(b)).map(([cat, items]) => (
+        <div key={cat} className="card">
+          <header className="card-header">
+            <h3 className="font-semibold text-sm">{cat}</h3>
+            <span className="text-xs text-slate-500">{items.length}</span>
+          </header>
+          <div className="divide-y divide-slate-900">
+            {items.map((s) => (
+              <div key={s.id} className="flex items-center gap-3 px-4 py-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm flex items-center gap-2">
+                    {s.label}
+                    {!s.verified && <span className="pill-warn text-[10px]">candidate</span>}
+                    {!s.isDefault && <span className="pill-ok text-[10px]">set</span>}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono truncate">
+                    {s.id} · {s.type}{s.default !== null ? ` · default ${s.default || '""'}` : ""}
+                  </div>
+                </div>
+                <div className="w-40 shrink-0">{renderInput(s)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- Welcome kits (Phase 6) -------------------------------------------
+
+export function WelcomeTab({ setConsoleEntries }: TabProps) {
+  const [resp, setResp] = useState<WelcomeResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    const res = await fetchWelcome();
+    setLoading(false);
+    if (res.ok) setResp(res.body as WelcomeResponse);
+    else pushToConsole(setConsoleEntries, "GET /api/welcome", JSON.stringify(res.body), false);
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  async function scan() {
+    setBusy(true);
+    const res = await welcomeScan();
+    setBusy(false);
+    const b = res.body as WelcomeScanResult;
+    const msg = b.disabled
+      ? "welcome kit is disabled — nothing granted"
+      : b.error
+        ? `error: ${b.error}`
+        : `granted ${b.granted ?? 0} · failed ${b.failed ?? 0} · skipped ${b.skipped ?? 0} (online ${b.online ?? 0})`;
+    pushToConsole(setConsoleEntries, "welcome scan", msg, res.ok && (b.ok ?? false));
+    refresh();
+  }
+
+  async function retry() {
+    setBusy(true);
+    const res = await welcomeRetryFailed();
+    setBusy(false);
+    pushToConsole(setConsoleEntries, "welcome retry-failed", `cleared ${(res.body as { cleared: number }).cleared ?? 0} failed rows`, res.ok);
+    refresh();
+  }
+
+  const cfg = resp?.config;
+
+  return (
+    <div className="space-y-4">
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Welcome kits</h2>
+          <div className="flex gap-2">
+            <button className="btn-ghost text-xs" onClick={refresh} disabled={loading}>{loading ? "…" : "refresh"}</button>
+            <button className="btn-ghost text-xs border border-slate-700" onClick={retry} disabled={busy}>retry failed</button>
+            <button className="btn-primary text-xs" onClick={scan} disabled={busy}>{busy ? "…" : "run scan now"}</button>
+          </div>
+        </header>
+        <div className="p-4 space-y-2 text-sm">
+          {cfg ? (
+            <div className="flex flex-wrap gap-4">
+              <span>status: <span className={cfg.enabled ? "pill-ok" : "pill-warn"}>{cfg.enabled ? "enabled" : "disabled"}</span></span>
+              <span className="text-slate-400">active: <span className="font-mono text-slate-200">{cfg.active_version || "—"}</span></span>
+              <span className="text-slate-400">packages: <span className="font-mono">{cfg.packages.join(", ") || "—"}</span></span>
+              <span className="text-slate-400">granted: <span className="text-emerald-300">{cfg.ledger.granted}</span></span>
+              <span className="text-slate-400">failed: <span className={cfg.ledger.failed ? "text-red-300" : "text-slate-300"}>{cfg.ledger.failed}</span></span>
+            </div>
+          ) : <p className="text-slate-500 italic">loading…</p>}
+          <p className="text-xs text-slate-500">
+            Edit <span className="font-mono text-slate-400">data/admin/welcome-kit.json</span> to define items + enable. The scanner grants the active
+            package once per player per version (bump the version to re-grant). In-panel kit editing is a future addition.
+          </p>
+        </div>
+      </div>
+      {resp && resp.grants.length > 0 && (
+        <div className="card">
+          <header className="card-header">
+            <h3 className="font-semibold text-sm">Recent grants</h3>
+            <span className="text-xs text-slate-500">{resp.grants.length}</span>
+          </header>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-slate-500 border-b border-slate-800">
+                <tr>
+                  <th className="py-1 px-3">Player</th>
+                  <th className="px-3">Version</th>
+                  <th className="px-3">Status</th>
+                  <th className="px-3">When</th>
+                  <th className="px-3">Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resp.grants.map((g, i) => (
+                  <tr key={`${g.fls_id}-${g.package_version}-${i}`} className="border-b border-slate-900">
+                    <td className="py-1.5 px-3 font-mono">{g.character_name || `${g.fls_id.slice(0, 8)}…`}</td>
+                    <td className="px-3 font-mono">{g.package_version}</td>
+                    <td className="px-3"><span className={g.status === "granted" ? "pill-ok" : "pill-err"}>{g.status}</span></td>
+                    <td className="px-3 text-slate-400">{(g.updated_at || "").replace("T", " ").replace("Z", "")}</td>
+                    <td className="px-3 text-slate-500 truncate max-w-[16rem]">{g.last_error || ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
