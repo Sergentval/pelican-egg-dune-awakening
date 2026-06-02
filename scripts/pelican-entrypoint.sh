@@ -82,6 +82,9 @@ bash scripts/start-mock-k8s.sh   "$BASE"
 bash scripts/start-director.sh   "$BASE"
 bash scripts/start-gateway.sh    "$BASE"
 bash scripts/start-admin-http.sh "$BASE"
+# Welcome-kit scanner (Phase 6). No-op while welcome-kit.json enabled:false, so
+# always safe to launch; grants run only after an operator enables a package.
+bash scripts/start-welcome-scanner.sh "$BASE"
 
 # Spawn dimensional UE5 partitions for cross-Sietch travel destinations.
 # prestart.sh has already seeded the dim>0 world_partition rows; this
