@@ -373,7 +373,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
-            "server-status", "map-markers",
+            "server-status", "map-markers", "db-backup", "db-backup-list",
         )
     )
     entry = {
@@ -1271,6 +1271,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/database/search":
             self._handle_db_search(query.get("term", [""])[0])
             return
+        if path == "/api/database/backups":
+            self._db_reply(run_publish(["db-backup-list"], timeout=15))
+            return
 
         if path == "/":
             self._write(200, USAGE_PLAIN, content_type="text/plain")
@@ -1882,6 +1885,19 @@ class Handler(BaseHTTPRequestHandler):
         # Database tab read-only SQL (auth + csrf already enforced above).
         if path == "/api/database/sql":
             self._handle_db_sql(body.get("sql", "") if isinstance(body, dict) else "")
+            return
+
+        # Trigger a DB backup now (pg_dump of the dune DB). Auth+csrf; restore
+        # stays CLI-only (destructive). pg_dump can take a while -> generous timeout.
+        if path == "/api/database/backup":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            entry = run_publish(["db-backup"], timeout=300)
+            self._write(200 if entry["ok"] else 502, entry)
             return
 
         if not path.startswith("/admin/"):

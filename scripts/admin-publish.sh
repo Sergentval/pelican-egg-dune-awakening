@@ -673,6 +673,66 @@ SQL
         exit 0
         ;;
 
+    db-backup)
+        # pg_dump -Fc of the whole `dune` database -> $BASE/backups/dune-<ts>.dump
+        # (under the Pelican file root, so it's visible + downloadable in the panel).
+        # Verifies the dump is non-empty, then prunes to retention. Read of DB,
+        # write of a file; safe to run while the server is up (pg_dump is a
+        # consistent snapshot).
+        keep="${1:-${DUNE_BACKUP_RETENTION:-7}}"
+        backups="$BASE/backups"
+        mkdir -p "$backups"
+        ts=$(date -u +%Y%m%d-%H%M%S)
+        out="$backups/dune-$ts.dump"
+        if LD_LIBRARY_PATH="$PG_LIBS" ICU_DATA="$PG_ICU" "$PG_BIN/pg_dump" \
+                -h "$PG_SOCK" -p "$PG_PORT" -U dune -d dune -Fc -f "$out"; then
+            sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+            if [ "${sz:-0}" -lt 1 ]; then
+                echo "[admin-publish] ERROR db-backup: dump is empty" >&2
+                rm -f "$out"; exit 1
+            fi
+            python3 "$BASE/scripts/admin_backup.py" prune "$backups" "$keep" >/dev/null 2>&1 || true
+            echo "backup=ok file=dune-$ts.dump bytes=$sz"
+            exit 0
+        fi
+        echo "[admin-publish] ERROR db-backup: pg_dump failed" >&2
+        rm -f "$out"; exit 1
+        ;;
+
+    db-backup-list)
+        # CSV (file,bytes,mtime) of existing backups, newest first.
+        backups="$BASE/backups"
+        echo "file,bytes,mtime"
+        [ -d "$backups" ] || exit 0
+        for f in $(ls -1t "$backups"/dune-*.dump 2>/dev/null); do
+            printf '%s,%s,%s\n' "$(basename "$f")" "$(stat -c%s "$f" 2>/dev/null)" \
+                "$(date -u -d "@$(stat -c%Y "$f" 2>/dev/null)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+        done
+        exit 0
+        ;;
+
+    db-restore)
+        # DESTRUCTIVE, CLI-ONLY. pg_restore --clean a backup into the dune DB.
+        # Hard-gated: confirm token must be RESTORE, and NO UE5 game server may be
+        # running (restore needs an idle DB; a live server would race + corrupt).
+        file="${1:?backup filename required}"
+        confirm="${2:-}"
+        file=$(basename "$file")   # no path traversal
+        path="$BASE/backups/$file"
+        [ -f "$path" ] || { echo "[admin-publish] ERROR db-restore: no such backup '$file'" >&2; exit 1; }
+        [ "$confirm" = "RESTORE" ] || { echo "[admin-publish] ERROR db-restore: pass confirm token RESTORE as arg 2" >&2; exit 2; }
+        if pgrep -f 'DuneSandboxServer-Linux-Shipping' >/dev/null 2>&1; then
+            echo "[admin-publish] ERROR db-restore: UE5 server is running — stop the server first (restore is destructive + needs an idle DB)" >&2
+            exit 1
+        fi
+        if LD_LIBRARY_PATH="$PG_LIBS" ICU_DATA="$PG_ICU" "$PG_BIN/pg_restore" \
+                -h "$PG_SOCK" -p "$PG_PORT" -U dune -d dune --clean --if-exists "$path"; then
+            echo "restore=ok file=$file"
+            exit 0
+        fi
+        echo "[admin-publish] ERROR db-restore: pg_restore failed" >&2; exit 1
+        ;;
+
     server-status)
         # Phase 4: per-map live player count for the server status grid. Counts
         # online players' BP_DunePlayerCharacter actors grouped by their current
