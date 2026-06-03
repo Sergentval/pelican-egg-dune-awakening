@@ -759,6 +759,41 @@ export interface ProgressionPreset {
 export const fetchProgressionPresets = () =>
   api<{ ok: boolean; presets: ProgressionPreset[] }>("GET", "/api/progression/presets");
 
+export interface FactionState {
+  faction_id: number;
+  name: string;
+  rep: number;
+  tier: number;
+  tier_name: string;
+}
+
+export interface PlayerSummary {
+  ok: boolean;
+  solaris: number;
+  xp: {
+    xp: number;
+    level: number;
+    intel: number;
+    maxXP: number;
+    maxLevel: number;
+    atCap: boolean;
+    xpToNext: number;
+    nextLevelAt: number;
+  };
+  faction: {
+    alignment: number;
+    alignment_name: string;
+    atreides: FactionState;
+    harkonnen: FactionState;
+  };
+  journey: { id: string; name: string; complete: number; total: number }[];
+  error?: string;
+  schema_gap?: boolean;
+}
+
+export const fetchPlayerSummary = (playerId: string) =>
+  api<PlayerSummary>("GET", `/api/players/${encodeURIComponent(playerId)}/summary`);
+
 /** POST a player-editor write. `action` is the route suffix (e.g. "give-currency"). */
 export function playerWrite(
   playerId: string,

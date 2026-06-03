@@ -9,8 +9,10 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, PlayerPicker, pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import {
+  fetchPlayerSummary,
   fetchProgressionPresets,
   playerWrite,
+  type PlayerSummary,
   type ProgressionPreset,
   type PublishResult,
 } from "./api";
@@ -56,6 +58,8 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
   const [preset, setPreset] = useState("");
   const [delConfirm, setDelConfirm] = useState("");
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
+  const [summary, setSummary] = useState<PlayerSummary | null>(null);
+  const [sumLoading, setSumLoading] = useState(false);
 
   useEffect(() => {
     fetchProgressionPresets().then((res) => {
@@ -69,6 +73,27 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
       }
     });
   }, []);
+
+  async function loadSummary() {
+    if (!pid) {
+      setSummary(null);
+      return;
+    }
+    setSumLoading(true);
+    const res = await fetchPlayerSummary(pid).catch(() => null);
+    setSumLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "ok" in b && (b as PlayerSummary).ok) {
+      setSummary(b as PlayerSummary);
+    } else {
+      setSummary(null);
+    }
+  }
+
+  // Reload the current-state panel whenever the target player changes.
+  useEffect(() => {
+    void loadSummary();
+  }, [pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function run(action: string, body: Record<string, unknown> | undefined, label: string) {
     if (!pid) return;
@@ -89,6 +114,7 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
     const out: PublishResult | string =
       typeof b === "string" ? b : (errMsg ?? (b as PublishResult));
     pushToConsole(setConsoleEntries, label, out, ok);
+    if (ok) void loadSummary(); // reflect the write in the current-state panel
   }
 
   const anyBusy = busy !== "" || !pid;
@@ -101,6 +127,58 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
         hint="Pick who to edit. Most writes below require the character to be OFFLINE — the server refuses (and reports it) when they're online."
       >
         <PlayerPicker />
+      </Section>
+
+      <Section title="Current state" hint="Live values for the selected player; refreshes after each successful edit.">
+        {!summary ? (
+          <p className="text-sm text-slate-500">
+            {sumLoading
+              ? "Loading…"
+              : pid
+                ? "No data — pick a valid player (or the character has no record yet)."
+                : "Pick a player above."}
+          </p>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-x-6 gap-y-1">
+              <span><span className="text-slate-500">Solaris</span> <span className="font-mono text-spice-300">{summary.solaris.toLocaleString()}</span></span>
+              <span><span className="text-slate-500">Level</span> <span className="font-mono">{summary.xp.level}</span><span className="text-slate-500">/{summary.xp.maxLevel}</span></span>
+              <span><span className="text-slate-500">XP</span> <span className="font-mono">{summary.xp.xp.toLocaleString()}</span><span className="text-slate-500">/{summary.xp.maxXP.toLocaleString()}</span></span>
+              <span><span className="text-slate-500">To next level</span> <span className="font-mono">{summary.xp.atCap ? "MAX" : summary.xp.xpToNext.toLocaleString()}</span></span>
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1">
+              <span>
+                <span className="text-slate-500">Faction</span>{" "}
+                {summary.faction.alignment
+                  ? <span className="text-spice-300">{summary.faction.alignment_name}</span>
+                  : <span className="text-slate-400">None (unaligned)</span>}
+              </span>
+              <span className="text-slate-400">Atreides <span className="font-mono">{summary.faction.atreides.rep}</span> (t{summary.faction.atreides.tier} {summary.faction.atreides.tier_name})</span>
+              <span className="text-slate-400">Harkonnen <span className="font-mono">{summary.faction.harkonnen.rep}</span> (t{summary.faction.harkonnen.tier} {summary.faction.harkonnen.tier_name})</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Journey progression</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {summary.journey.map((j) => {
+                  const done = j.total > 0 && j.complete >= j.total;
+                  const cls = done
+                    ? "border-emerald-700 text-emerald-300"
+                    : j.complete > 0
+                      ? "border-amber-700 text-amber-300"
+                      : "border-slate-700 text-slate-500";
+                  return (
+                    <span key={j.id} className={"text-xs px-1.5 py-0.5 rounded border " + cls} title={j.name}>
+                      {j.name}: {j.complete}/{j.total}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+            <button className="btn-ghost text-xs border border-slate-700" onClick={() => void loadSummary()} disabled={sumLoading}>
+              {sumLoading ? "…" : "refresh"}
+            </button>
+          </div>
+        )}
       </Section>
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -203,6 +281,15 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
               </button>
             </div>
           </div>
+          <button className="btn-ghost border border-red-900/60 text-red-300 w-full" disabled={anyBusy}
+            onClick={() => setConfirm({
+              title: "Remove faction?",
+              message: `Remove ${pid} from their Great House entirely — alignment → None, both houses' reputation cleared. Offline-gated; reversible by setting a tier again.`,
+              confirmLabel: "Remove faction",
+              onConfirm: () => run("remove-faction", undefined, `remove-faction ${pid}`),
+            })}>
+            {busy === "remove-faction" ? "…" : "Remove faction (unalign)"}
+          </button>
         </Section>
 
         {/* Journey progression */}
