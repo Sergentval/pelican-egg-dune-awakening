@@ -1154,6 +1154,18 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, out)
             return
 
+        # Player-editor: progression preset catalog (journey-node bundles).
+        # Read-only static catalog; POST .../progression-unlock|-lock applies it.
+        if path == "/api/progression/presets":
+            presets = []
+            try:
+                with open(os.path.join(BASE_DIR, "data", "admin", "progression-presets.json"), encoding="utf-8") as f:
+                    presets = json.load(f).get("presets", [])
+            except (OSError, ValueError):
+                pass
+            self._write(200, {"ok": True, "presets": presets})
+            return
+
         if path == "/api/me":
             if UI_ENABLED:
                 token, _ = self._session_token_from_request()
@@ -1743,6 +1755,50 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(
                 ["set-faction-tier", player, str(faction), str(tier)], timeout=20
             )
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;
+        # gathers root+descendants and calls complete_journey_story_nodes_for_player.
+        # POST /api/players/<id>/progression-unlock  body {"preset": "<id>"}
+        if path.startswith("/api/players/") and path.endswith("/progression-unlock"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/progression-unlock")])
+            preset = body.get("preset") if isinstance(body, dict) else None
+            if not isinstance(preset, str) or not preset.strip():
+                self._write(400, {"error": "preset (id string) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["progression-unlock", player, preset], timeout=30)
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Player WRITE: reverse (lock) a journey-progression preset. Offline-gated;
+        # calls reset_journey_story_nodes_for_player (no dune-admin equivalent).
+        # POST /api/players/<id>/progression-lock  body {"preset": "<id>"}
+        if path.startswith("/api/players/") and path.endswith("/progression-lock"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/progression-lock")])
+            preset = body.get("preset") if isinstance(body, dict) else None
+            if not isinstance(preset, str) or not preset.strip():
+                self._write(400, {"error": "preset (id string) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["progression-lock", player, preset], timeout=30)
             self._write(200 if entry["ok"] else 502, entry)
             return
 

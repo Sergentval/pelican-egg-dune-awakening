@@ -1603,6 +1603,69 @@ SQL
         echo "publish=db-write set-faction-tier controller=$ctrl faction=$fname tier=$tier rep=$applied"
         exit 0
         ;;
+    progression-unlock|progression-lock)
+        # Complete (unlock) or reset (lock) a journey-progression PRESET for a
+        # player via the game's OWN procs. Each preset names root story-nodes;
+        # we gather each root + every descendant (story_node_id LIKE 'root.%')
+        # that exists for the account, then call the proc with the full id array
+        # (the procs act on exact ids only — verified no child expansion).
+        # Offline-gated; takes effect on the player's next login. Ported from
+        # dune-admin progression presets (MIT); LOCK has no dune-admin analogue.
+        mode="$cmd"
+        raw="${1:?usage: $cmd <player> <preset_id>}"
+        preset="${2:?usage: $cmd <player> <preset_id>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR $mode: needs a single player, not '*'" >&2; exit 2
+        fi
+        dune_require_tables dune.journey_story_node dune.encrypted_accounts || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        # preset id -> root-node pg array (pure compute; validates the preset id).
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" progression-preset --id "$preset" 2>&1) || {
+            echo "[admin-publish] ERROR $mode: $out" >&2; exit 2; }
+        roots=""; pname=""; ncount=""
+        while IFS='=' read -r k v; do
+            case "$k" in roots_array) roots=$v ;; name) pname=$v ;; node_count) ncount=$v ;; esac
+        done <<EOF2
+$out
+EOF2
+        [ -n "$roots" ] || { echo "[admin-publish] ERROR $mode: empty root set for preset $preset" >&2; exit 1; }
+        if [ "$mode" = "progression-unlock" ]; then
+            proc="complete_journey_story_nodes_for_player"; verb="unlocked"
+        else
+            proc="reset_journey_story_nodes_for_player"; verb="locked"
+        fi
+        # Gather root+descendants for THIS account, call the proc with the full
+        # id array, and return how many ids were affected (last line). The proc
+        # node count. Single statement (atomic under ON_ERROR_STOP): the derived
+        # table g aggregates the gathered ids + count in one row, the proc is
+        # called once on g.ids, and we emit g.n as field 1 (proc's void result is
+        # field 2). One statement avoids the cross-statement CTE-scope/auto-commit
+        # trap (a multi-statement version would commit the proc before a 2nd query).
+        rc=0
+        affected=$(dune_psql_q -q -v ON_ERROR_STOP=1 --set=fls="$fls_id" --set=roots="$roots" -tA 2>&1 <<SQL
+SELECT g.n, dune.${proc}(:'fls', g.ids)
+FROM (
+    SELECT COALESCE(array_agg(js.story_node_id), '{}'::text[]) AS ids,
+           count(*)::int AS n
+    FROM dune.journey_story_node js
+    JOIN dune.encrypted_accounts a ON a.id = js.account_id
+    JOIN (SELECT unnest(:'roots'::text[]) AS root) rootset
+      ON (js.story_node_id = rootset.root OR js.story_node_id LIKE rootset.root || '.%')
+    WHERE a."user" = :'fls'
+) g;
+SQL
+) || rc=$?
+        affected=$(printf '%s\n' "$affected" | tail -n1 | cut -d'|' -f1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR $mode: journey proc failed (no changes)" >&2
+            printf '%s\n' "$affected" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK $mode fls=$fls_id preset=$preset ($pname) $verb nodes=$affected (~$ncount catalogued) — takes effect on next login"
+        echo "publish=db-write $mode preset=$preset nodes=$affected"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

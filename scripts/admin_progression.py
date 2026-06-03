@@ -43,6 +43,7 @@ def _load(name: str) -> dict:
 _XP = _load("skill-xp-per-level.json")
 _KEYSTONES = _load("keystones.json")
 _FACTIONS = _load("factions.json")
+_PROGRESSION = _load("progression-presets.json")
 
 CUMULATIVE_XP: tuple[int, ...] = tuple(_XP["cumulativeXPByLevel"])
 MAX_CHAR_XP: int = int(_XP["maxCharXP"])
@@ -212,6 +213,38 @@ def faction_rep_outcome(current_rep: int, delta: int, faction_id: int) -> dict:
         "faction_name": faction_display_name(faction_id),
         "capped": new_rep != raw,
     }
+
+
+# --------------------------------------------------------------------------
+# Progression presets — journey-node bundles (tutorial skip, lore unlock, act
+# completion), lifted from dune-admin (MIT) progression_presets.go. Applied via
+# the game's own dune.complete_journey_story_nodes_for_player / reset_* procs
+# (the caller gathers each root + its descendants per account). Pure catalog
+# access + a Postgres array formatter here.
+# --------------------------------------------------------------------------
+_PROGRESSION_PRESETS: tuple[dict, ...] = tuple(_PROGRESSION.get("presets", []))
+_PROGRESSION_BY_ID: dict[str, dict] = {p["id"]: p for p in _PROGRESSION_PRESETS}
+
+
+def progression_preset_ids() -> list[str]:
+    """Ordered list of known progression-preset ids."""
+    return [p["id"] for p in _PROGRESSION_PRESETS]
+
+
+def progression_preset(preset_id: str) -> dict | None:
+    """The preset dict (id/name/description/node_count/nodes) or None if unknown."""
+    return _PROGRESSION_BY_ID.get(preset_id)
+
+
+def pg_text_array(items) -> str:
+    """Render strings as a Postgres text[] array literal ({"a","b"}) — each
+    element double-quoted with backslashes and quotes escaped, safe for psql
+    --set + :'var'::text[]."""
+    parts = []
+    for it in items:
+        s = str(it).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'"{s}"')
+    return "{" + ",".join(parts) + "}"
 
 
 # --------------------------------------------------------------------------

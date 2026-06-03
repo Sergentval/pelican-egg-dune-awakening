@@ -1,0 +1,74 @@
+{
+  "_source": "Icehunter/dune-admin (MIT) cmd/dune-admin/progression_presets.go — preset catalog (ids, names, descriptions, node roots). Our port applies them via the GAME's own procs dune.complete_journey_story_nodes_for_player / reset_journey_story_nodes_for_player (gathering root + descendants per account), instead of dune-admin's direct-UPDATE reimplementation.",
+  "_note": "Each preset's `nodes` are ROOT journey story-node ids. unlock/lock gathers each root + every descendant (story_node_id LIKE 'root.%') that exists for the account, then calls the proc with the full id array. node_count is the approximate total (root + children) for reference; actual touched count depends on how far the character has progressed.",
+  "presets": [
+    {
+      "id": "skip_npe",
+      "name": "Skip NPE (New Player Experience)",
+      "description": "Marks the tutorial/NPE as complete. Useful for experienced players who don't need the intro.",
+      "node_count": 4,
+      "nodes": ["DA_MQ_NPEAutocompleted"]
+    },
+    {
+      "id": "a_new_beginning",
+      "name": "Complete: A New Beginning",
+      "description": "Main story intro — crafting Stillsuit, harvesting resources, fabricator research. Unlocks early game.",
+      "node_count": 132,
+      "nodes": ["DA_MQ_ANewBeginning"]
+    },
+    {
+      "id": "find_the_fremen",
+      "name": "Complete: Find the Fremen (Trials of Aql)",
+      "description": "All 7 trials, the Sietch, and Epilogue. Unlocks the Fremkit (Stillsuit, Thumper, Cryss Knife, etc.) and completes Act 1.",
+      "node_count": 46,
+      "nodes": ["DA_MQ_FindTheFremen"]
+    },
+    {
+      "id": "act1_complete",
+      "name": "Complete: All of Act 1",
+      "description": "A New Beginning + Find the Fremen combined. Player starts ready for Act 2.",
+      "node_count": 178,
+      "nodes": ["DA_MQ_ANewBeginning", "DA_MQ_FindTheFremen"]
+    },
+    {
+      "id": "vermillius_intro",
+      "name": "Skip: Vermillius Gap Tutorials",
+      "description": "Completes all Vermillius Gap tutorial quests (research, crafting, exploration). No tag side effects — pure tutorial skip.",
+      "node_count": 101,
+      "nodes": ["DA_SQ_VermiliusGap", "DA_Dunipedia_Landmarks.VermiliusGap"]
+    },
+    {
+      "id": "deep_desert_intro",
+      "name": "Skip: Deep Desert Intro",
+      "description": "Completes the Deep Desert side quest chain.",
+      "node_count": 34,
+      "nodes": ["DA_SQ_DeepDesert"]
+    },
+    {
+      "id": "taxation_intro",
+      "name": "Skip: Taxation / Exchange Tutorial",
+      "description": "Completes the exchange/travel tutorial chain.",
+      "node_count": 27,
+      "nodes": ["DA_SQ_Taxation"]
+    },
+    {
+      "id": "overland_intro",
+      "name": "Skip: Overland Map Intro",
+      "description": "Completes the Overland map side quest chain (Hark Landsraad missions, keystones).",
+      "node_count": 49,
+      "nodes": ["DA_SQ_OverlandMap"]
+    },
+    {
+      "id": "unlock_all_lore",
+      "name": "Unlock All Lore (Dunipedia)",
+      "description": "Reveals all Dunipedia entries: Known Universe, Landmarks, Manual of the Friendly Desert, War for Arrakis.",
+      "node_count": 322,
+      "nodes": [
+        "DA_Dunipedia_KnownUniverse",
+        "DA_Dunipedia_Landmarks",
+        "DA_Dunipedia_ManualOfTheFriendlyDesert",
+        "DA_Dunipedia_WarForArrakis"
+      ]
+    }
+  ]
+}
