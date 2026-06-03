@@ -73,6 +73,27 @@ def cmd_faction_rep(args: argparse.Namespace) -> None:
     })
 
 
+def cmd_faction_tier(args: argparse.Namespace) -> None:
+    o = ap.faction_tier_outcome(args.faction, args.tier)
+    _emit({
+        "rep": o["rep"],
+        "tier": o["tier"],
+        "tier_name": o["tier_name"],
+        "faction_name": o["faction_name"],
+    })
+
+
+def cmd_progression_preset(args: argparse.Namespace) -> None:
+    p = ap.progression_preset(args.id)
+    if p is None:
+        raise SystemExit(f"unknown preset: {args.id} (known: {','.join(ap.progression_preset_ids())})")
+    _emit({
+        "roots_array": ap.pg_text_array(p["nodes"]),
+        "name": p["name"],
+        "node_count": p["node_count"],
+    })
+
+
 def _parse_stacks(csv: str) -> list[tuple[int, int]]:
     """Parse the --stacks "id:size,id:size" CSV produced by the bash caller
     (DB-sourced integers) into [(stack_id, size)]. Empty -> []."""
@@ -154,6 +175,15 @@ def main() -> None:
     fr.add_argument("--delta", type=int, required=True)
     fr.add_argument("--faction", type=int, required=True, help="faction id (1=Atreides, 2=Harkonnen)")
     fr.set_defaults(fn=cmd_faction_rep)
+
+    ft = sub.add_parser("faction-tier", help="compute target rep for a faction tier (0-20)")
+    ft.add_argument("--faction", type=int, required=True, help="faction id (1=Atreides, 2=Harkonnen)")
+    ft.add_argument("--tier", type=int, required=True, help="target tier 0-20")
+    ft.set_defaults(fn=cmd_faction_tier)
+
+    pp = sub.add_parser("progression-preset", help="emit a progression preset's root-node pg array + metadata")
+    pp.add_argument("--id", required=True, help="preset id (skip_npe, act1_complete, unlock_all_lore, ...)")
+    pp.set_defaults(fn=cmd_progression_preset)
 
     args = parser.parse_args()
     args.fn(args)

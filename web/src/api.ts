@@ -742,3 +742,32 @@ export interface WelcomeScanResult {
 export const fetchWelcome = () => api<WelcomeResponse>("GET", "/api/welcome");
 export const welcomeScan = () => api<WelcomeScanResult>("POST", "/api/welcome/scan");
 export const welcomeRetryFailed = () => api<{ cleared: number }>("POST", "/api/welcome/retry-failed");
+
+// ---- Player editor (dedicated DB-write routes) ------------------------
+// These hit the per-player REST routes (POST /api/players/<id>/<action>),
+// distinct from the generic publish() path. The body is a run_publish entry
+// (PublishResult) on success, or {error} on a validation/auth failure.
+
+export interface ProgressionPreset {
+  id: string;
+  name: string;
+  description: string;
+  node_count: number;
+  nodes: string[];
+}
+
+export const fetchProgressionPresets = () =>
+  api<{ ok: boolean; presets: ProgressionPreset[] }>("GET", "/api/progression/presets");
+
+/** POST a player-editor write. `action` is the route suffix (e.g. "give-currency"). */
+export function playerWrite(
+  playerId: string,
+  action: string,
+  body?: Record<string, unknown>,
+): Promise<ApiResponse<PublishResult & { error?: string }>> {
+  return api<PublishResult & { error?: string }>(
+    "POST",
+    `/api/players/${encodeURIComponent(playerId)}/${action}`,
+    body,
+  );
+}

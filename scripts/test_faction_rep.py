@@ -96,5 +96,51 @@ class FactionRepOutcome(unittest.TestCase):
         self.assertFalse(o["capped"])
 
 
+class TierToRep(unittest.TestCase):
+    """tier -> reputation amount that lands a character ON that tier in-game.
+    Mirrors dune-admin cmdSetFactionTier: rep = threshold[tier], +1 when tier>0
+    (the UI floors at the threshold, so rep==threshold shows the tier below)."""
+
+    def test_thresholds_plus_one(self):
+        self.assertEqual(ap.tier_to_rep(0), 0)        # tier 0 is the legit floor, no +1
+        self.assertEqual(ap.tier_to_rep(1), 100)      # 99 + 1
+        self.assertEqual(ap.tier_to_rep(5), 2000)     # 1999 + 1
+        self.assertEqual(ap.tier_to_rep(6), 2225)     # 2224 + 1
+        self.assertEqual(ap.tier_to_rep(20), 12475)   # 12474 + 1 (intentionally over cap)
+
+    def test_round_trips_through_rep_to_tier(self):
+        for t in range(0, 21):
+            self.assertEqual(ap.rep_to_tier(ap.tier_to_rep(t)), t, f"tier {t} did not round-trip")
+
+    def test_rejects_out_of_range(self):
+        for bad in (-1, 21, 100):
+            with self.assertRaises(ValueError):
+                ap.tier_to_rep(bad)
+
+
+class FactionTierOutcome(unittest.TestCase):
+    def test_basic(self):
+        o = ap.faction_tier_outcome(faction_id=1, tier=5)
+        self.assertEqual(o["rep"], 2000)
+        self.assertEqual(o["tier"], 5)
+        self.assertEqual(o["tier_name"], "House Operator")
+        self.assertEqual(o["faction_name"], "Atreides")
+
+    def test_tier20_named(self):
+        o = ap.faction_tier_outcome(faction_id=2, tier=20)
+        self.assertEqual(o["rep"], 12475)
+        self.assertEqual(o["tier_name"], "Enforcer")
+
+    def test_tier0(self):
+        o = ap.faction_tier_outcome(faction_id=1, tier=0)
+        self.assertEqual(o["rep"], 0)
+        self.assertEqual(o["tier"], 0)
+        self.assertEqual(o["tier_name"], "Outsider")
+
+    def test_rejects_bad_tier(self):
+        with self.assertRaises(ValueError):
+            ap.faction_tier_outcome(faction_id=1, tier=21)
+
+
 if __name__ == "__main__":
     unittest.main()
