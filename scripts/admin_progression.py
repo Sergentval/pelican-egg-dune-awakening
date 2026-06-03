@@ -86,6 +86,14 @@ def xp_to_level(xp: int) -> int:
     return lo
 
 
+def xp_to_next(xp: int) -> int:
+    """XP remaining to reach the next level. 0 once at/above MAX_LEVEL."""
+    level = xp_to_level(xp)
+    if level >= MAX_LEVEL:
+        return 0
+    return max(0, CUMULATIVE_XP[level + 1] - xp)
+
+
 # --------------------------------------------------------------------------
 # Cumulative intel points earned through a given level. Data-driven walk over
 # the piecewise IntelPointsRewarded curve (dune-admin intelAtLevel).
@@ -259,6 +267,8 @@ def char_xp_summary(total_xp: int) -> dict:
         "maxXP": MAX_CHAR_XP,
         "maxLevel": MAX_LEVEL,
         "atCap": total_xp >= MAX_CHAR_XP,
+        "xpToNext": xp_to_next(total_xp),
+        "nextLevelAt": CUMULATIVE_XP[level + 1] if level < MAX_LEVEL else MAX_CHAR_XP,
     }
 
 

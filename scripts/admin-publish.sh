@@ -1666,6 +1666,111 @@ SQL
         echo "publish=db-write $mode preset=$preset nodes=$affected"
         exit 0
         ;;
+    player-summary)
+        # Read-only roll-up for the Player Editor "current state" panel: solaris
+        # balance, character XP, faction alignment + per-house reputation, and
+        # per-preset journey completion. Emits KV lines (admin-http enriches with
+        # level / xp-to-next / tier names via admin_progression). Controller-keyed
+        # for solaris+faction; pawn-keyed for the FLevel XP.
+        raw="${1:?usage: player-summary <player>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR player-summary: needs a single player, not '*'" >&2; exit 2
+        fi
+        dune_require_tables dune.actors dune.encrypted_accounts || exit 3
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$ctrl" ] || [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR player-summary: no player actors for $fls_id" >&2; exit 1
+        fi
+        # All scalars in one NULL-safe query (CSV: header + one data row).
+        scal=$(dune_psql_q --csv --set=ctrl="$ctrl" --set=pawn="$pawn" <<'SQL'
+SELECT
+  (SELECT COALESCE(balance, 0) FROM dune.player_virtual_currency_balances
+     WHERE player_controller_id = :'ctrl'::bigint AND currency_id = 0)                        AS solaris,
+  COALESCE((SELECT (fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint
+     FROM dune.fgl_entities fe JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
+     WHERE afe.slot_name = 'DuneCharacter' AND afe.actor_id = :'pawn'::bigint), 0)            AS char_xp,
+  COALESCE((SELECT faction_id FROM dune.player_faction WHERE actor_id = :'ctrl'::bigint), 0)  AS align,
+  COALESCE((SELECT reputation_amount FROM dune.player_faction_reputation
+     WHERE actor_id = :'ctrl'::bigint AND faction_id = 1), 0)                                 AS rep_1,
+  COALESCE((SELECT reputation_amount FROM dune.player_faction_reputation
+     WHERE actor_id = :'ctrl'::bigint AND faction_id = 2), 0)                                 AS rep_2
+SQL
+)
+        IFS=',' read -r s_solaris s_xp s_align s_rep1 s_rep2 <<EOF2
+$(printf '%s\n' "$scal" | tail -n1)
+EOF2
+        echo "solaris=${s_solaris:-0}"
+        echo "char_xp=${s_xp:-0}"
+        echo "align=${s_align:-0}"
+        echo "rep_1=${s_rep1:-0}"
+        echo "rep_2=${s_rep2:-0}"
+        # Per-preset journey completion (one query via the all-roots arrays).
+        if rootsout=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" progression-all-roots 2>/dev/null); then
+            pids=""; roots=""
+            while IFS='=' read -r k v; do case "$k" in pids) pids=$v ;; roots) roots=$v ;; esac; done <<EOF3
+$rootsout
+EOF3
+            if [ -n "$pids" ] && dune_require_tables dune.journey_story_node >/dev/null 2>&1; then
+                jrows=$(dune_psql_q --csv --set=fls="$fls_id" --set=pids="$pids" --set=roots="$roots" <<'SQL'
+WITH pr AS (SELECT * FROM unnest(:'pids'::text[], :'roots'::text[]) AS u(preset_id, root)),
+acct AS (SELECT id FROM dune.encrypted_accounts WHERE "user" = :'fls'),
+node AS (
+  SELECT pr.preset_id, (js.complete_condition_state = 'true'::jsonb) AS done
+  FROM pr
+  JOIN dune.journey_story_node js
+    ON js.account_id = (SELECT id FROM acct)
+   AND (js.story_node_id = pr.root OR js.story_node_id LIKE pr.root || '.%')
+)
+SELECT preset_id, count(*) FILTER (WHERE done) AS complete, count(*) AS total
+FROM node GROUP BY preset_id
+SQL
+)
+                jline=$(printf '%s\n' "$jrows" | tail -n +2 | awk -F',' 'NF>=3 && $1!="" {printf "%s%s:%s:%s", sep, $1, $2, $3; sep=","}')
+                echo "journey=$jline"
+            fi
+        fi
+        echo "publish=ok player-summary"
+        exit 0
+        ;;
+    remove-faction)
+        # Remove a player from their Great House entirely (inverse of
+        # set-faction-tier): set alignment to None via change_player_faction,
+        # delete both houses' reputation rows, and clear the m_FactionDataArray
+        # jsonb cache. Offline-gated, controller-keyed. One atomic transaction.
+        raw="${1:?usage: remove-faction <player>}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR remove-faction: needs a single player, not '*'" >&2; exit 2
+        fi
+        dune_require_tables dune.player_faction dune.player_faction_reputation dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR remove-faction: no player-controller actor for $fls_id" >&2; exit 1
+        fi
+        rc=0
+        out=$(dune_psql_q -q -v ON_ERROR_STOP=1 --set=ctrl="$ctrl" -tA 2>&1 <<'SQL'
+BEGIN;
+SELECT dune.change_player_faction(:'ctrl'::bigint, 3::smallint, 3::smallint, NOW()::timestamp);
+DELETE FROM dune.player_faction_reputation WHERE actor_id = :'ctrl'::bigint;
+UPDATE dune.actors SET properties = jsonb_set(
+    properties, '{FactionPlayerComponent,m_FactionDataArray}', '[]'::jsonb, true)
+WHERE id = :'ctrl'::bigint;
+COMMIT;
+SELECT COALESCE((SELECT faction_id::text FROM dune.player_faction WHERE actor_id = :'ctrl'::bigint), 'none');
+SQL
+) || rc=$?
+        align_after=$(printf '%s\n' "$out" | tail -n1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR remove-faction: transaction failed (rolled back)" >&2
+            printf '%s\n' "$out" >&2; exit 1
+        fi
+        echo "[admin-publish] OK remove-faction fls=$fls_id controller=$ctrl alignment=$align_after (None)"
+        echo "publish=db-write remove-faction controller=$ctrl alignment=$align_after"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:
