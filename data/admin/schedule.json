@@ -1,0 +1,16 @@
+{
+  "_comment": "Unattended scheduler config. OFF by default. restart.enabled requires the Pelican client-API panel variables (DUNE_PELICAN_URL / DUNE_PELICAN_CLIENT_KEY / DUNE_PELICAN_SERVER_ID) — without them the restart task self-skips with a logged note. When a restart slot is due the server broadcasts an in-game countdown (warn_lead_secs) then the panel API restarts the container (a clean stop saves state). backup runs pg_dump of the dune DB to /home/container/backups every backup.every_hours, keeping backup.retention newest. Edit this file + restart, or use the Tasks tab / GET-POST /api/schedule. Times are UTC; days are mon..sun.",
+  "restart": {
+    "enabled": false,
+    "time": "08:00",
+    "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+    "warn_lead_secs": 300,
+    "warn_freq_secs": 60,
+    "catch_up_grace_secs": 3600
+  },
+  "backup": {
+    "enabled": false,
+    "every_hours": 24,
+    "retention": 7
+  }
+}
