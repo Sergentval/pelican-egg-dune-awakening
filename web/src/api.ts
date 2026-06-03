@@ -806,3 +806,30 @@ export function playerWrite(
     body,
   );
 }
+
+// ---- Spicefield economy controls --------------------------------------
+
+export interface SpiceField {
+  id: number;
+  field_type: string;
+  map: string;
+  dimension: number;
+  spawning: boolean;
+  active: number;
+  max_active: number;
+  primed: number;
+  max_primed: number;
+  weight: string;
+}
+
+export const fetchSpice = () =>
+  api<{ ok: boolean; fields: SpiceField[]; error?: string }>("GET", "/api/spice");
+
+export const setSpiceSpawning = (id: number, active: boolean) =>
+  api<PublishResult & { error?: string }>("POST", `/api/spice/${id}/spawning`, { active });
+
+export const setSpiceCaps = (id: number, maxActive: number, maxPrimed: number) =>
+  api<PublishResult & { error?: string }>("POST", `/api/spice/${id}/caps`, {
+    max_active: maxActive,
+    max_primed: maxPrimed,
+  });

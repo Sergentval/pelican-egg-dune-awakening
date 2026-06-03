@@ -18,6 +18,7 @@ import {
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { PlayerEditorTab } from "./PlayerEditorTab";
+import { SpiceTab } from "./SpiceTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
@@ -31,6 +32,7 @@ type TabId =
   | "inventory"
   | "kits"
   | "items"
+  | "spice"
   | "skills"
   | "vehicles"
   | "movement"
@@ -58,6 +60,7 @@ const TABS: TabDef[] = [
   { id: "player-editor", label: "Player Editor", icon: "🪪", group: "commands" },
   { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
+  { id: "spice", label: "Spice", icon: "🌶", group: "commands" },
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
   { id: "movement", label: "Movement", icon: "🧭", group: "commands" },
@@ -200,6 +203,7 @@ export default function App() {
           {tab === "player-editor" && <PlayerEditorTab setConsoleEntries={setEntries} />}
           {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
+          {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
           {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}

@@ -373,7 +373,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
-            "server-status", "map-markers", "db-backup", "db-backup-list",
+            "server-status", "map-markers", "db-backup", "db-backup-list", "spice-list",
         )
     )
     entry = {
@@ -1166,6 +1166,39 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, {"ok": True, "presets": presets})
             return
 
+        # Spicefield economy snapshot: one row per (field_type, map, dimension)
+        # with spawn toggle + live active/primed vs caps. Server-wide economy.
+        if path == "/api/spice":
+            entry = run_publish(["spice-list"], timeout=10)
+            if not entry["ok"]:
+                self._write(200, {"ok": False, "error": (entry.get("stderr") or "").strip() or "spice-list failed"})
+                return
+            table = csv_to_table(entry.get("stdout") or "")
+
+            def _i(r: dict, k: str) -> int:
+                try:
+                    return int(r.get(k) or 0)
+                except (ValueError, TypeError):
+                    return 0
+
+            fields = []
+            for raw in table["rows"]:
+                r = dict(zip(table["headers"], raw))
+                fields.append({
+                    "id": _i(r, "spicefield_type_id"),
+                    "field_type": r.get("field_type", ""),
+                    "map": r.get("map_name", ""),
+                    "dimension": _i(r, "dimension_index"),
+                    "spawning": (r.get("is_spawning_active", "").lower() in ("t", "true")),
+                    "active": _i(r, "current_globally_active"),
+                    "max_active": _i(r, "max_globally_active"),
+                    "primed": _i(r, "current_globally_primed"),
+                    "max_primed": _i(r, "max_globally_primed"),
+                    "weight": r.get("global_spawn_weight", ""),
+                })
+            self._write(200, {"ok": True, "fields": fields})
+            return
+
         if path == "/api/me":
             if UI_ENABLED:
                 token, _ = self._session_token_from_request()
@@ -1845,6 +1878,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["remove-faction", player], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Economy WRITE: toggle spawning for one spicefield type (live, server-wide).
+        # POST /api/spice/<type_id>/spawning  body {"active": true|false}
+        if path.startswith("/api/spice/") and path.endswith("/spawning"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            tid = path[len("/api/spice/"):-len("/spawning")]
+            active = body.get("active") if isinstance(body, dict) else None
+            if not tid.isdigit():
+                self._write(400, {"error": "spicefield type id (integer) required"})
+                return
+            if not isinstance(active, bool):
+                self._write(400, {"error": "active (boolean) required"})
+                return
+            entry = run_publish(["spice-set", tid, "on" if active else "off"], timeout=10)
+            self._write(200, entry)
+            return
+
+        # Economy WRITE: set the global active/primed caps for one spicefield type.
+        # POST /api/spice/<type_id>/caps  body {"max_active": int, "max_primed": int}
+        if path.startswith("/api/spice/") and path.endswith("/caps"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            tid = path[len("/api/spice/"):-len("/caps")]
+            ma = body.get("max_active") if isinstance(body, dict) else None
+            mp = body.get("max_primed") if isinstance(body, dict) else None
+            if not tid.isdigit():
+                self._write(400, {"error": "spicefield type id (integer) required"})
+                return
+            if not isinstance(ma, int) or isinstance(ma, bool) or ma < 0 or \
+               not isinstance(mp, int) or isinstance(mp, bool) or mp < 0:
+                self._write(400, {"error": "max_active and max_primed (non-negative integers) required"})
+                return
+            entry = run_publish(["spice-caps", tid, str(ma), str(mp)], timeout=10)
             self._write(200, entry)
             return
 

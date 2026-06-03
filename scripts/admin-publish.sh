@@ -1771,6 +1771,64 @@ SQL
         echo "publish=db-write remove-faction controller=$ctrl alignment=$align_after"
         exit 0
         ;;
+    spice-list)
+        # Read-only spicefield economy snapshot: one row per (field_type, map,
+        # dimension) with the spawn toggle + live active/primed vs caps. Server-
+        # wide economy state, not per-player. CSV out; admin-http -> JSON.
+        dune_require_tables dune.spicefield_types || exit 3
+        dune_psql --csv -f - <<'SQL'
+SELECT spicefield_type_id, field_type, map_name, dimension_index, is_spawning_active,
+       current_globally_active, max_globally_active,
+       current_globally_primed, max_globally_primed, global_spawn_weight
+FROM dune.spicefield_types
+ORDER BY map_name, dimension_index, field_type
+SQL
+        exit 0
+        ;;
+    spice-set)
+        # Toggle spawning for one spicefield type via the game's own proc
+        # (also resets requested_spawned_of_type so the spawner re-evaluates).
+        # Server-wide economy lever, applies live (no offline gate).
+        tid="${1:?usage: spice-set <spicefield_type_id> <on|off>}"
+        state="${2:?usage: spice-set <spicefield_type_id> <on|off>}"
+        case "$tid" in ''|*[!0-9]*) echo "[admin-publish] ERROR spice-set: type id must be an integer, got '$tid'" >&2; exit 2 ;; esac
+        case "$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')" in
+            on|1|true|yes)  active=true ;;
+            off|0|false|no) active=false ;;
+            *) echo "[admin-publish] ERROR spice-set: state must be on|off, got '$state'" >&2; exit 2 ;;
+        esac
+        dune_require_tables dune.spicefield_types || exit 3
+        if ! dune_psql_q -q -v ON_ERROR_STOP=1 --set=active="$active" --set=tid="$tid" -tA >/dev/null 2>&1 <<'SQL'
+SELECT dune.update_spice_field_spawn_state(:'active'::boolean, :'tid'::integer);
+SQL
+        then
+            echo "[admin-publish] ERROR spice-set: update failed (type $tid)" >&2; exit 1
+        fi
+        echo "[admin-publish] OK spice-set type=$tid spawning=$active"
+        echo "publish=db-write spice-set type=$tid spawning=$active"
+        exit 0
+        ;;
+    spice-caps)
+        # Adjust the global active/primed caps for one spicefield type (more spice
+        # in circulation = bigger economy). Game proc update_global_spice_field_rules
+        # takes (max_primed, max_active, type_id). Applies live.
+        tid="${1:?usage: spice-caps <spicefield_type_id> <max_active> <max_primed>}"
+        max_active="${2:?usage: spice-caps <spicefield_type_id> <max_active> <max_primed>}"
+        max_primed="${3:?usage: spice-caps <spicefield_type_id> <max_active> <max_primed>}"
+        for v in "$tid" "$max_active" "$max_primed"; do
+            case "$v" in ''|*[!0-9]*) echo "[admin-publish] ERROR spice-caps: type id + caps must be non-negative integers, got '$v'" >&2; exit 2 ;; esac
+        done
+        dune_require_tables dune.spicefield_types || exit 3
+        if ! dune_psql_q -q -v ON_ERROR_STOP=1 --set=tid="$tid" --set=a="$max_active" --set=p="$max_primed" -tA >/dev/null 2>&1 <<'SQL'
+SELECT dune.update_global_spice_field_rules(:'p'::integer, :'a'::integer, :'tid'::integer);
+SQL
+        then
+            echo "[admin-publish] ERROR spice-caps: update failed (type $tid)" >&2; exit 1
+        fi
+        echo "[admin-publish] OK spice-caps type=$tid max_active=$max_active max_primed=$max_primed"
+        echo "publish=db-write spice-caps type=$tid max_active=$max_active max_primed=$max_primed"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:
