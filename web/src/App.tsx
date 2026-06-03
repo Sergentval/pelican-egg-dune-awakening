@@ -17,6 +17,7 @@ import {
 } from "./tabs";
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
+import { PlayerEditorTab } from "./PlayerEditorTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
@@ -26,6 +27,7 @@ type TabId =
   | "map"
   | "broadcast"
   | "players"
+  | "player-editor"
   | "inventory"
   | "kits"
   | "items"
@@ -53,6 +55,7 @@ const TABS: TabDef[] = [
   { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
+  { id: "player-editor", label: "Player Editor", icon: "🪪", group: "commands" },
   { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
@@ -194,6 +197,7 @@ export default function App() {
           {tab === "kits" && <KitsTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
+          {tab === "player-editor" && <PlayerEditorTab setConsoleEntries={setEntries} />}
           {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
