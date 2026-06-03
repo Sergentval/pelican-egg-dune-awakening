@@ -1254,6 +1254,9 @@ class Handler(BaseHTTPRequestHandler):
                 if player and sub == "tags":
                     self._handle_player_tags(player)
                     return
+                if player and sub == "summary":
+                    self._handle_player_summary(player)
+                    return
             self._write(404, {"error": "unknown player sub-resource"})
             return
 
@@ -1457,6 +1460,75 @@ class Handler(BaseHTTPRequestHandler):
                 summary = None
         self._write(200, {
             "headers": table["headers"], "rows": table["rows"], "summary": summary,
+        })
+
+    def _handle_player_summary(self, player: str) -> None:
+        """Current-state roll-up for the Player Editor: solaris, XP (level/
+        to-next/max), faction (alignment + per-house rep/tier), and per-preset
+        journey completion. Parses the player-summary KV output + enriches with
+        admin_progression (pure)."""
+        entry = run_publish(["player-summary", player], timeout=15)
+        if not entry["ok"]:
+            code = entry.get("exit_code")
+            msg = (entry.get("stderr") or "").strip() or "summary failed"
+            if code == 3:
+                self._write(200, {"ok": False, "schema_gap": True, "error": msg})
+            else:
+                self._write(404 if code in (1, 2) else 200, {"ok": False, "error": msg})
+            return
+        kv: dict[str, str] = {}
+        journey_raw = ""
+        for line in (entry.get("stdout") or "").splitlines():
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k == "journey":
+                journey_raw = v
+            else:
+                kv[k] = v
+
+        def _int(key: str) -> int:
+            try:
+                return int(kv.get(key) or 0)
+            except (ValueError, TypeError):
+                return 0
+
+        def _house(fid: int, rep: int) -> dict:
+            tier = admin_progression.rep_to_tier(rep)
+            return {
+                "faction_id": fid,
+                "name": admin_progression.faction_display_name(fid),
+                "rep": rep,
+                "tier": tier,
+                "tier_name": admin_progression.faction_tier_name(fid, tier),
+            }
+
+        align = _int("align")
+        journey = []
+        for part in journey_raw.split(","):
+            bits = part.split(":")
+            if len(bits) == 3 and bits[0]:
+                preset = admin_progression.progression_preset(bits[0])
+                try:
+                    journey.append({
+                        "id": bits[0],
+                        "name": preset["name"] if preset else bits[0],
+                        "complete": int(bits[1]),
+                        "total": int(bits[2]),
+                    })
+                except ValueError:
+                    pass
+        self._write(200, {
+            "ok": True,
+            "solaris": _int("solaris"),
+            "xp": admin_progression.char_xp_summary(_int("char_xp")),
+            "faction": {
+                "alignment": align,
+                "alignment_name": admin_progression.faction_display_name(align) if align else "None",
+                "atreides": _house(1, _int("rep_1")),
+                "harkonnen": _house(2, _int("rep_2")),
+            },
+            "journey": journey,
         })
 
     # ------ POST ---------------------------------------------------------
@@ -1755,6 +1827,24 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(
                 ["set-faction-tier", player, str(faction), str(tier)], timeout=20
             )
+            self._write(200, entry)
+            return
+
+        # Player WRITE: remove the player from their Great House entirely
+        # (alignment -> None, clear both houses' rep + the m_FactionDataArray
+        # jsonb). Offline-gated. POST /api/players/<id>/remove-faction
+        if path.startswith("/api/players/") and path.endswith("/remove-faction"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/remove-faction")])
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["remove-faction", player], timeout=20)
             self._write(200, entry)
             return
 

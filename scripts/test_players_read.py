@@ -133,6 +133,34 @@ class CharXpSummary(unittest.TestCase):
         self.assertFalse(s["atCap"])
 
 
+class XpToNext(unittest.TestCase):
+    def test_zero_xp_needs_level1_threshold(self):
+        self.assertEqual(ap.xp_to_next(0), ap.CUMULATIVE_XP[1])
+
+    def test_remainder_to_next_level(self):
+        # Mid-level: xp + xp_to_next lands exactly on the next level's threshold.
+        for xp in (5000, 58190, 100000):
+            lvl = ap.xp_to_level(xp)
+            if lvl < ap.MAX_LEVEL:
+                self.assertEqual(xp + ap.xp_to_next(xp), ap.CUMULATIVE_XP[lvl + 1], f"xp={xp}")
+
+    def test_on_threshold_points_to_following_level(self):
+        # Exactly at a level threshold -> distance to the following one.
+        at5 = ap.CUMULATIVE_XP[5]
+        self.assertEqual(ap.xp_to_next(at5), ap.CUMULATIVE_XP[6] - at5)
+
+    def test_at_max_is_zero(self):
+        self.assertEqual(ap.xp_to_next(ap.MAX_CHAR_XP), 0)
+        self.assertEqual(ap.xp_to_next(ap.MAX_CHAR_XP + 50000), 0)
+
+    def test_summary_includes_xp_to_next(self):
+        s = ap.char_xp_summary(58190)  # level 100
+        self.assertEqual(s["xpToNext"], ap.CUMULATIVE_XP[101] - 58190)
+        self.assertEqual(s["nextLevelAt"], ap.CUMULATIVE_XP[101])
+        cap = ap.char_xp_summary(ap.MAX_CHAR_XP)
+        self.assertEqual(cap["xpToNext"], 0)
+
+
 class CharXpColumnContract(unittest.TestCase):
     """The char-xp-read bash subcommand emits these exact CSV headers; the
     HTTP enrichment in _handle_player_char_xp reads them by name. Lock the

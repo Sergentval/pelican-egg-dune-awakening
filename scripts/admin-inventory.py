@@ -94,6 +94,19 @@ def cmd_progression_preset(args: argparse.Namespace) -> None:
     })
 
 
+def cmd_progression_all_roots(_args: argparse.Namespace) -> None:
+    # Parallel arrays: pids[i] is the preset that owns roots[i]. Multi-root
+    # presets repeat their id. Fed to unnest(:'pids',:'roots') in player-summary's
+    # journey query so per-preset completion is one round-trip.
+    pids: list[str] = []
+    roots: list[str] = []
+    for pid in ap.progression_preset_ids():
+        for root in ap.progression_preset(pid)["nodes"]:
+            pids.append(pid)
+            roots.append(root)
+    _emit({"pids": ap.pg_text_array(pids), "roots": ap.pg_text_array(roots)})
+
+
 def _parse_stacks(csv: str) -> list[tuple[int, int]]:
     """Parse the --stacks "id:size,id:size" CSV produced by the bash caller
     (DB-sourced integers) into [(stack_id, size)]. Empty -> []."""
@@ -184,6 +197,9 @@ def main() -> None:
     pp = sub.add_parser("progression-preset", help="emit a progression preset's root-node pg array + metadata")
     pp.add_argument("--id", required=True, help="preset id (skip_npe, act1_complete, unlock_all_lore, ...)")
     pp.set_defaults(fn=cmd_progression_preset)
+
+    par = sub.add_parser("progression-all-roots", help="emit parallel pids[]/roots[] pg arrays for all presets")
+    par.set_defaults(fn=cmd_progression_all_roots)
 
     args = parser.parse_args()
     args.fn(args)
