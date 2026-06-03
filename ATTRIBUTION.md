@@ -210,3 +210,13 @@ Phase 3 (Players/Character writes) lifts, with thanks:
   verbatim from dune-admin's `item-data.json` (MIT, © 2026 Ryan Wilson). Phase 7a
   is pricing + read-only market view; the order-posting / d12-gamble-buy bot
   (`exchange.go`, `bot.go`) is deferred to 7b.
+
+- **Live map + inventory containers (Phases 1-4):** the map tab's top-down images
+  (`web/public/{hagga-basin,deepdesert,arrakeen,harko}.webp`) and the per-map
+  world→pixel projection bounds (`web/src/MapTab.tsx`) are lifted from dune-admin's
+  `web/public/` + `LiveMapTab.tsx` (MIT). The `map-markers` position query
+  (`scripts/admin-publish.sh`) follows dune-admin's `cmdFetchMapMarkers`
+  (`cmd/dune-admin/db.go`), and the inventory-container mapping (`inventory_type`
+  → Backpack/Hotbar/Equipped/…) in `web/src/tabs.tsx` follows dune-admin's
+  `repairGearInventoryTypes`. We hand-roll the pan/zoom (no Leaflet dependency)
+  and keep teleport locations in our own `server/state/` JSON store.

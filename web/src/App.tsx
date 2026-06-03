@@ -3,6 +3,7 @@ import {
   BroadcastTab,
   Dashboard,
   HistoryTab,
+  InventoryTab,
   ItemsTab,
   KitsTab,
   MaintenanceTab,
@@ -14,14 +15,17 @@ import {
   VehiclesTab,
   WelcomeTab,
 } from "./tabs";
+import { MapTab } from "./MapTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 
 type TabId =
   | "dashboard"
+  | "map"
   | "broadcast"
   | "players"
+  | "inventory"
   | "kits"
   | "items"
   | "skills"
@@ -43,9 +47,11 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
   { id: "status", label: "Status", icon: "📊", group: "overview" },
+  { id: "map", label: "Live Map", icon: "🗺", group: "overview" },
   { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
+  { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
@@ -181,9 +187,11 @@ export default function App() {
 
         <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
           {tab === "dashboard" && <Dashboard setConsoleEntries={setEntries} />}
+          {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
           {tab === "kits" && <KitsTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
+          {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
