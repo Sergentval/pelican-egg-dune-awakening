@@ -833,6 +833,13 @@ SQL
         # caller input never reaches the query as an unexpected value. Position
         # is the player's PAWN actor transform; fls is accounts."user" (the
         # canonical PlayerId), matching admin_map.parse_markers' expected header.
+        #
+        # CONFIRMED SCHEMA (live-verified on server 30, 2026-06-02): unlike the
+        # other reads here (which decrypt encrypted_player_state.encrypted_character_name
+        # via convert_from), dune.player_state ALSO carries plaintext character_name +
+        # online_status, and dune.accounts."user" is the FLS id. This join returns the
+        # online char with its name + Online status. dune_require_tables only checks
+        # table existence, so these columns were confirmed by that live test, not the guard.
         map_name="${1:?map name required: HaggaBasin|DeepDesert|Arrakeen|HarkoVillage}"
         case "$map_name" in
             HaggaBasin|DeepDesert|Arrakeen|HarkoVillage) ;;

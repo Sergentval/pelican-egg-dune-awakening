@@ -214,6 +214,11 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
           <span className="text-slate-500">target: <span className="font-mono text-spice-300">{target.playerId || "(none)"}</span></span>
           <span className="text-slate-600">scroll = zoom · drag = pan · click a player dot = set target</span>
         </div>
+        <p className="px-3 pb-2 text-[11px] text-amber-400/80">
+          ⓘ Dots are the <span className="font-medium">last saved position</span> — the game persists player coords on its
+          save cadence, so a dot can lag the player's real location by tens of seconds (it jumps when the next save lands).
+          Not a live feed.
+        </p>
         {err && <p className="px-3 pb-2 text-xs text-red-400">{err}</p>}
       </div>
 
@@ -236,10 +241,11 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
               return (
                 <button
                   key={m.id}
-                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition}`}
+                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition}${m.fls ? "" : " · no linked account (cannot target)"}`}
                   onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); target.setPlayerId(m.fls || m.id); }}
-                  className="absolute -translate-x-1/2 -translate-y-1/2"
+                  onPointerUp={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); if (m.fls) target.setPlayerId(m.fls); }}
+                  className={"absolute -translate-x-1/2 -translate-y-1/2 " + (m.fls ? "" : "opacity-50 cursor-not-allowed")}
                   style={{ left: `${p.left}%`, top: `${p.top}%` }}
                 >
                   <span
@@ -323,8 +329,10 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
               {markers.map((m) => (
                 <button
                   key={m.id}
-                  onClick={() => target.setPlayerId(m.fls || m.id)}
-                  className="w-full text-left text-xs flex items-center gap-2 px-1 py-0.5 rounded hover:bg-slate-800"
+                  onClick={() => { if (m.fls) target.setPlayerId(m.fls); }}
+                  disabled={!m.fls}
+                  title={m.fls ? "set as target" : "no linked account — cannot target"}
+                  className={"w-full text-left text-xs flex items-center gap-2 px-1 py-0.5 rounded " + (m.fls ? "hover:bg-slate-800" : "opacity-50 cursor-not-allowed")}
                 >
                   <span className={"w-2 h-2 rounded-full shrink-0 " + (m.online ? "bg-emerald-400" : "bg-slate-500")} />
                   <span className="truncate flex-1">{m.name}</span>

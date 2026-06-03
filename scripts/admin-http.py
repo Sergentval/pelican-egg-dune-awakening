@@ -373,7 +373,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
-            "server-status",
+            "server-status", "map-markers",
         )
     )
     entry = {
@@ -1031,6 +1031,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "map query param required: " + "|".join(admin_map.MAP_KEYS)})
                 return
             entry = run_publish(["map-markers", map_key], timeout=10)
+            if entry["exit_code"] == 3:  # tables missing — same capability-gap shape as the player reads
+                self._write(200, {"ok": True, "map": map_key, "markers": [],
+                                  "available": False, "detail": (entry.get("stderr") or "").strip()[:300]})
+                return
             if entry["exit_code"] != 0:
                 self._write(502, {"error": "map markers read failed",
                                   "detail": (entry.get("stderr") or "").strip()[:300]})

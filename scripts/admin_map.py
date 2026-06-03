@@ -48,6 +48,10 @@ def parse_markers(csv_text: str) -> list:
         if not cols or not any(c.strip() for c in cols):
             continue
         row = dict(zip(headers, cols))
+        # A null transform.location yields blank x/y cells; skip so we never
+        # plot a phantom marker at world origin. A real 0 coord arrives as "0".
+        if not (row.get("x", "").strip() and row.get("y", "").strip()):
+            continue
         out.append({
             "id": row.get("id", ""),
             "name": (row.get("name") or "").strip() or "Unknown",

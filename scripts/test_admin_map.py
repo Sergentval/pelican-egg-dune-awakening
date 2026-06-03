@@ -53,6 +53,12 @@ class TestParseMarkers(unittest.TestCase):
         self.assertEqual(r["x"], 0.0)
         self.assertEqual(r["y"], 2.0)
 
+    def test_blank_coords_skipped(self):
+        # null transform.location -> blank x/y -> skip (no phantom origin marker)
+        text = HEADER + "\n5,Ghost,Online,1,ABC,,,\n6,Real,Online,1,DEF,10,20,0"
+        m = parse_markers(text)
+        self.assertEqual([r["name"] for r in m], ["Real"])  # Ghost dropped
+
 
 if __name__ == "__main__":
     unittest.main()

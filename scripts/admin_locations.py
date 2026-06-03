@@ -12,6 +12,8 @@ import os
 
 from admin_map import MAP_KEYS  # reuse the supported-map whitelist
 
+MAX_LOCATIONS = 500  # sane cap so an authenticated caller can't grow the file unbounded
+
 
 def store_path(base: str) -> str:
     return os.path.join(base, "server", "state", "map-locations.json")
@@ -62,6 +64,8 @@ def upsert_location(base: str, raw) -> tuple:
         return None, err
     key = loc["name"].lower()
     locs = [l for l in load_locations(base) if str(l.get("name", "")).strip().lower() != key]
+    if len(locs) >= MAX_LOCATIONS:
+        return None, f"too many locations (max {MAX_LOCATIONS}); remove some first"
     locs.append(loc)
     locs.sort(key=lambda l: (l.get("map", ""), l.get("name", "")))
     save_locations(base, locs)

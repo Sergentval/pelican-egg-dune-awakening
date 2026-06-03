@@ -58,6 +58,22 @@ class TestStore(unittest.TestCase):
         al.upsert_location(self.dir, {"name": "P", "map": "Arrakeen", "x": 0, "y": 0, "z": 0})
         self.assertTrue(os.path.isfile(al.store_path(self.dir)))
 
+    def test_count_cap(self):
+        orig = al.MAX_LOCATIONS
+        al.MAX_LOCATIONS = 2
+        try:
+            al.upsert_location(self.dir, {"name": "A", "map": "HaggaBasin", "x": 0, "y": 0, "z": 0})
+            al.upsert_location(self.dir, {"name": "B", "map": "HaggaBasin", "x": 0, "y": 0, "z": 0})
+            locs, err = al.upsert_location(self.dir, {"name": "C", "map": "HaggaBasin", "x": 0, "y": 0, "z": 0})
+            self.assertIsNone(locs)
+            self.assertIn("too many", err)
+            # replacing an existing name at the cap still works (no growth)
+            locs, err = al.upsert_location(self.dir, {"name": "a", "map": "DeepDesert", "x": 9, "y": 9, "z": 9})
+            self.assertIsNone(err)
+            self.assertEqual(len(locs), 2)
+        finally:
+            al.MAX_LOCATIONS = orig
+
 
 if __name__ == "__main__":
     unittest.main()
