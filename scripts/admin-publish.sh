@@ -386,6 +386,56 @@ WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint;
 SQL
 }
 
+# Provision/find the market-bot identity. Echoes "owner_id|exchange_id|access_point_id|inventory_id".
+# Creates the synthetic 'Revy' bot actor + its exchange user on first call.
+# Exchange/AP detection mirrors dune-admin Init (accesspoint's exchange first, so
+# bot listings land on the exchange players actually reach). Ported (MIT).
+dune_market_provision() {
+    local owner part exch ap inv
+    owner=$(dune_psql_q -tA -q 2>/dev/null <<'SQL' | head -1
+SELECT id FROM dune.actors WHERE class = 'Revy' LIMIT 1
+SQL
+)
+    if [ -z "$owner" ]; then
+        part=$(dune_psql_q -tA -q 2>/dev/null <<'SQL' | head -1
+SELECT partition_id FROM dune.world_partition ORDER BY partition_id LIMIT 1
+SQL
+)
+        owner=$(dune_psql_q -tA -q --set=part="${part:-1}" 2>/dev/null <<'SQL' | head -1
+INSERT INTO dune.actors (class, serial, gas_attributes, properties, dimension_index, partition_id)
+VALUES ('Revy', 0, '{}', '{}', 0, :'part'::bigint) RETURNING id
+SQL
+)
+    fi
+    [ -n "$owner" ] || return 1
+    dune_psql_q -tA -q --set=o="$owner" >/dev/null 2>&1 <<'SQL'
+SELECT dune.dune_exchange_get_user_id(:'o'::bigint)
+SQL
+    exch=$(dune_psql_q -tA -q 2>/dev/null <<'SQL' | head -1
+SELECT COALESCE(
+  (SELECT ap.exchange_id FROM dune.dune_exchange_accesspoints ap
+     JOIN dune.dune_exchanges e ON e.id = ap.exchange_id ORDER BY ap.id LIMIT 1),
+  (SELECT exchange_id FROM dune.dune_exchange_orders WHERE is_npc_order = FALSE LIMIT 1),
+  (SELECT id FROM dune.dune_exchanges ORDER BY id LIMIT 1),
+  dune.get_dune_exchange_id('Global'))
+SQL
+)
+    [ -n "$exch" ] || return 1
+    ap=$(dune_psql_q -tA -q --set=e="$exch" 2>/dev/null <<'SQL' | head -1
+SELECT COALESCE(
+  (SELECT id FROM dune.dune_exchange_accesspoints WHERE exchange_id = :'e'::bigint ORDER BY id LIMIT 1),
+  (SELECT DISTINCT access_point_id FROM dune.dune_exchange_orders WHERE exchange_id = :'e'::bigint LIMIT 1),
+  1)
+SQL
+)
+    inv=$(dune_psql_q -tA -q --set=e="$exch" 2>/dev/null <<'SQL' | head -1
+SELECT dune.get_exchange_inventory_id(:'e'::bigint)
+SQL
+)
+    [ -n "$inv" ] || return 1
+    echo "${owner}|${exch}|${ap}|${inv}"
+}
+
 # FLS hex -> current online status text (Offline/Online/...), or empty if the
 # account doesn't exist. A missing player_state row coalesces to Offline.
 # Confirmed encrypted_* schema.
@@ -1827,6 +1877,102 @@ SQL
         fi
         echo "[admin-publish] OK spice-caps type=$tid max_active=$max_active max_primed=$max_primed"
         echo "publish=db-write spice-caps type=$tid max_active=$max_active max_primed=$max_primed"
+        exit 0
+        ;;
+    market-bot-status)
+        # Read-only: market-bot (Revy) NPC order count + total market orders.
+        dune_require_tables dune.dune_exchange_orders || exit 3
+        prov=$(dune_market_provision) || { echo "[admin-publish] ERROR market-bot-status: provision failed" >&2; exit 1; }
+        IFS='|' read -r OWNER EXCH AP INV <<<"$prov"
+        dune_psql_q --csv --set=o="$OWNER" <<'SQL'
+SELECT
+  (SELECT count(*) FROM dune.dune_exchange_orders WHERE owner_id = :'o'::bigint AND is_npc_order) AS bot_orders,
+  (SELECT count(*) FROM dune.dune_exchange_orders WHERE is_npc_order) AS npc_orders,
+  (SELECT count(*) FROM dune.dune_exchange_orders WHERE NOT is_npc_order) AS player_orders
+SQL
+        echo "market-bot owner=$OWNER exchange=$EXCH access_point=$AP inventory=$INV"
+        echo "publish=ok market-bot-status"
+        exit 0
+        ;;
+    market-bot-post)
+        # Seed the exchange with NPC sell orders from the priced+masked catalog.
+        # Each order = a real backing item in the exchange inventory + a
+        # dune_exchange_orders (is_npc_order) row + a dune_exchange_sell_orders row
+        # (one atomic batch). Server-wide economy write; applies live. Ported from
+        # dune-admin marketbot (MIT) but using our pricing + category encoder.
+        limit="${1:-50}"
+        case "$limit" in ''|*[!0-9]*) echo "[admin-publish] ERROR market-bot-post: limit must be an integer, got '$limit'" >&2; exit 2 ;; esac
+        dune_require_tables dune.dune_exchange_orders dune.dune_exchange_sell_orders dune.items dune.actors || exit 3
+        prov=$(dune_market_provision) || { echo "[admin-publish] ERROR market-bot-post: provision failed" >&2; exit 1; }
+        IFS='|' read -r OWNER EXCH AP INV <<<"$prov"
+        listings=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin_market.py" listings --limit "$limit" "$BASE") || {
+            echo "[admin-publish] ERROR market-bot-post: listings compute failed" >&2; exit 1; }
+        if [ -z "$listings" ]; then echo "[admin-publish] ERROR market-bot-post: no listings to post" >&2; exit 1; fi
+        # Build one atomic batch. Per item: chained data-modifying CTEs link the
+        # backing item -> order -> sell order. position_index = MAX+1 (sees prior
+        # inserts within the txn). expiration sentinel 999999999 = never-expire.
+        batch="BEGIN;"
+        n=0
+        while IFS='|' read -r tmpl qty qual price mask depth; do
+            [ -z "$tmpl" ] && continue
+            esc=${tmpl//\'/\'\'}
+            batch+="
+WITH it AS (
+  INSERT INTO dune.items (inventory_id,stack_size,position_index,template_id,quality_level,stats)
+  VALUES ($INV,$qty,(SELECT COALESCE(MAX(position_index),-1)+1 FROM dune.items WHERE inventory_id=$INV),'$esc',$qual,'{}')
+  RETURNING id),
+ord AS (
+  INSERT INTO dune.dune_exchange_orders
+    (exchange_id,access_point_id,owner_id,is_npc_order,expiration_time,template_id,
+     durability_cur,durability_max,category_mask,category_depth,item_price,quality_level,item_id)
+  SELECT $EXCH,$AP,$OWNER,TRUE,999999999,'$esc',1.0,1.0,$mask,$depth,$price,$qual,it.id FROM it
+  RETURNING id)
+INSERT INTO dune.dune_exchange_sell_orders (order_id,initial_stack_size,wear_normalized_price)
+SELECT ord.id,$qty,$price FROM ord;"
+            n=$((n+1))
+        done <<EOF2
+$listings
+EOF2
+        batch+="
+COMMIT;"
+        if ! printf '%s' "$batch" | dune_psql_q -q -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
+            echo "[admin-publish] ERROR market-bot-post: batch insert failed (rolled back)" >&2; exit 1
+        fi
+        total=$(dune_psql_q -tA -q --set=o="$OWNER" 2>/dev/null <<'SQL' | head -1
+SELECT count(*) FROM dune.dune_exchange_orders WHERE owner_id = :'o'::bigint AND is_npc_order
+SQL
+)
+        echo "[admin-publish] OK market-bot-post posted=$n exchange=$EXCH bot_orders_now=$total"
+        echo "publish=db-write market-bot-post posted=$n bot_orders=$total"
+        exit 0
+        ;;
+    market-bot-clear)
+        # Remove ALL of the market-bot's NPC orders + their backing items (sell
+        # orders -> orders -> items, FK-safe). The "off switch" / reset.
+        dune_require_tables dune.dune_exchange_orders dune.dune_exchange_sell_orders dune.items dune.actors || exit 3
+        prov=$(dune_market_provision) || { echo "[admin-publish] ERROR market-bot-clear: provision failed" >&2; exit 1; }
+        IFS='|' read -r OWNER EXCH AP INV <<<"$prov"
+        rc=0
+        out=$(dune_psql_q -q -v ON_ERROR_STOP=1 --set=o="$OWNER" -tA 2>&1 <<'SQL'
+BEGIN;
+CREATE TEMP TABLE _bot_items ON COMMIT DROP AS
+  SELECT item_id FROM dune.dune_exchange_orders
+  WHERE owner_id = :'o'::bigint AND is_npc_order AND item_id IS NOT NULL;
+DELETE FROM dune.dune_exchange_sell_orders
+  WHERE order_id IN (SELECT id FROM dune.dune_exchange_orders WHERE owner_id = :'o'::bigint AND is_npc_order);
+DELETE FROM dune.dune_exchange_orders WHERE owner_id = :'o'::bigint AND is_npc_order;
+DELETE FROM dune.items WHERE id IN (SELECT item_id FROM _bot_items);
+COMMIT;
+SELECT count(*) FROM dune.dune_exchange_orders WHERE owner_id = :'o'::bigint AND is_npc_order;
+SQL
+) || rc=$?
+        remaining=$(printf '%s\n' "$out" | tail -n1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR market-bot-clear: transaction failed (rolled back)" >&2
+            printf '%s\n' "$out" >&2; exit 1
+        fi
+        echo "[admin-publish] OK market-bot-clear owner=$OWNER bot_orders_remaining=$remaining"
+        echo "publish=db-write market-bot-clear remaining=$remaining"
         exit 0
         ;;
     item-delete)

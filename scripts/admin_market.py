@@ -90,6 +90,147 @@ def compute_price(item: dict, grade: int = 0) -> int:
 
 
 # --------------------------------------------------------------------------
+# Category mask encoder — ported from dune-admin internal/marketbot/pricing.go
+# (MIT). Static lookup tables from in-game UI category ordering; the live
+# category index (the Go `idx` param) is unused, so this is fully pure. The
+# game packs the category as bytes: depth1->bits 24-31, depth2->16-23,
+# depth3->8-15. mask=0 for an unknown segment so callers skip the listing
+# rather than insert a conflicting guessed mask.
+# --------------------------------------------------------------------------
+_KNOWN_CODES = {
+    1: {"garment": 0, "weapons": 1, "vehicles": 2, "utility": 3, "augment": 4, "misc": 5},
+    2: {
+        "lightarmor": 0, "heavyarmor": 1, "stillsuits": 2, "utilitywearables": 3, "socialwearables": 4,
+        "pistol": 2, "heavypistol": 3, "heavyrifle": 4, "smg": 5, "spitdart": 6, "shotgun": 7,
+        "battlerifle": 8, "heavyshotgun": 9, "missilelauncher": 10, "flamethrower": 11,
+        "fireballer": 12, "lasgun": 13, "ammunition": 14,
+        "sandbike": 0, "buggy": 1, "lightornithopter": 2, "mediumornithopter": 3,
+        "transportornithopter": 4, "sandcrawler": 5,
+        "buildingtools": 0, "hydrationtools": 2, "gatheringtools": 3, "cartographytools": 4,
+        "utilitytools": 5, "consumables": 6,
+        "armor": 0, "melee": 1, "ranged": 2, "misc": 3,
+        "fuel": 0, "refinedresources": 1, "components": 2, "rawresources": 3,
+    },
+    3: {"cutteray": 0, "compactor": 1},
+}
+_DEPTH3_PARENT = {
+    ("lightarmor", "head"): 0, ("lightarmor", "chest"): 1, ("lightarmor", "legs"): 2,
+    ("lightarmor", "hands"): 3, ("lightarmor", "feet"): 4,
+    ("heavyarmor", "head"): 0, ("heavyarmor", "chest"): 1, ("heavyarmor", "legs"): 2,
+    ("heavyarmor", "hands"): 3, ("heavyarmor", "feet"): 4,
+    ("stillsuits", "head"): 0, ("stillsuits", "chest"): 1, ("stillsuits", "hands"): 2, ("stillsuits", "feet"): 3,
+    ("socialwearables", "chest"): 0, ("socialwearables", "legs"): 1, ("socialwearables", "hands"): 2, ("socialwearables", "feet"): 3,
+    ("sandbike", "chassis"): 0, ("sandbike", "hull"): 1, ("sandbike", "engine"): 2, ("sandbike", "psu"): 3, ("sandbike", "locomotion"): 4, ("sandbike", "utility"): 5,
+    ("buggy", "chassis"): 0, ("buggy", "hull"): 1, ("buggy", "rear"): 2, ("buggy", "engine"): 3, ("buggy", "psu"): 4, ("buggy", "locomotion"): 5, ("buggy", "turret"): 6, ("buggy", "utility"): 7,
+    ("lightornithopter", "chassis"): 0, ("lightornithopter", "cockpit"): 1, ("lightornithopter", "hull"): 2, ("lightornithopter", "engine"): 3, ("lightornithopter", "psu"): 4, ("lightornithopter", "locomotion"): 5, ("lightornithopter", "utility"): 6,
+    ("mediumornithopter", "chassis"): 0, ("mediumornithopter", "cabin"): 1, ("mediumornithopter", "cockpit"): 2, ("mediumornithopter", "tail"): 3, ("mediumornithopter", "engine"): 4, ("mediumornithopter", "psu"): 5, ("mediumornithopter", "locomotion"): 6, ("mediumornithopter", "utility"): 7,
+    ("transportornithopter", "chassis"): 0, ("transportornithopter", "hull"): 1, ("transportornithopter", "engine"): 2, ("transportornithopter", "psu"): 3, ("transportornithopter", "locomotion"): 4, ("transportornithopter", "utility"): 5,
+    ("sandcrawler", "chassis"): 0, ("sandcrawler", "cabin"): 1, ("sandcrawler", "engine"): 2, ("sandcrawler", "psu"): 3, ("sandcrawler", "locomotion"): 4, ("sandcrawler", "utility"): 5,
+    ("hydrationtools", "watertools"): 0, ("hydrationtools", "bloodtools"): 1,
+    ("utilitytools", "powerpack"): 0, ("utilitytools", "suspensor"): 1, ("utilitytools", "utility"): 3,
+    ("consumables", "utility"): 2,
+}
+_WEAPON_PATH_REMAP = {"shortblades": (0, 0), "longblades": (0, 1)}
+_UNIQUE_SCHEM_D2 = {"garment": 5, "weapons": 3, "vehicles": 6, "utility": 7, "augment": 4}
+_UNIQUE_SCHEM_D3 = {
+    "lightarmor": 0, "heavyarmor": 1, "stillsuits": 2, "utilitywearables": 3, "socialwearables": 4,
+    "shortblades": 0, "longblades": 1, "pistol": 2, "heavypistol": 3, "heavyrifle": 4, "smg": 5,
+    "spitdart": 6, "shotgun": 7, "battlerifle": 8, "heavyshotgun": 9, "missilelauncher": 10,
+    "flamethrower": 11, "fireballer": 12, "lasgun": 13,
+    "sandbike": 0, "buggy": 1, "lightornithopter": 2, "mediumornithopter": 3, "transportornithopter": 4, "sandcrawler": 5,
+    "deployables": 0, "watertools": 1, "bloodtools": 2, "cutteray": 3, "staticcompactor": 4,
+    "cartographytools": 5, "shield": 6, "suspensor": 7, "powerpack": 8,
+    "armor": 0, "melee": 1, "ranged": 2, "misc": 3,
+}
+
+
+def category_mask(category: str) -> tuple[int, int]:
+    """(mask, depth) for a standard item category path. mask=0 if any segment
+    is unknown (caller should skip the listing)."""
+    if not category:
+        return 0, 0
+    parts = category.split("/")
+    n = min(len(parts), 4)
+    depth = max(n - 1, 0)
+    # Melee remap: item-data has items/weapons/shortblades (depth-2) but the game
+    # nests it under melee at depth-3 (items/weapons/melee/shortblades).
+    if n >= 3 and parts[1] == "weapons" and parts[2] in _WEAPON_PATH_REMAP:
+        d2, d3 = _WEAPON_PATH_REMAP[parts[2]]
+        return (_KNOWN_CODES[1]["weapons"] << 24) | (d2 << 16) | (d3 << 8), 3
+    mask = 0
+    for i in range(1, n):  # skip i=0 (root "items")
+        seg = parts[i]
+        code = 0
+        if i == 3 and len(parts) >= 3 and (parts[2], seg) in _DEPTH3_PARENT:
+            code = _DEPTH3_PARENT[(parts[2], seg)]
+        elif seg in _KNOWN_CODES.get(i, {}):
+            code = _KNOWN_CODES[i][seg]
+        mask |= code << ((4 - i) * 8)
+    return mask, depth
+
+
+def unique_schematics_mask(category: str) -> tuple[int, int, bool]:
+    """(mask, depth, ok) routing unique/memento items into the UNIQUE SCHEMATICS
+    subcategory. ok=False when the depth-1 category has no such section."""
+    parts = category.split("/")
+    if len(parts) < 3:
+        return 0, 0, False
+    d1seg = parts[1]
+    if d1seg not in _UNIQUE_SCHEM_D2:
+        return 0, 0, False
+    d3seg = parts[2]
+    if d3seg not in _UNIQUE_SCHEM_D3 and len(parts) >= 4:
+        d3seg = parts[3]
+    if d3seg not in _UNIQUE_SCHEM_D3:
+        return 0, 0, False
+    mask = (_KNOWN_CODES[1].get(d1seg, 0) << 24) | (_UNIQUE_SCHEM_D2[d1seg] << 16) | (_UNIQUE_SCHEM_D3[d3seg] << 8)
+    return mask, 3, True
+
+
+def category_for(item: dict) -> tuple[int, int, bool]:
+    """(mask, depth, ok) for a catalog item: schematic items reroute into UNIQUE
+    SCHEMATICS, everything else uses the standard mask. ok=False -> skip."""
+    cat = item.get("category", "") or ""
+    if item.get("is_schematic") and cat:
+        m, d, ok = unique_schematics_mask(cat)
+        if ok:
+            return m, d, True
+    if cat:
+        m, d = category_mask(cat)
+        if m != 0:
+            return m, d, True
+    return 0, 0, False
+
+
+def build_listings(items: dict, limit: int = 0) -> list[dict]:
+    """Select tradeable catalog items with a known category + a meaningful vendor
+    price, and compute (price, mask, depth, qty) for each NPC sell order to post.
+    limit<=0 = all. Pure — the caller does the DB inserts. Skips junk so the bot
+    never lists no-price/uncategorised items."""
+    out = []
+    for tmpl in sorted(items):
+        it = items[tmpl]
+        if not it.get("tradeable", True):
+            continue
+        if (it.get("vendor_price") or 0) < MIN_MEANINGFUL_VENDOR:
+            continue
+        mask, depth, ok = category_for(it)
+        if not ok:
+            continue
+        out.append({
+            "template": tmpl,
+            "qty": max(1, int(it.get("stack_max", 1) or 1)),
+            "quality": 0,
+            "price": compute_price(it, 0),
+            "mask": mask,
+            "depth": depth,
+        })
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+# --------------------------------------------------------------------------
 # Catalogue + read-only market view (I/O; not unit-tested).
 # --------------------------------------------------------------------------
 def catalog_path(base):
@@ -148,6 +289,17 @@ def _main(argv):
         vp = sum(1 for v in items.values() if (v.get("vendor_price") or 0) >= MIN_MEANINGFUL_VENDOR)
         print(json.dumps({"ok": True, "items": len(items), "vendor_priced": vp,
                           "fallback_priced": len(items) - vp}))
+        return 0
+    if cmd == "listings":
+        limit = 0
+        for i, a in enumerate(argv):
+            if a == "--limit" and i + 1 < len(argv) and argv[i + 1].isdigit():
+                limit = int(argv[i + 1])
+        items, _ = load_catalog(base)
+        # pipe-delimited so the bash market-bot-post loop can read it:
+        # template|qty|quality|price|mask|depth
+        for li in build_listings(items, limit):
+            print(f"{li['template']}|{li['qty']}|{li['quality']}|{li['price']}|{li['mask']}|{li['depth']}")
         return 0
     if cmd == "orders":
         print(json.dumps(market_summary(base)))
