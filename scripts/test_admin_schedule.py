@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for admin_schedule (scheduler Phase 2): due-logic + run_tick."""
+import http.client
 import json
 import os
 import tempfile
@@ -151,6 +152,64 @@ class TestRunTick(unittest.TestCase):
         led = mem_ledger()
         self.assertEqual(sch.run_tick("/b", led, now=WED_0830,
                                       cfg={"restart": {"enabled": False}, "backup": {"enabled": False}}), [])
+
+
+class TestPowerEndpoint(unittest.TestCase):
+    def test_https_default_port(self):
+        scheme, host, port, path = sch._power_endpoint("https://pelican.example.com", "abc123")
+        self.assertEqual((scheme, host, port), ("https", "pelican.example.com", 443))
+        self.assertEqual(path, "/api/client/servers/abc123/power")
+
+    def test_explicit_port(self):
+        scheme, host, port, _ = sch._power_endpoint("https://panel.example.com:8443", "s")
+        self.assertEqual((scheme, host, port), ("https", "panel.example.com", 8443))
+
+    def test_http_default_port(self):
+        scheme, host, port, _ = sch._power_endpoint("http://10.0.0.5", "s")
+        self.assertEqual((scheme, host, port), ("http", "10.0.0.5", 80))
+
+
+class TestResolvingConnection(unittest.TestCase):
+    def test_open_conn_uses_resolver_when_ip_set(self):
+        # With a resolve IP, TCP target is the IP but SNI/cert/Host stay the hostname
+        # (curl --resolve equivalent) so a CDN/proxy in front of DNS is bypassed.
+        conn = sch._open_power_conn("https", "pelican.example.com", 443, "10.99.0.1", timeout=5)
+        self.assertIsInstance(conn, sch._ResolvingHTTPSConnection)
+        self.assertEqual(conn.host, "pelican.example.com")
+        self.assertEqual(conn._resolve_ip, "10.99.0.1")
+        self.assertEqual(conn.port, 443)
+
+    def test_open_conn_plain_https_without_ip(self):
+        conn = sch._open_power_conn("https", "pelican.example.com", 443, None, timeout=5)
+        self.assertIsInstance(conn, http.client.HTTPSConnection)
+        self.assertNotIsInstance(conn, sch._ResolvingHTTPSConnection)
+        self.assertEqual(conn.host, "pelican.example.com")
+
+    def test_open_conn_http(self):
+        conn = sch._open_power_conn("http", "10.0.0.5", 80, None, timeout=5)
+        self.assertIsInstance(conn, http.client.HTTPConnection)
+        self.assertNotIsInstance(conn, http.client.HTTPSConnection)
+
+
+class TestPelicanRestartSkips(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in
+                       ("DUNE_PELICAN_URL", "DUNE_PELICAN_CLIENT_KEY",
+                        "DUNE_PELICAN_SERVER_ID", "DUNE_PELICAN_RESOLVE")}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_skips_when_unset(self):
+        for k in self._saved:
+            os.environ.pop(k, None)
+        ok, detail = sch.pelican_restart()
+        self.assertFalse(ok)
+        self.assertIn("skipped", detail)
 
 
 if __name__ == "__main__":

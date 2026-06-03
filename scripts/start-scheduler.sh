@@ -25,6 +25,7 @@ launch_bg scheduler "$LOGS/scheduler.log" -- \
         DUNE_PELICAN_URL="${DUNE_PELICAN_URL:-}" \
         DUNE_PELICAN_CLIENT_KEY="${DUNE_PELICAN_CLIENT_KEY:-}" \
         DUNE_PELICAN_SERVER_ID="${DUNE_PELICAN_SERVER_ID:-}" \
+        DUNE_PELICAN_RESOLVE="${DUNE_PELICAN_RESOLVE:-}" \
         DUNE_BACKUP_RETENTION="${DUNE_BACKUP_RETENTION:-}" \
         "$PY" "$SCRIPT" scan-loop "$BASE"
 log "scheduler started (no-op while schedule.json restart/backup both disabled)"

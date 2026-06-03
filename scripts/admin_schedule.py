@@ -11,14 +11,16 @@ stop, which console.sh makes data-safe). Backup runs admin-publish db-backup.
 Pure due-logic (restart_due/backup_due/_slot_today/load_config) is unit-tested;
 the I/O (subprocess, HTTP, sqlite) is thin and isolated for monkeypatching.
 """
+import http.client
 import json
 import os
+import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 DEFAULT_TICK_SECS = 30
@@ -229,28 +231,79 @@ def broadcast_restart(base, lead, freq):
     return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())[:300]
 
 
+class _ResolvingHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that TCP-connects to a fixed IP while keeping TLS SNI,
+    certificate validation, and the Host header pinned to the original hostname
+    — the Python equivalent of `curl --resolve host:port:ip`.
+
+    Used so the in-container scheduler can reach the Pelican panel straight over
+    the wg tunnel (e.g. 10.99.0.1) instead of via public DNS, bypassing a CDN/
+    proxy such as Cloudflare that may challenge the container's egress IP. The
+    cert still has to be valid for the real hostname, so this is not a
+    verification downgrade — only a routing override."""
+
+    def __init__(self, host, resolve_ip, *, context=None, **kw):
+        context = context or ssl.create_default_context()
+        super().__init__(host, context=context, **kw)
+        self._resolve_ip = resolve_ip
+        self._ssl_ctx = context
+
+    def connect(self):
+        sock = socket.create_connection((self._resolve_ip, self.port), self.timeout)
+        self.sock = self._ssl_ctx.wrap_socket(sock, server_hostname=self.host)
+
+
+def _power_endpoint(url, sid):
+    """Pure: parse (scheme, host, port, path) for a server's power endpoint."""
+    p = urllib.parse.urlsplit(url)
+    scheme = p.scheme or "https"
+    host = p.hostname or ""
+    port = p.port or (443 if scheme == "https" else 80)
+    return scheme, host, port, f"/api/client/servers/{sid}/power"
+
+
+def _open_power_conn(scheme, host, port, resolve_ip, timeout):
+    """Build the HTTP(S) connection for the power POST. When resolve_ip is set
+    the TCP target is overridden to that IP (SNI/cert/Host stay `host`)."""
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        if resolve_ip:
+            return _ResolvingHTTPSConnection(host, resolve_ip, port=port, timeout=timeout, context=ctx)
+        return http.client.HTTPSConnection(host, port=port, timeout=timeout, context=ctx)
+    return http.client.HTTPConnection(resolve_ip or host, port=port, timeout=timeout)
+
+
 def pelican_restart():
     """POST the Pelican client-API power:restart. Needs DUNE_PELICAN_URL +
-    DUNE_PELICAN_CLIENT_KEY + DUNE_PELICAN_SERVER_ID env."""
+    DUNE_PELICAN_CLIENT_KEY + DUNE_PELICAN_SERVER_ID env. Optional
+    DUNE_PELICAN_RESOLVE pins the TCP target to a given IP (curl --resolve
+    style) so an in-container restart can bypass a CDN in front of the panel."""
     url = os.environ.get("DUNE_PELICAN_URL", "").rstrip("/")
     key = os.environ.get("DUNE_PELICAN_CLIENT_KEY", "")
     sid = os.environ.get("DUNE_PELICAN_SERVER_ID", "")
     if not (url and key and sid):
         return False, "restart skipped: DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID} not set"
-    req = urllib.request.Request(
-        f"{url}/api/client/servers/{sid}/power",
-        data=json.dumps({"signal": "restart"}).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                 "Accept": "application/json"},
-        method="POST")
+    resolve_ip = os.environ.get("DUNE_PELICAN_RESOLVE", "").strip() or None
+    scheme, host, port, path = _power_endpoint(url, sid)
+    if not host:
+        return False, "restart skipped: DUNE_PELICAN_URL has no host"
+    body = json.dumps({"signal": "restart"}).encode()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+               "Accept": "application/json", "Host": host}
+    conn = None
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            code = resp.status
-        return 200 <= code < 300, f"power restart HTTP {code}"
-    except urllib.error.HTTPError as e:
-        return False, f"power restart HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
+        conn = _open_power_conn(scheme, host, port, resolve_ip, timeout=20)
+        conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        code = resp.status
+        resp.read()
+        via = f" via {resolve_ip}" if resolve_ip else ""
+        return 200 <= code < 300, f"power restart HTTP {code}{via}"
+    except (OSError, http.client.HTTPException, ssl.SSLError) as e:
         return False, f"power restart error: {e}"[:200]
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def run_tick(base, ledger, now=None, cfg=None):
