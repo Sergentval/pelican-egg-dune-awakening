@@ -1223,7 +1223,7 @@ class Handler(BaseHTTPRequestHandler):
             if sub_filter not in ("all", "online"):
                 sub_filter = "all"
             entry = run_publish(["players", sub_filter], timeout=10)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         if path.startswith("/api/pos/"):
@@ -1231,7 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
             # the SPA (which encodeURIComponent's the colon to %3A).
             player = unquote(path[len("/api/pos/"):])
             entry = run_publish(["pos", player], timeout=10)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Per-player reads: /api/players/<id>/{state,inventory,char-xp,tags}.
@@ -1259,7 +1259,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/vehicles/list":
             entry = run_publish(["vehicle-list"], timeout=10)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         if path == "/api/steam-info":
@@ -1288,7 +1288,7 @@ class Handler(BaseHTTPRequestHandler):
             sub_filter = "online" if query.get("filter", [""])[0] == "online" else "all"
             entry = run_publish(["players", sub_filter], timeout=10)
             self._write(
-                200 if entry["ok"] else 502,
+                200,
                 entry["stdout"] + entry["stderr"],
                 content_type="text/plain",
             )
@@ -1526,7 +1526,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(403, {"error": "csrf token missing or invalid"})
                 return
             r = run_welcome("scan", timeout=120)
-            self._write(200 if r["ok"] else 502, r.get("data", r))
+            self._write(200, r.get("data", r))
             return
 
         # Phase 6: clear failed grant rows so the next scan retries them.
@@ -1538,7 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(403, {"error": "csrf token missing or invalid"})
                 return
             r = run_welcome("retry-failed", timeout=15)
-            self._write(200 if r["ok"] else 502, r.get("data", r))
+            self._write(200, r.get("data", r))
             return
 
         if path == "/api/vehicles/delete":
@@ -1553,7 +1553,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "actor_id (positive int) required"})
                 return
             entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: adjust Solaris balance. Offline-gated + reversible.
@@ -1575,7 +1575,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["give-currency", player, str(amount)], timeout=15)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: rename character. Offline-gated + reversible.
@@ -1596,7 +1596,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["rename", player, name], timeout=15)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: add/remove progression tags. Offline-gated + reversible.
@@ -1623,7 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # CLI takes comma-separated lists; tags contain no commas.
             entry = run_publish(["tags-update", player, ",".join(add), ",".join(remove)], timeout=15)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: award/deduct character XP (recomputes level/SP/intel).
@@ -1644,7 +1644,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["award-char-xp", player, str(amount)], timeout=20)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: grant all 205 keystones + recompute SP. Offline-gated.
@@ -1661,7 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["grant-keystones", player], timeout=20)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: grant items. Online+quality0 -> RMQ AddItemToInventory;
@@ -1695,7 +1695,7 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(
                 ["give-item", player, template, str(qty), str(quality)], timeout=20
             )
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: adjust Great-House reputation by a signed delta.
@@ -1725,7 +1725,7 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(
                 ["faction-rep", player, str(faction), str(amount)], timeout=20
             )
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: align to a Great House AND set the reputation TIER directly
@@ -1755,7 +1755,7 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(
                 ["set-faction-tier", player, str(faction), str(tier)], timeout=20
             )
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;
@@ -1777,7 +1777,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["progression-unlock", player, preset], timeout=30)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Player WRITE: reverse (lock) a journey-progression preset. Offline-gated;
@@ -1799,7 +1799,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["progression-lock", player, preset], timeout=30)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated
@@ -1817,7 +1817,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "item_id (positive integer) required"})
                 return
             entry = run_publish(["item-delete", item_id], timeout=15)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Saved teleport locations: add/replace or remove. Body is one of:
@@ -1866,7 +1866,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(404, {"error": "unknown location"})
                 return
             entry = run_publish(["tpsafe", player, str(loc["x"]), str(loc["y"]), str(loc["z"])], timeout=15)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # Unattended scheduler config update (auth+csrf). Body: {restart:{...}, backup:{...}}.
@@ -1895,7 +1895,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "unknown task (backup|restart)"})
                 return
             r = run_schedule(sub, timeout=600 if task == "backup" else 60)
-            self._write(200 if r["ok"] else 502, r.get("data", r))
+            self._write(200, r.get("data", r))
             return
 
         # DESTRUCTIVE: wipe all specialization tracks + purchased keystones.
@@ -1912,7 +1912,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["reset-spec", player], timeout=20)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # IRREVERSIBLE: delete the whole account/character + cascade. Requires a
@@ -1939,7 +1939,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "player id required"})
                 return
             entry = run_publish(["account-delete", player, confirm, reason], timeout=20)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         # /api/login is the only POST that bypasses Bearer auth.
@@ -2036,7 +2036,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(403, {"error": "csrf token missing or invalid"})
                 return
             entry = run_publish(["db-backup"], timeout=300)
-            self._write(200 if entry["ok"] else 502, entry)
+            self._write(200, entry)
             return
 
         if not path.startswith("/admin/"):
@@ -2058,7 +2058,7 @@ class Handler(BaseHTTPRequestHandler):
         except subprocess.TimeoutExpired:
             self._write(504, {"error": "admin-publish.sh timed out"})
             return
-        self._write(200 if entry["ok"] else 502, entry)
+        self._write(200, entry)
 
 
 # --------------------------------------------------------------------------

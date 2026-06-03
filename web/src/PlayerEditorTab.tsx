@@ -59,10 +59,13 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
 
   useEffect(() => {
     fetchProgressionPresets().then((res) => {
-      const body = res.body;
-      if (res.ok && "presets" in body && body.presets.length) {
-        setPresets(body.presets);
-        setPreset(body.presets[0].id);
+      const body: unknown = res.body;
+      if (res.ok && typeof body === "object" && body !== null && "presets" in body) {
+        const list = (body as { presets: ProgressionPreset[] }).presets;
+        if (list.length) {
+          setPresets(list);
+          setPreset(list[0].id);
+        }
       }
     });
   }, []);
@@ -70,12 +73,22 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
   async function run(action: string, body: Record<string, unknown> | undefined, label: string) {
     if (!pid) return;
     setBusy(action);
-    const res = await playerWrite(pid, action, body);
+    const res = await playerWrite(pid, action, body).catch(() => null);
     setBusy("");
-    const b = res.body;
-    const ok = res.ok && "ok" in b && b.ok === true;
-    const err = "error" in b ? b.error : undefined;
-    pushToConsole(setConsoleEntries, label, err || (b as PublishResult), ok);
+    if (!res) {
+      pushToConsole(setConsoleEntries, label, "request failed (network error)", false);
+      return;
+    }
+    // The body may be the run_publish entry (object), an {error} object, or a
+    // non-JSON string (e.g. a proxy/Cloudflare HTML error page) — never assume a
+    // shape, or `"x" in body` throws on a string and the click silently dies.
+    const b: unknown = res.body;
+    const isObj = typeof b === "object" && b !== null;
+    const ok = res.ok && isObj && "ok" in b && (b as { ok?: unknown }).ok === true;
+    const errMsg = isObj && "error" in b ? (b as { error?: string }).error : undefined;
+    const out: PublishResult | string =
+      typeof b === "string" ? b : (errMsg ?? (b as PublishResult));
+    pushToConsole(setConsoleEntries, label, out, ok);
   }
 
   const anyBusy = busy !== "" || !pid;
