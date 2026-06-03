@@ -260,6 +260,34 @@ export const removeLocation = (name: string) =>
 export const teleportToLocation = (player: string, location: string) =>
   api<PublishResult>("POST", "/api/map/teleport", { player, location });
 
+// ---- Scheduler: auto-restart + auto-backup ----------------------------
+export interface ScheduleRestart {
+  enabled: boolean;
+  time: string;
+  days: string[];
+  warn_lead_secs: number;
+  warn_freq_secs: number;
+  catch_up_grace_secs: number;
+}
+export interface ScheduleBackup { enabled: boolean; every_hours: number; retention: number; }
+export interface ScheduleConfig { restart: ScheduleRestart; backup: ScheduleBackup; }
+export interface TaskRun { task: string; status: string; detail: string; at: string; }
+export interface ScheduleResponse {
+  ok: boolean;
+  config: ScheduleConfig;
+  runs: TaskRun[];
+  pending_restart: string | null;
+  restart_configured: boolean;
+}
+export const fetchSchedule = () => api<ScheduleResponse>("GET", "/api/schedule");
+export const saveSchedule = (config: ScheduleConfig) =>
+  api<{ ok: boolean; config?: ScheduleConfig; error?: string }>("POST", "/api/schedule", config);
+export const triggerTask = (task: "backup" | "restart") =>
+  api<PublishResult>("POST", `/api/tasks/trigger/${task}`);
+
+export interface BackupTable { headers: string[]; rows: string[][] }
+export const fetchBackups = () => api<BackupTable>("GET", "/api/database/backups");
+
 export const fetchVehicles = () => api<{ vehicles: VehicleClass[] }>("GET", "/api/lookup/vehicles");
 
 export interface ItemCategoryBucket {

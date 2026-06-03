@@ -70,6 +70,39 @@ class TestLoadConfig(unittest.TestCase):
         self.assertFalse(c["restart"]["enabled"])            # default preserved
 
 
+class TestValidateConfig(unittest.TestCase):
+    def test_valid_coerces(self):
+        cfg, err = sch.validate_config({
+            "restart": {"enabled": True, "time": "06:30", "days": ["sun", "mon"], "warn_lead_secs": "120"},
+            "backup": {"enabled": True, "every_hours": "12", "retention": 0},
+        })
+        self.assertIsNone(err)
+        self.assertTrue(cfg["restart"]["enabled"])
+        self.assertEqual(cfg["restart"]["days"], ["mon", "sun"])   # canonical order
+        self.assertEqual(cfg["restart"]["warn_lead_secs"], 120)
+        self.assertEqual(cfg["backup"]["every_hours"], 12)
+        self.assertEqual(cfg["backup"]["retention"], 1)            # clamped to >=1
+
+    def test_rejects(self):
+        for bad in (
+            "notadict",
+            {"restart": "x"},
+            {"restart": {"time": "9pm"}},
+            {"restart": {"days": ["funday"]}},
+            {"restart": {"days": []}},
+            {"backup": {"every_hours": "soon"}},
+        ):
+            _, err = sch.validate_config(bad)
+            self.assertIsNotNone(err, bad)
+
+    def test_save_roundtrip(self):
+        d = tempfile.mkdtemp()
+        cfg, _ = sch.validate_config({"backup": {"enabled": True, "every_hours": 6}})
+        sch.save_config(d, cfg)
+        self.assertTrue(sch.load_config(d)["backup"]["enabled"])
+        self.assertEqual(sch.load_config(d)["backup"]["every_hours"], 6)
+
+
 class TestRunTick(unittest.TestCase):
     def setUp(self):
         self._orig = (sch.run_backup, sch.broadcast_restart, sch.pelican_restart, sch.restart_configured)

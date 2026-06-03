@@ -70,6 +70,47 @@ def load_config(base):
     return out
 
 
+def validate_config(raw):
+    """Validate + coerce a posted config to the canonical shape. Returns
+    (config, None) or (None, error). Pure (no I/O)."""
+    if not isinstance(raw, dict):
+        return None, "config must be an object"
+    r, b = raw.get("restart", {}), raw.get("backup", {})
+    if not isinstance(r, dict) or not isinstance(b, dict):
+        return None, "restart and backup must be objects"
+    out = {"restart": dict(DEFAULT_CONFIG["restart"]), "backup": dict(DEFAULT_CONFIG["backup"])}
+    out["restart"]["enabled"] = bool(r.get("enabled", False))
+    t = str(r.get("time", out["restart"]["time"]))
+    if _slot_today(_now_dt(), t) is None:
+        return None, "restart.time must be HH:MM"
+    out["restart"]["time"] = t
+    days = r.get("days", out["restart"]["days"])
+    if not isinstance(days, list) or not days or not all(d in DAYS for d in days):
+        return None, "restart.days must be a non-empty subset of mon..sun"
+    out["restart"]["days"] = [d for d in DAYS if d in days]  # canonical order, deduped
+    for k in ("warn_lead_secs", "warn_freq_secs", "catch_up_grace_secs"):
+        try:
+            out["restart"][k] = max(int(r.get(k, out["restart"][k])), 0)
+        except (TypeError, ValueError):
+            return None, f"restart.{k} must be an integer"
+    out["backup"]["enabled"] = bool(b.get("enabled", False))
+    try:
+        out["backup"]["every_hours"] = max(int(b.get("every_hours", 24)), 1)
+        out["backup"]["retention"] = max(int(b.get("retention", 7)), 1)
+    except (TypeError, ValueError):
+        return None, "backup.every_hours and backup.retention must be integers"
+    return out, None
+
+
+def save_config(base, config):
+    path = config_path(base)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    os.replace(tmp, path)  # atomic
+
+
 def _slot_today(now, hhmm):
     try:
         h, m = (int(x) for x in str(hhmm).split(":"))
@@ -283,6 +324,20 @@ def _main(argv):
             led.record("restart-warn", "ok" if ok else "error", detail)
         led.close()
         print(json.dumps({"ok": ok, "detail": detail}))
+        return 0
+    if cmd == "set-config":
+        raw = argv[3] if len(argv) > 3 else ""
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            print(json.dumps({"ok": False, "error": "invalid JSON"}))
+            return 1
+        cfg, err = validate_config(parsed)
+        if err:
+            print(json.dumps({"ok": False, "error": err}))
+            return 1
+        save_config(base, cfg)
+        print(json.dumps({"ok": True, "config": cfg}))
         return 0
     if cmd == "scan-loop":
         led = SchedulerLedger(ledger_path(base))

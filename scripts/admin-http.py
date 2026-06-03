@@ -403,6 +403,21 @@ def run_welcome(sub: str, timeout: int = 60) -> dict:
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
+def run_schedule(sub: str, *args: str, timeout: int = 60) -> dict:
+    """Run scripts/admin_schedule.py <sub> <BASE_DIR> [args] out-of-process
+    (it shells to admin-publish for backups/broadcast). Returns {ok, data, ...}
+    where `data` is the script's parsed JSON output."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_schedule.py"), sub, BASE_DIR, *args],
+        capture_output=True, text=True, timeout=timeout)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     """Run scripts/admin_market.py <sub> [args] <BASE_DIR> out-of-process.
     Returns {ok, data, ...} where `data` is the script's parsed JSON output.
@@ -1046,6 +1061,15 @@ class Handler(BaseHTTPRequestHandler):
         # Saved teleport locations (operator-defined named coords).
         if path == "/api/map/locations":
             self._write(200, {"ok": True, "locations": admin_locations.load_locations(BASE_DIR)})
+            return
+
+        # Unattended scheduler: config + status + run history.
+        if path == "/api/schedule":
+            self._write(200, run_schedule("status", timeout=15).get("data", {}))
+            return
+        if path == "/api/tasks/runs":
+            limit = (query.get("limit") or ["50"])[0]
+            self._write(200, run_schedule("runs", limit if limit.isdigit() else "50", timeout=15).get("data", {}))
             return
 
         # Phase 4: live server status grid — mock-k8s per-map instance/scale
@@ -1757,6 +1781,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["tpsafe", player, str(loc["x"]), str(loc["y"]), str(loc["z"])], timeout=15)
             self._write(200 if entry["ok"] else 502, entry)
+            return
+
+        # Unattended scheduler config update (auth+csrf). Body: {restart:{...}, backup:{...}}.
+        if path == "/api/schedule":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_schedule("set-config", json.dumps(body if isinstance(body, dict) else {}), timeout=15)
+            self._write(200 if r["ok"] else 400, r.get("data", r))
+            return
+
+        # Manual task trigger: /api/tasks/trigger/<backup|restart> (auth+csrf).
+        if path.startswith("/api/tasks/trigger/"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            task = path[len("/api/tasks/trigger/"):]
+            sub = {"backup": "run-backup", "restart": "run-restart"}.get(task)
+            if sub is None:
+                self._write(400, {"error": "unknown task (backup|restart)"})
+                return
+            r = run_schedule(sub, timeout=600 if task == "backup" else 60)
+            self._write(200 if r["ok"] else 502, r.get("data", r))
             return
 
         # DESTRUCTIVE: wipe all specialization tracks + purchased keystones.
