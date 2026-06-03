@@ -677,6 +677,62 @@
         "max:64"
       ],
       "field_type": "text"
+    },
+    {
+      "name": "Pelican Panel URL (scheduler auto-restart)",
+      "description": "Base URL of this Pelican panel, e.g. https://panel.example.com. Required ONLY for the Scheduler tab's auto-restart task — the in-container scheduler calls the panel's CLIENT API to restart the server. Leave blank to disable auto-restart (auto-backup works without it).",
+      "env_variable": "DUNE_PELICAN_URL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:255"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Pelican Client API Key (scheduler auto-restart)",
+      "description": "A Pelican CLIENT API key (ptlc_...) from Account -> API Credentials, scoped to this server. Required ONLY for the Scheduler tab's auto-restart task (it POSTs power=restart to the panel client API). Treat as a secret. Leave blank to disable auto-restart.",
+      "env_variable": "DUNE_PELICAN_CLIENT_KEY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:128"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "Pelican Server ID (scheduler auto-restart)",
+      "description": "This server's short identifier (the 8 hex chars in the panel URL, e.g. 5e0975e8). Required ONLY for the Scheduler tab's auto-restart task. Leave blank to disable auto-restart.",
+      "env_variable": "DUNE_PELICAN_SERVER_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:64"
+      ],
+      "field_type": "text"
+    },
+    {
+      "name": "DB Backup Retention",
+      "description": "How many auto-backups (pg_dump of the dune DB, written to /home/container/backups) the scheduler keeps; older dumps are pruned. Default 7.",
+      "env_variable": "DUNE_BACKUP_RETENTION",
+      "default_value": "7",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "integer",
+        "between:1,365"
+      ],
+      "field_type": "text"
     }
   ]
 }
