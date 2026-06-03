@@ -95,6 +95,12 @@ their app directly. Our bash wrapper is intentionally minimal — meant
 for ad-hoc admin from inside the Pelican container, not as a
 replacement for their work.
 
+The **unattended scheduler** (`scripts/admin_schedule.py` + `start-scheduler.sh`,
+auto-restart + auto-backup with independent enable switches and a run ledger) is
+our own in-container implementation, inspired by ddsm's host management service
+which offers the same daily-restart / scheduled-backup feature set. No code was
+lifted — only the feature concept.
+
 ## Icehunter/dune-admin (MIT) — ported admin capabilities
 
 Portions of the admin tooling are ported from

@@ -373,7 +373,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
-            "server-status", "map-markers",
+            "server-status", "map-markers", "db-backup", "db-backup-list",
         )
     )
     entry = {
@@ -394,6 +394,21 @@ def run_welcome(sub: str, timeout: int = 60) -> dict:
     where `data` is the script's parsed JSON output."""
     res = subprocess.run(
         [sys.executable, os.path.join(SCRIPTS_DIR, "admin_welcome.py"), sub, BASE_DIR],
+        capture_output=True, text=True, timeout=timeout)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
+def run_schedule(sub: str, *args: str, timeout: int = 60) -> dict:
+    """Run scripts/admin_schedule.py <sub> <BASE_DIR> [args] out-of-process
+    (it shells to admin-publish for backups/broadcast). Returns {ok, data, ...}
+    where `data` is the script's parsed JSON output."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_schedule.py"), sub, BASE_DIR, *args],
         capture_output=True, text=True, timeout=timeout)
     try:
         data = json.loads(res.stdout) if res.stdout.strip() else {}
@@ -1048,6 +1063,15 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, {"ok": True, "locations": admin_locations.load_locations(BASE_DIR)})
             return
 
+        # Unattended scheduler: config + status + run history.
+        if path == "/api/schedule":
+            self._write(200, run_schedule("status", timeout=15).get("data", {}))
+            return
+        if path == "/api/tasks/runs":
+            limit = (query.get("limit") or ["50"])[0]
+            self._write(200, run_schedule("runs", limit if limit.isdigit() else "50", timeout=15).get("data", {}))
+            return
+
         # Phase 4: live server status grid — mock-k8s per-map instance/scale
         # status merged with per-map online player counts (from Postgres via
         # admin-publish server-status; admin-http holds no PG connection). A
@@ -1270,6 +1294,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/database/search":
             self._handle_db_search(query.get("term", [""])[0])
+            return
+        if path == "/api/database/backups":
+            self._db_reply(run_publish(["db-backup-list"], timeout=15))
             return
 
         if path == "/":
@@ -1756,6 +1783,35 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Unattended scheduler config update (auth+csrf). Body: {restart:{...}, backup:{...}}.
+        if path == "/api/schedule":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_schedule("set-config", json.dumps(body if isinstance(body, dict) else {}), timeout=15)
+            self._write(200 if r["ok"] else 400, r.get("data", r))
+            return
+
+        # Manual task trigger: /api/tasks/trigger/<backup|restart> (auth+csrf).
+        if path.startswith("/api/tasks/trigger/"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            task = path[len("/api/tasks/trigger/"):]
+            sub = {"backup": "run-backup", "restart": "run-restart"}.get(task)
+            if sub is None:
+                self._write(400, {"error": "unknown task (backup|restart)"})
+                return
+            r = run_schedule(sub, timeout=600 if task == "backup" else 60)
+            self._write(200 if r["ok"] else 502, r.get("data", r))
+            return
+
         # DESTRUCTIVE: wipe all specialization tracks + purchased keystones.
         # Offline-gated; controller-keyed. POST /api/players/<id>/reset-spec
         if path.startswith("/api/players/") and path.endswith("/reset-spec"):
@@ -1882,6 +1938,19 @@ class Handler(BaseHTTPRequestHandler):
         # Database tab read-only SQL (auth + csrf already enforced above).
         if path == "/api/database/sql":
             self._handle_db_sql(body.get("sql", "") if isinstance(body, dict) else "")
+            return
+
+        # Trigger a DB backup now (pg_dump of the dune DB). Auth+csrf; restore
+        # stays CLI-only (destructive). pg_dump can take a while -> generous timeout.
+        if path == "/api/database/backup":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            entry = run_publish(["db-backup"], timeout=300)
+            self._write(200 if entry["ok"] else 502, entry)
             return
 
         if not path.startswith("/admin/"):

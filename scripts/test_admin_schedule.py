@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Tests for admin_schedule (scheduler Phase 2): due-logic + run_tick."""
+import http.client
+import json
+import os
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+
+import admin_schedule as sch
+
+# A fixed Wednesday 08:30 UTC for deterministic slot math.
+WED_0830 = datetime(2026, 6, 3, 8, 30, 0, tzinfo=timezone.utc)
+
+
+def mem_ledger():
+    return sch.SchedulerLedger(":memory:")
+
+
+class TestSlotAndDue(unittest.TestCase):
+    def test_slot_today(self):
+        self.assertEqual(sch._slot_today(WED_0830, "08:00"),
+                         WED_0830.replace(hour=8, minute=0, second=0, microsecond=0))
+        self.assertIsNone(sch._slot_today(WED_0830, "nope"))
+
+    def test_restart_due_happy(self):
+        rcfg = {"enabled": True, "time": "08:00", "days": list(sch.DAYS), "catch_up_grace_secs": 3600}
+        self.assertTrue(sch.restart_due(rcfg, WED_0830, None))  # 08:30 within [08:00, 09:00)
+
+    def test_restart_disabled_or_wrong_day(self):
+        self.assertFalse(sch.restart_due({"enabled": False, "time": "08:00"}, WED_0830, None))
+        self.assertFalse(sch.restart_due({"enabled": True, "time": "08:00", "days": ["mon"]}, WED_0830, None))
+
+    def test_restart_before_slot_and_after_grace(self):
+        rcfg = {"enabled": True, "time": "08:00", "catch_up_grace_secs": 600}
+        before = WED_0830.replace(hour=7, minute=59)
+        self.assertFalse(sch.restart_due(rcfg, before, None))           # before slot
+        late = WED_0830.replace(hour=9, minute=0)                       # 08:00 + 600s = 08:10 < 09:00
+        self.assertFalse(sch.restart_due(rcfg, late, None))             # past grace
+
+    def test_restart_dedupe_after_warn(self):
+        rcfg = {"enabled": True, "time": "08:00", "catch_up_grace_secs": 3600}
+        warned = sch._iso(WED_0830.replace(hour=8, minute=5))           # warned at 08:05 (>= 08:00 slot)
+        self.assertFalse(sch.restart_due(rcfg, WED_0830, warned))
+
+    def test_backup_due(self):
+        self.assertFalse(sch.backup_due({"enabled": False}, WED_0830, None))
+        self.assertTrue(sch.backup_due({"enabled": True, "every_hours": 24}, WED_0830, None))  # never run
+        recent = sch._iso(WED_0830 - timedelta(hours=1))
+        self.assertFalse(sch.backup_due({"enabled": True, "every_hours": 24}, WED_0830, recent))
+        old = sch._iso(WED_0830 - timedelta(hours=25))
+        self.assertTrue(sch.backup_due({"enabled": True, "every_hours": 24}, WED_0830, old))
+
+
+class TestLoadConfig(unittest.TestCase):
+    def test_defaults_on_missing(self):
+        d = tempfile.mkdtemp()
+        c = sch.load_config(d)
+        self.assertFalse(c["restart"]["enabled"])
+        self.assertFalse(c["backup"]["enabled"])
+
+    def test_merge_partial(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "data", "admin"))
+        with open(sch.config_path(d), "w") as f:
+            json.dump({"backup": {"enabled": True, "every_hours": 6}}, f)
+        c = sch.load_config(d)
+        self.assertTrue(c["backup"]["enabled"])
+        self.assertEqual(c["backup"]["every_hours"], 6)
+        self.assertEqual(c["backup"]["retention"], 7)        # default preserved
+        self.assertFalse(c["restart"]["enabled"])            # default preserved
+
+
+class TestValidateConfig(unittest.TestCase):
+    def test_valid_coerces(self):
+        cfg, err = sch.validate_config({
+            "restart": {"enabled": True, "time": "06:30", "days": ["sun", "mon"], "warn_lead_secs": "120"},
+            "backup": {"enabled": True, "every_hours": "12", "retention": 0},
+        })
+        self.assertIsNone(err)
+        self.assertTrue(cfg["restart"]["enabled"])
+        self.assertEqual(cfg["restart"]["days"], ["mon", "sun"])   # canonical order
+        self.assertEqual(cfg["restart"]["warn_lead_secs"], 120)
+        self.assertEqual(cfg["backup"]["every_hours"], 12)
+        self.assertEqual(cfg["backup"]["retention"], 1)            # clamped to >=1
+
+    def test_rejects(self):
+        for bad in (
+            "notadict",
+            {"restart": "x"},
+            {"restart": {"time": "9pm"}},
+            {"restart": {"days": ["funday"]}},
+            {"restart": {"days": []}},
+            {"backup": {"every_hours": "soon"}},
+        ):
+            _, err = sch.validate_config(bad)
+            self.assertIsNotNone(err, bad)
+
+    def test_save_roundtrip(self):
+        d = tempfile.mkdtemp()
+        cfg, _ = sch.validate_config({"backup": {"enabled": True, "every_hours": 6}})
+        sch.save_config(d, cfg)
+        self.assertTrue(sch.load_config(d)["backup"]["enabled"])
+        self.assertEqual(sch.load_config(d)["backup"]["every_hours"], 6)
+
+
+class TestRunTick(unittest.TestCase):
+    def setUp(self):
+        self._orig = (sch.run_backup, sch.broadcast_restart, sch.pelican_restart, sch.restart_configured)
+
+    def tearDown(self):
+        sch.run_backup, sch.broadcast_restart, sch.pelican_restart, sch.restart_configured = self._orig
+
+    def test_backup_runs_when_due(self):
+        sch.run_backup = lambda base: (True, "backup=ok file=x bytes=10")
+        led = mem_ledger()
+        cfg = {"restart": {"enabled": False}, "backup": {"enabled": True, "every_hours": 24}}
+        acts = sch.run_tick("/b", led, now=WED_0830, cfg=cfg)
+        self.assertEqual(acts, [("backup", True, "backup=ok file=x bytes=10")])
+        self.assertEqual(led.last("backup")[:4], "2026")
+
+    def test_restart_warn_arms_pending(self):
+        sch.restart_configured = lambda: True
+        sch.broadcast_restart = lambda base, lead, freq: (True, "publish=ok")
+        led = mem_ledger()
+        cfg = {"restart": {"enabled": True, "time": "08:00", "days": list(sch.DAYS),
+                           "warn_lead_secs": 300, "catch_up_grace_secs": 3600},
+               "backup": {"enabled": False}}
+        acts = sch.run_tick("/b", led, now=WED_0830, cfg=cfg)
+        self.assertEqual(acts[0][0], "restart-warn")
+        self.assertTrue(acts[0][1])
+        self.assertEqual(led.get_state(sch.PENDING_KEY), sch._iso(WED_0830 + timedelta(seconds=300)))
+
+    def test_restart_enabled_but_unconfigured_skips(self):
+        sch.restart_configured = lambda: False
+        led = mem_ledger()
+        cfg = {"restart": {"enabled": True, "time": "08:00", "days": list(sch.DAYS), "catch_up_grace_secs": 3600},
+               "backup": {"enabled": False}}
+        acts = sch.run_tick("/b", led, now=WED_0830, cfg=cfg)
+        self.assertEqual(acts[0], ("restart-warn", False, "not configured"))
+        self.assertIsNone(led.get_state(sch.PENDING_KEY))  # no pending armed
+
+    def test_pending_fires_restart(self):
+        sch.pelican_restart = lambda: (True, "power restart HTTP 204")
+        led = mem_ledger()
+        led.set_state(sch.PENDING_KEY, sch._iso(WED_0830 - timedelta(seconds=5)))
+        acts = sch.run_tick("/b", led, now=WED_0830, cfg={"restart": {}, "backup": {"enabled": False}})
+        self.assertEqual(acts, [("restart", True, "power restart HTTP 204")])
+        self.assertIsNone(led.get_state(sch.PENDING_KEY))  # cleared
+
+    def test_idle_when_all_disabled(self):
+        led = mem_ledger()
+        self.assertEqual(sch.run_tick("/b", led, now=WED_0830,
+                                      cfg={"restart": {"enabled": False}, "backup": {"enabled": False}}), [])
+
+
+class TestPowerEndpoint(unittest.TestCase):
+    def test_https_default_port(self):
+        scheme, host, port, path = sch._power_endpoint("https://pelican.example.com", "abc123")
+        self.assertEqual((scheme, host, port), ("https", "pelican.example.com", 443))
+        self.assertEqual(path, "/api/client/servers/abc123/power")
+
+    def test_explicit_port(self):
+        scheme, host, port, _ = sch._power_endpoint("https://panel.example.com:8443", "s")
+        self.assertEqual((scheme, host, port), ("https", "panel.example.com", 8443))
+
+    def test_http_default_port(self):
+        scheme, host, port, _ = sch._power_endpoint("http://10.0.0.5", "s")
+        self.assertEqual((scheme, host, port), ("http", "10.0.0.5", 80))
+
+
+class TestResolvingConnection(unittest.TestCase):
+    def test_open_conn_uses_resolver_when_ip_set(self):
+        # With a resolve IP, TCP target is the IP but SNI/cert/Host stay the hostname
+        # (curl --resolve equivalent) so a CDN/proxy in front of DNS is bypassed.
+        conn = sch._open_power_conn("https", "pelican.example.com", 443, "10.99.0.1", timeout=5)
+        self.assertIsInstance(conn, sch._ResolvingHTTPSConnection)
+        self.assertEqual(conn.host, "pelican.example.com")
+        self.assertEqual(conn._resolve_ip, "10.99.0.1")
+        self.assertEqual(conn.port, 443)
+
+    def test_open_conn_plain_https_without_ip(self):
+        conn = sch._open_power_conn("https", "pelican.example.com", 443, None, timeout=5)
+        self.assertIsInstance(conn, http.client.HTTPSConnection)
+        self.assertNotIsInstance(conn, sch._ResolvingHTTPSConnection)
+        self.assertEqual(conn.host, "pelican.example.com")
+
+    def test_open_conn_http(self):
+        conn = sch._open_power_conn("http", "10.0.0.5", 80, None, timeout=5)
+        self.assertIsInstance(conn, http.client.HTTPConnection)
+        self.assertNotIsInstance(conn, http.client.HTTPSConnection)
+
+
+class TestPelicanRestartSkips(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in
+                       ("DUNE_PELICAN_URL", "DUNE_PELICAN_CLIENT_KEY",
+                        "DUNE_PELICAN_SERVER_ID", "DUNE_PELICAN_RESOLVE")}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_skips_when_unset(self):
+        for k in self._saved:
+            os.environ.pop(k, None)
+        ok, detail = sch.pelican_restart()
+        self.assertFalse(ok)
+        self.assertIn("skipped", detail)
+
+
+if __name__ == "__main__":
+    unittest.main()
