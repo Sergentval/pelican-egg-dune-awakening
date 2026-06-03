@@ -354,6 +354,38 @@ ORDER BY ac.id DESC LIMIT 1
 SQL
 }
 
+# Write absolute reputation for one Great House on a CONTROLLER actor and rebuild
+# the FactionPlayerComponent.m_FactionDataArray jsonb cache (both houses, Atreides
+# first, never clobbering the other) in one transaction. Echoes psql output
+# (last line = the stored reputation) and returns PSQL's exit code (no internal
+# pipe, so ON_ERROR_STOP rollbacks surface). Shared by faction-rep (delta) and
+# set-faction-tier (absolute). Ported from dune-admin syncFactionComponent (MIT).
+dune_apply_faction_rep() {
+    local ctrl=$1 fid=$2 newrep=$3
+    dune_psql_q -q -v ON_ERROR_STOP=1 \
+        --set=ctrl="$ctrl" --set=fid="$fid" --set=newrep="$newrep" -tA 2>&1 <<'SQL'
+BEGIN;
+SELECT dune.set_player_faction_reputation(:'ctrl'::bigint, :'fid'::smallint, :'newrep'::integer);
+UPDATE dune.actors SET properties = jsonb_set(
+    properties,
+    '{FactionPlayerComponent,m_FactionDataArray}',
+    (SELECT jsonb_agg(
+         jsonb_build_object(
+             'Faction', jsonb_build_object('Name', gh.name),
+             'timestamp', extract(epoch FROM clock_timestamp()),
+             'ReputationAmount', COALESCE(r.reputation_amount, 0)
+         ) ORDER BY gh.id)
+     FROM (VALUES (1::smallint, 'Atreides'), (2::smallint, 'Harkonnen')) AS gh(id, name)
+     LEFT JOIN dune.player_faction_reputation r
+       ON r.actor_id = :'ctrl'::bigint AND r.faction_id = gh.id),
+    true)
+WHERE id = :'ctrl'::bigint;
+COMMIT;
+SELECT reputation_amount FROM dune.player_faction_reputation
+WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint;
+SQL
+}
+
 # FLS hex -> current online status text (Offline/Online/...), or empty if the
 # account doesn't exist. A missing player_state row coalesces to Offline.
 # Confirmed encrypted_* schema.
@@ -1494,29 +1526,7 @@ EOF2
         # the in-game jsonb cache never diverges from the rep row. Read the
         # stored rep back as the last line. ON_ERROR_STOP rolls back atomically.
         rc=0
-        applied=$(dune_psql_q -q -v ON_ERROR_STOP=1 \
-                  --set=ctrl="$ctrl" --set=fid="$fid" --set=newrep="$new_rep" -tA 2>&1 <<'SQL'
-BEGIN;
-SELECT dune.set_player_faction_reputation(:'ctrl'::bigint, :'fid'::smallint, :'newrep'::integer);
-UPDATE dune.actors SET properties = jsonb_set(
-    properties,
-    '{FactionPlayerComponent,m_FactionDataArray}',
-    (SELECT jsonb_agg(
-         jsonb_build_object(
-             'Faction', jsonb_build_object('Name', gh.name),
-             'timestamp', extract(epoch FROM clock_timestamp()),
-             'ReputationAmount', COALESCE(r.reputation_amount, 0)
-         ) ORDER BY gh.id)
-     FROM (VALUES (1::smallint, 'Atreides'), (2::smallint, 'Harkonnen')) AS gh(id, name)
-     LEFT JOIN dune.player_faction_reputation r
-       ON r.actor_id = :'ctrl'::bigint AND r.faction_id = gh.id),
-    true)
-WHERE id = :'ctrl'::bigint;
-COMMIT;
-SELECT reputation_amount FROM dune.player_faction_reputation
-WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint;
-SQL
-) || rc=$?
+        applied=$(dune_apply_faction_rep "$ctrl" "$fid" "$new_rep") || rc=$?
         applied=$(printf '%s\n' "$applied" | tail -n1 | tr -d '\r\n')
         if [ "$rc" -ne 0 ]; then
             echo "[admin-publish] ERROR faction-rep: transaction failed (rolled back)" >&2
@@ -1525,6 +1535,72 @@ SQL
         fi
         echo "[admin-publish] OK faction-rep fls=$fls_id controller=$ctrl faction=$fname rep=$applied tier=$tier ($tier_name)"
         echo "publish=db-write faction-rep controller=$ctrl faction=$fname rep=$applied tier=$tier"
+        exit 0
+        ;;
+    set-faction-tier)
+        # Align a player to a Great House AND set their reputation tier directly
+        # (0-20). Unlike faction-rep (a pure rep delta that leaves alignment
+        # untouched), this first calls change_player_faction to UPSERT the house
+        # alignment (so an unaligned character becomes aligned), then writes the
+        # tier's reputation + rebuilds m_FactionDataArray on the player-CONTROLLER
+        # actor via the shared helper. Ported from dune-admin cmdSetFactionTier
+        # (MIT). Offline-gated like every character write.
+        raw="${1:?usage: set-faction-tier <player> <atreides|harkonnen|1|2> <tier 0-20>}"
+        fac="${2:?usage: set-faction-tier <player> <atreides|harkonnen|1|2> <tier 0-20>}"
+        tier="${3:?usage: set-faction-tier <player> <atreides|harkonnen|1|2> <tier 0-20>}"
+        case "$(printf '%s' "$fac" | tr '[:upper:]' '[:lower:]')" in
+            1|atreides)  fid=1; fname=Atreides ;;
+            2|harkonnen) fid=2; fname=Harkonnen ;;
+            *) echo "[admin-publish] ERROR set-faction-tier: faction must be atreides|harkonnen (1|2) — only the two Great Houses have tiers" >&2; exit 2 ;;
+        esac
+        case "$tier" in
+            ''|*[!0-9]*) echo "[admin-publish] ERROR set-faction-tier: tier must be an integer 0-20, got '$tier'" >&2; exit 2 ;;
+        esac
+        if [ "$tier" -gt 20 ]; then
+            echo "[admin-publish] ERROR set-faction-tier: tier must be 0-20, got '$tier'" >&2; exit 2
+        fi
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR set-faction-tier: needs a single player, not '*'" >&2; exit 2
+        fi
+        dune_require_tables dune.player_faction dune.player_faction_reputation dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR set-faction-tier: no player-controller actor for $fls_id" >&2; exit 1
+        fi
+        # tier -> target reputation (pure compute)
+        out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" faction-tier \
+              --faction "$fid" --tier "$tier") || {
+            echo "[admin-publish] ERROR set-faction-tier: compute failed" >&2; exit 1; }
+        new_rep=""; tier_name=""
+        while IFS='=' read -r k v; do
+            case "$k" in rep) new_rep=$v ;; tier_name) tier_name=$v ;; esac
+        done <<EOF2
+$out
+EOF2
+        if [ -z "$new_rep" ]; then
+            echo "[admin-publish] ERROR set-faction-tier: malformed compute output" >&2; exit 1
+        fi
+        # 1) Align to the house first — change_player_faction upserts the
+        # player_faction row (neutral_faction_id=3 'None') + fires pg_notify.
+        if ! dune_psql_q -q -v ON_ERROR_STOP=1 --set=ctrl="$ctrl" --set=fid="$fid" -tA >/dev/null 2>&1 <<'SQL'
+SELECT dune.change_player_faction(:'ctrl'::bigint, :'fid'::smallint, 3::smallint, NOW()::timestamp);
+SQL
+        then
+            echo "[admin-publish] ERROR set-faction-tier: change_player_faction failed (alignment unchanged)" >&2; exit 1
+        fi
+        # 2) Write the tier's reputation + rebuild the jsonb cache (shared helper).
+        rc=0
+        applied=$(dune_apply_faction_rep "$ctrl" "$fid" "$new_rep") || rc=$?
+        applied=$(printf '%s\n' "$applied" | tail -n1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR set-faction-tier: rep transaction failed (rolled back; alignment was already set)" >&2
+            printf '%s\n' "$applied" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK set-faction-tier fls=$fls_id controller=$ctrl faction=$fname tier=$tier ($tier_name) rep=$applied"
+        echo "publish=db-write set-faction-tier controller=$ctrl faction=$fname tier=$tier rep=$applied"
         exit 0
         ;;
     item-delete)

@@ -1716,6 +1716,36 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if entry["ok"] else 502, entry)
             return
 
+        # Player WRITE: align to a Great House AND set the reputation TIER directly
+        # (0-20). Offline-gated; calls change_player_faction (alignment) then writes
+        # the tier's rep + rebuilds m_FactionDataArray on the controller.
+        # POST /api/players/<id>/set-faction-tier  body {"faction": "atreides"|"harkonnen"|1|2, "tier": <0-20>}
+        if path.startswith("/api/players/") and path.endswith("/set-faction-tier"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/set-faction-tier")])
+            faction = body.get("faction") if isinstance(body, dict) else None
+            tier = body.get("tier") if isinstance(body, dict) else None
+            if isinstance(faction, bool) or not isinstance(faction, (str, int)) or \
+                    (isinstance(faction, str) and not faction.strip()):
+                self._write(400, {"error": "faction (atreides|harkonnen|1|2) required"})
+                return
+            if not isinstance(tier, int) or isinstance(tier, bool) or tier < 0 or tier > 20:
+                self._write(400, {"error": "tier (integer 0-20) required"})
+                return
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(
+                ["set-faction-tier", player, str(faction), str(tier)], timeout=20
+            )
+            self._write(200 if entry["ok"] else 502, entry)
+            return
+
         # DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated
         # on the owner + existence-checked in the bash layer.
         # POST /api/items/<item_id>/delete

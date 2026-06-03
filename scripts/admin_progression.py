@@ -169,6 +169,33 @@ def faction_tier_name(faction_id: int, tier: int) -> str:
     return f"Tier {tier}"
 
 
+def tier_to_rep(tier: int) -> int:
+    """Reputation amount that lands a character ON `tier` (0..20) in-game.
+    Mirrors dune-admin cmdSetFactionTier: rep = threshold[tier], nudged +1 when
+    tier>0 because the game UI floors at the threshold (rep==threshold shows the
+    tier below); tier 0 is the legitimate minimum, no nudge. Raises ValueError
+    for out-of-range tiers."""
+    t = int(tier)
+    if t < 0 or t > _FACTION_MAX_TIER:
+        raise ValueError(f"tier must be 0..{_FACTION_MAX_TIER}, got {tier}")
+    rep = _FACTION_TIER_THRESHOLDS[t]
+    return rep + 1 if t > 0 else rep
+
+
+def faction_tier_outcome(faction_id: int, tier: int) -> dict:
+    """Resolve a target tier to the reputation to write + names (dune-admin
+    cmdSetFactionTier). Pure — the caller aligns the house (change_player_faction)
+    and writes `rep` via set_player_faction_reputation + the jsonb rebuild."""
+    t = int(tier)
+    rep = tier_to_rep(t)  # validates range
+    return {
+        "rep": rep,
+        "tier": t,
+        "tier_name": faction_tier_name(faction_id, t),
+        "faction_name": faction_display_name(faction_id),
+    }
+
+
 def faction_rep_outcome(current_rep: int, delta: int, faction_id: int) -> dict:
     """Apply a signed reputation delta on the canonical give-faction-rep path
     (dune-admin applyFactionRepDelta): new_rep = clamp(current + delta) to
