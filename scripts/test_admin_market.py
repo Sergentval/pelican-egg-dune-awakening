@@ -10,8 +10,12 @@ import unittest
 from admin_market import (
     PRICE_CAP,
     base_price,
+    build_listings,
+    category_for,
+    category_mask,
     compute_price,
     round_price,
+    unique_schematics_mask,
 )
 
 
@@ -73,6 +77,86 @@ class TestBasePriceFallbackMaterials(unittest.TestCase):
     def test_stackable_material(self):
         # vendor 0, stackable (stack_max>1), tier 1 -> material_unit_price(1)=20 * common 1.0
         self.assertEqual(base_price(item(vendor_price=0, rarity="common", stack_max=500, tier=1)), 20)
+
+
+class TestCategoryMask(unittest.TestCase):
+    # Golden values from dune-admin pricing_test.go TestCategoryMask.
+    CASES = {
+        "items/weapons/shortblades": (0x01000000, 3),   # melee remap
+        "items/weapons/longblades": (0x01000100, 3),    # melee remap
+        "items/weapons/pistol": (0x01020000, 2),
+        "items/weapons/ammunition": (0x010E0000, 2),
+        "items/augment/misc": (0x04030000, 2),
+        "items/misc/refinedresources": (0x05010000, 2),
+        "items/garment/lightarmor/chest": (0x00000100, 3),
+        "items/garment/heavyarmor/head": (0x00010000, 3),
+        "items/vehicles/mediumornithopter/chassis": (0x02030000, 3),
+        "items/utility/consumables": (0x03060000, 2),
+        "items/utility/gatheringtools/cutteray": (0x03030000, 3),
+    }
+
+    def test_golden(self):
+        for cat, (mask, depth) in self.CASES.items():
+            self.assertEqual(category_mask(cat), (mask, depth), cat)
+
+    def test_unknown_segment_zero_mask(self):
+        m, _ = category_mask("items/garment/notarealsegment")
+        self.assertEqual(m, 0)  # unknown depth-2 -> 0 (caller skips)
+
+    def test_empty(self):
+        self.assertEqual(category_mask(""), (0, 0))
+
+
+class TestUniqueSchematicsMask(unittest.TestCase):
+    CASES = {
+        "items/garment/lightarmor/chest": (0x00050000, 3, True),
+        "items/garment/heavyarmor/head": (0x00050100, 3, True),
+        "items/weapons/shortblades": (0x01030000, 3, True),
+        "items/weapons/pistol": (0x01030200, 3, True),
+        "items/vehicles/sandbike": (0x02060000, 3, True),
+    }
+
+    def test_golden(self):
+        for cat, want in self.CASES.items():
+            self.assertEqual(unique_schematics_mask(cat), want, cat)
+
+    def test_no_unique_section(self):
+        # misc has no UNIQUE SCHEMATICS section -> ok False
+        self.assertEqual(unique_schematics_mask("items/misc/components")[2], False)
+
+
+class TestBuildListings(unittest.TestCase):
+    CAT = {
+        "Pistol_A": {"category": "items/weapons/pistol", "vendor_price": 1000, "tradeable": True, "stack_max": 1},
+        "Junk": {"category": "items/weapons/pistol", "vendor_price": 0, "tradeable": True, "stack_max": 1},
+        "Untradeable": {"category": "items/weapons/pistol", "vendor_price": 1000, "tradeable": False, "stack_max": 1},
+        "Unknown": {"category": "items/garment/notreal", "vendor_price": 1000, "tradeable": True, "stack_max": 1},
+        "Stacky": {"category": "items/misc/components", "vendor_price": 50, "tradeable": True, "stack_max": 100},
+    }
+
+    def test_filters_and_fields(self):
+        out = build_listings(self.CAT)
+        self.assertEqual({li["template"] for li in out}, {"Pistol_A", "Stacky"})
+        pa = next(li for li in out if li["template"] == "Pistol_A")
+        self.assertEqual((pa["mask"], pa["depth"]), (0x01020000, 2))
+        self.assertEqual(next(li for li in out if li["template"] == "Stacky")["qty"], 100)
+
+    def test_limit(self):
+        self.assertEqual(len(build_listings(self.CAT, limit=1)), 1)
+
+
+class TestCategoryFor(unittest.TestCase):
+    def test_standard_item_uses_category_mask(self):
+        it = {"category": "items/weapons/pistol", "rarity": "common", "is_schematic": False}
+        self.assertEqual(category_for(it), (0x01020000, 2, True))
+
+    def test_schematic_reroutes_to_unique(self):
+        it = {"category": "items/weapons/pistol", "rarity": "unique", "is_schematic": True}
+        self.assertEqual(category_for(it), (0x01030200, 3, True))
+
+    def test_unknown_category_not_ok(self):
+        it = {"category": "items/garment/notreal", "is_schematic": False}
+        self.assertEqual(category_for(it)[2], False)
 
 
 if __name__ == "__main__":

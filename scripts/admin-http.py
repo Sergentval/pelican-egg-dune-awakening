@@ -1154,6 +1154,24 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, out)
             return
 
+        # Market-bot (7b) status: bot / NPC / player order counts + bot identity.
+        if path == "/api/market/bot":
+            entry = run_publish(["market-bot-status"], timeout=15)
+            out: dict = {"ok": entry["ok"], "bot_orders": 0, "npc_orders": 0, "player_orders": 0}
+            for ln in (entry.get("stdout") or "").splitlines():
+                ln = ln.strip()
+                if ln.startswith("market-bot "):
+                    for kv in ln.split()[1:]:
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            out[k] = v
+                elif "," in ln:
+                    parts = [p.strip() for p in ln.split(",")]
+                    if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+                        out["bot_orders"], out["npc_orders"], out["player_orders"] = int(parts[0]), int(parts[1]), int(parts[2])
+            self._write(200, out)
+            return
+
         # Player-editor: progression preset catalog (journey-node bundles).
         # Read-only static catalog; POST .../progression-unlock|-lock applies it.
         if path == "/api/progression/presets":
@@ -1922,6 +1940,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "max_active and max_primed (non-negative integers) required"})
                 return
             entry = run_publish(["spice-caps", tid, str(ma), str(mp)], timeout=10)
+            self._write(200, entry)
+            return
+
+        # Economy WRITE: seed the exchange with NPC sell orders from the catalog.
+        # POST /api/market/post  body {"limit": <int, default 50>}
+        if path == "/api/market/post":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            limit = body.get("limit", 50) if isinstance(body, dict) else 50
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 2000:
+                self._write(400, {"error": "limit (integer 1-2000) required"})
+                return
+            entry = run_publish(["market-bot-post", str(limit)], timeout=120)
+            self._write(200, entry)
+            return
+
+        # Economy WRITE: remove all market-bot NPC orders (off switch).
+        # POST /api/market/clear
+        if path == "/api/market/clear":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            entry = run_publish(["market-bot-clear"], timeout=60)
             self._write(200, entry)
             return
 

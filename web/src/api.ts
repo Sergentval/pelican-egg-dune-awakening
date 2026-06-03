@@ -833,3 +833,29 @@ export const setSpiceCaps = (id: number, maxActive: number, maxPrimed: number) =
     max_active: maxActive,
     max_primed: maxPrimed,
   });
+
+// ---- Market bot (7b) ---------------------------------------------------
+
+export interface MarketBotStatus {
+  ok: boolean;
+  bot_orders: number;
+  npc_orders: number;
+  player_orders: number;
+  owner?: string;
+  exchange?: string;
+  access_point?: string;
+  inventory?: string;
+}
+
+export interface MarketInfo {
+  ok: boolean;
+  catalog?: { items?: number; vendor_priced?: number; fallback_priced?: number };
+  orders?: unknown;
+}
+
+export const fetchMarket = () => api<MarketInfo>("GET", "/api/market");
+export const fetchMarketBot = () => api<MarketBotStatus>("GET", "/api/market/bot");
+export const marketPost = (limit: number) =>
+  api<PublishResult & { error?: string }>("POST", "/api/market/post", { limit });
+export const marketClear = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/market/clear", {});
