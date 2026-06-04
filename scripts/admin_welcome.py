@@ -148,10 +148,27 @@ class WelcomeLedger:
         return d
 
 
-def scan_once(version, items, accounts, ledger, grant_fn):
+def render_announce(cfg, character_name):
+    """Optional welcome broadcast (title, body) for a freshly-granted player, or None
+    when announce is disabled or has no body. {name} in the title/body is replaced
+    with the character name (or 'A new player' when unknown). Pure. NB: there is no
+    per-player whisper RPC, so this is a SERVER-WIDE broadcast (everyone sees it)."""
+    if not cfg.get("announce"):
+        return None
+    body = str(cfg.get("announce_text", "")).strip()
+    if not body:
+        return None
+    title = str(cfg.get("announce_title", "Welcome!")).strip() or "Welcome!"
+    name = str(character_name or "").strip() or "A new player"
+    return title.replace("{name}", name), body.replace("{name}", name)
+
+
+def scan_once(version, items, accounts, ledger, grant_fn, on_granted=None):
     """Grant `items` (version `version`) to each account not already recorded.
     grant_fn(account, items) returns a list of failure/skip reasons ([] = full
-    success). Accounts with an empty fls are silently ignored. Returns counts."""
+    success). on_granted(account), if given, is called once per FRESH successful
+    grant (used to fire the optional welcome broadcast). Accounts with an empty fls
+    are silently ignored. Returns counts."""
     granted = failed = skipped = 0
     for acc in accounts:
         fls = str(acc.get("fls", "")).strip()
@@ -168,6 +185,8 @@ def scan_once(version, items, accounts, ledger, grant_fn):
         else:
             ledger.record_granted(fls, version, aid, acc.get("character_name", ""))
             granted += 1
+            if on_granted is not None:
+                on_granted(acc)
     return {"granted": granted, "failed": failed, "skipped": skipped}
 
 
@@ -227,6 +246,16 @@ def grant_account(base, account, items):
     return reasons
 
 
+def broadcast_welcome(base, title, body, duration=20):
+    """Fire a server-wide ServiceBroadcast for a welcome message. Best-effort: a
+    broadcast failure must NEVER fail the grant it follows."""
+    try:
+        subprocess.run(["bash", _publish(base), "broadcast", title, body, str(duration)],
+                       capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def run_scan(base, ledger=None):
     cfg = load_config(base)
     if not cfg.get("enabled"):
@@ -244,8 +273,15 @@ def run_scan(base, ledger=None):
         ledger = WelcomeLedger(ledger_path(base))
     try:
         accounts = list_online_accounts(base)
+
+        def _announce(acc):
+            msg = render_announce(cfg, acc.get("character_name", ""))
+            if msg:
+                broadcast_welcome(base, msg[0], msg[1])
+
         r = scan_once(pkg["version"], items, accounts, ledger,
-                      lambda a, i: grant_account(base, a, i))
+                      lambda a, i: grant_account(base, a, i),
+                      on_granted=_announce)
         r.update({"ok": True, "version": pkg["version"], "online": len(accounts)})
         return r
     finally:

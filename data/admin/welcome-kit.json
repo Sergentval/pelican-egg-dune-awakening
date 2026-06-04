@@ -1,8 +1,12 @@
 {
   "_comment": "Welcome kits — a starter package granted once per player per package version (sqlite ledger at server/state/welcome-kits.db). OFF by default. To use: add items to packages[].items (template = the item TemplateId, e.g. from data/admin/items.json; quality 0 = base), then set enabled:true. The scan-loop (started by the entrypoint when enabled) runs every scan_interval_secs (min 15) and grants the active_version package to online players who haven't received it. Bump active_version to re-grant everyone once. Grants route via give-item: online->RMQ, offline->DB, capacity-checked. Example item: {\"template\": \"Water_1\", \"qty\": 5, \"quality\": 0}.",
+  "_comment_announce": "announce: when true, a SERVER-WIDE broadcast fires on each fresh grant (no per-player whisper RPC exists in the engine, so everyone sees it). {name} -> character name. OFF by default.",
   "enabled": false,
   "active_version": "v1",
   "scan_interval_secs": 60,
+  "announce": false,
+  "announce_title": "Welcome!",
+  "announce_text": "{name} just landed on Arrakis — welcome! A starter kit is in your inventory.",
   "packages": [
     {"version": "v1", "items": []}
   ]

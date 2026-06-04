@@ -1871,6 +1871,28 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, entry)
             return
 
+        # Offline-gated, PAWN-keyed, reversible. Flip every discovered recipe's
+        # UnlockedState in TechKnowledgePlayerComponent.
+        # POST /api/players/<id>/tech-unlock  body {"mode": "unlock-all"|"lock-all"}
+        if path.startswith("/api/players/") and path.endswith("/tech-unlock"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/tech-unlock")])
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            mode = body.get("mode") if isinstance(body, dict) else None
+            if mode not in ("unlock-all", "lock-all"):
+                self._write(200, {"ok": False, "error": "mode must be unlock-all or lock-all"})
+                return
+            entry = run_publish(["tech-unlock", player, mode], timeout=30)
+            self._write(200, entry)
+            return
+
         # Player WRITE: grant items. Online+quality0 -> RMQ AddItemToInventory;
         # offline -> direct dune.items INSERT (stack/slot/volume planned). The
         # bash layer enforces the offline gate for the DB path.
