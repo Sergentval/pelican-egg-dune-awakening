@@ -2123,6 +2123,26 @@ SQL
         echo "publish=ok svc-restart $svc"
         exit 0
         ;;
+    world-partition-list)
+        # Read-only: the world_partition topology (warm dim=0 + dimensional dim>0
+        # rows) joined to farm_state liveness. Powers the Instances tab. Emits pipe
+        # lines: partition_id|map|dimension|label|blocked|server_id|game_port|ready|alive|players
+        dune_require_tables dune.world_partition || exit 3
+        dune_psql_q -tA -q <<'SQL'
+SELECT wp.partition_id || '|' || wp.map || '|' || wp.dimension_index || '|' ||
+       COALESCE(wp.label,'') || '|' || wp.blocked || '|' ||
+       COALESCE(wp.server_id,'') || '|' ||
+       COALESCE(fs.game_port::text,'') || '|' ||
+       COALESCE(fs.ready::text,'') || '|' ||
+       COALESCE(fs.alive::text,'') || '|' ||
+       COALESCE(fs.connected_players::text,'')
+FROM dune.world_partition wp
+LEFT JOIN dune.farm_state fs ON fs.server_id = wp.server_id
+ORDER BY wp.map, wp.dimension_index, wp.partition_id
+SQL
+        echo "publish=ok world-partition-list"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

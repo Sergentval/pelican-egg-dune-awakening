@@ -21,6 +21,7 @@ import { PlayerEditorTab } from "./PlayerEditorTab";
 import { SpiceTab } from "./SpiceTab";
 import { MarketTab } from "./MarketTab";
 import { LogsTab } from "./LogsTab";
+import { InstancesTab } from "./InstancesTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
@@ -45,6 +46,7 @@ type TabId =
   | "maintenance"
   | "scheduler"
   | "logs"
+  | "instances"
   | "history";
 
 interface TabDef {
@@ -58,6 +60,7 @@ const TABS: TabDef[] = [
   { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
   { id: "status", label: "Status", icon: "📊", group: "overview" },
   { id: "map", label: "Live Map", icon: "🗺", group: "overview" },
+  { id: "instances", label: "Instances", icon: "🧩", group: "overview" },
   { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
   { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
   { id: "players", label: "Players", icon: "👥", group: "commands" },
@@ -220,6 +223,7 @@ export default function App() {
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
           {tab === "logs" && <LogsTab setConsoleEntries={setEntries} />}
+          {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
           {tab === "history" && <HistoryTab />}
 
           <OutputConsole entries={entries} onClear={() => setEntries([])} />

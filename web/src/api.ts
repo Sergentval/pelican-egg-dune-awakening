@@ -674,6 +674,27 @@ export interface StatusGrid {
 }
 export const fetchStatus = () => api<StatusGrid>("GET", "/api/status");
 
+// World-partition topology (Instances tab). dimension 0 = warm landing zone;
+// dimension > 0 = per-player "sandstorm tunnel" partitions (e.g. DeepDesert 101/102/103).
+export interface Partition {
+  partition_id: number;
+  map: string;
+  dimension: number;
+  label: string;
+  blocked: boolean;
+  server_id: string | null;
+  game_port: number | null;
+  ready: boolean;
+  alive: boolean;
+  players: number;
+}
+export interface PartitionsResp {
+  ok: boolean;
+  partitions: Partition[];
+  error?: string;
+}
+export const fetchPartitions = () => api<PartitionsResp>("GET", "/api/partitions");
+
 // ---- Phase 5: server settings ----
 
 export interface SettingItem {

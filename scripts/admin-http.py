@@ -1091,6 +1091,38 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, grid)
             return
 
+        # World-partition topology (warm dim=0 + dimensional dim>0) joined to
+        # farm_state liveness. Powers the Instances tab alongside /api/status.
+        if path == "/api/partitions":
+            entry = run_publish(["world-partition-list"], timeout=15)
+            if not entry["ok"]:
+                self._write(200, {"ok": False, "error": (entry.get("stderr") or "").strip() or "world-partition-list failed"})
+                return
+
+            def _b(v: str) -> bool:
+                return v.strip().lower() in ("t", "true")
+
+            parts = []
+            for line in (entry.get("stdout") or "").splitlines():
+                line = line.strip()
+                if not line or line.startswith("publish=") or line.startswith("["):
+                    continue
+                f = line.split("|")
+                if len(f) < 10 or not f[0].isdigit():
+                    continue
+                pid, mp, dim, label, blocked, sid, gport, ready, alive, players = f[:10]
+                parts.append({
+                    "partition_id": int(pid), "map": mp,
+                    "dimension": int(dim) if dim.isdigit() else 0,
+                    "label": label, "blocked": _b(blocked),
+                    "server_id": sid or None,
+                    "game_port": int(gport) if gport.isdigit() else None,
+                    "ready": _b(ready), "alive": _b(alive),
+                    "players": int(players) if players.isdigit() else 0,
+                })
+            self._write(200, {"ok": True, "partitions": parts})
+            return
+
         # Phase 5: server-settings catalogue + current values, grouped by
         # category. `verified:false` entries are mapped on the proven
         # UserGame.ini mechanism but not yet game-effect-confirmed.
