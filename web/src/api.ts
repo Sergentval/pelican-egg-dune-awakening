@@ -723,6 +723,13 @@ export const dimensionUp = (partitionId: number) =>
 export const dimensionDown = (partitionId: number, force = false) =>
   api<DimResult>("POST", `/api/instances/dimension/${partitionId}/down`, { force });
 
+// Multi-Sietch: add / remove a player-choosable Survival_1 sietch (a Survival_1
+// dimension partition). Spin up/down of an existing sietch reuses dimensionUp/Down.
+export const addSietch = (label?: string) =>
+  api<DimResult>("POST", "/api/sietches", label && label.trim() ? { label: label.trim() } : {});
+export const removeSietch = (partitionId: number, force = false) =>
+  api<DimResult>("POST", `/api/sietches/${partitionId}/remove`, { force });
+
 // ---- Phase 5: server settings ----
 
 export interface SettingItem {

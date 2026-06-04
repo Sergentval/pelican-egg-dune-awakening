@@ -91,7 +91,48 @@ no teardown today. Add runtime control.
 Risk: medium — new partition-keyed teardown; must not disrupt the warm instance or
 in-tunnel players. Live-verify on the disposable dev char.
 
-## Phase 3 — Survival_1 experimental shards ("sietch")
+## Phase 3 — Multi-Sietch: player-chosen Survival_1 instances [DONE, this PR]
+
+Reframed from "auto-balanced capacity shards" to the **official model**: many
+**Sietches** (each = a `Survival_1` partition keyed by `dimension_index`) on one
+world, all sharing the same DeepDesert / Arrakeen / Harko (the Director keys hubs
+by map name), with the player **choosing** their Sietch.
+
+DE-RISKING FINDING: **Survival_1 already runs `InstancingMode=Dimension`** — the
+Director reads Funcom's own `extracted/.../BattlegroupDirector/director_config.ini`
+(its cwd), which sets `Survival_1=Dimension` (DimensionMaps:2 = Survival_1 +
+DeepDesert; our egg's `DeepDesert_1=ClassicalInstancing` line is dead). So NO
+instancing-mode flip is needed — a Sietch is just a `Survival_1` `world_partition`
+row with `dimension_index>0`, spawned by the Phase-2 dimension machinery, and the
+Director routes the client's `TargetDimension` to it (persisted per-player via
+`save_login_target_dimension`). New rows are picked up live (cache refresh, no
+restart), exactly like dimensions.
+
+Build (all reuses Phase 2):
+- `multi-sietch-config.sh` `DUNE_SURVIVAL_SIETCHES` (+ id base 200) +
+  `survival_sietch_values()`; `prestart.sh` step 6c seeds the extra sietches
+  (dim 1..N) for persistence. dim 0 = the stock Abbir sietch.
+- `admin-publish.sh` `sietch-add` (INSERT next Survival_1 dim row + background
+  `spawn-dimension.sh`) / `sietch-remove` (Phase-2 teardown + DELETE row;
+  refuses Abbir/dim 0). Spin up/down of a sietch reuses dimension-up/down.
+- `admin-http.py` `POST /api/sietches` + `POST /api/sietches/<pid>/remove`
+  (player-online guard); `InstancesTab` "➕ Add Sietch" + ✕-remove on Survival_1
+  dims. api.ts addSietch/removeSietch.
+
+Live-verified server-side on server 30: added a sietch live (no restart) →
+Abbir + "Sietch 2" both live (`farm_state ready`), the Director tracks them as
+`Survival_1_0` / `Survival_1_1`; add/remove return instantly; DD/hubs untouched.
+
+THE ONE REMAINING UNKNOWN (client-side, needs the game): does the FLS server
+browser list + let a player PICK the extra sietches? The pre-connect picker is a
+Funcom-FLS-backend feature a private host can only push declarations to (each
+carries a `Dimension`); whether real FLS shows multiple Sietch declarations under
+one self-host world is not verifiable without a live client. The encouraging
+sign: the Director already password-tracks per-sietch (`Survival_1_0/1/2`). If the
+browser does NOT surface them, the fallback is per-player home-sietch assignment
+(`save_login_target_dimension`) and/or in-game travel.
+
+## Phase 3 (original framing) — Survival_1 experimental shards ("sietch")
 
 DST's experimental page: add/remove extra Survival_1 instances for capacity.
 Net-new for us — no sharding model exists.

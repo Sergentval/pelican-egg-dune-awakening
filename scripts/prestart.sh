@@ -439,6 +439,32 @@ SQL
 fi
 
 # --------------------------------------------------------------------------
+# 6c. Seed EXTRA Survival_1 sietches (player-choosable home instances).
+#
+# Survival_1 runs InstancingMode=Dimension (Funcom's director_config.ini), so a
+# "Sietch" = a Survival_1 world_partition row keyed by dimension_index. dim 0 =
+# the stock Abbir sietch (step 6 above). DUNE_SURVIVAL_SIETCHES extra sietches
+# are seeded here as dim 1..N (ids from DUNE_SURVIVAL_SIETCH_ID_BASE). They are
+# spawned by start-ue5-dimensions.sh (dimension_index>0) and become selectable
+# via the client's TargetDimension; all share the one DD/Arrakeen/Harko. 0 =
+# today's single-sietch behaviour. Idempotent (ON CONFLICT DO NOTHING);
+# decreasing the count does NOT delete rows (use the admin 'sietch-remove').
+# --------------------------------------------------------------------------
+SIETCH_VALUES="$(survival_sietch_values)"
+if [ -n "$SIETCH_VALUES" ]; then
+  log "Seeding ${DUNE_SURVIVAL_SIETCHES} extra Survival_1 sietch(es)..."
+  env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
+    "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune <<SQL || warn "sietch seed failed (non-fatal)"
+SET search_path TO dune,public;
+INSERT INTO dune.world_partition (partition_id, map, partition_definition, dimension_index, blocked, label)
+VALUES
+$SIETCH_VALUES
+ON CONFLICT (partition_id) DO NOTHING;
+SQL
+  log "  Survival_1 sietches seeded"
+fi
+
+# --------------------------------------------------------------------------
 # 7. Stop pg if we started it — start-pg.sh will bring it up as the real
 # long-lived background process.
 # --------------------------------------------------------------------------
