@@ -887,3 +887,27 @@ export const marketBuy = () =>
   api<MarketBuyResult>("POST", "/api/market/buy", {});
 export const marketConfig = (patch: Partial<MarketConfig>) =>
   api<{ ok: boolean; config?: MarketConfig; error?: string }>("POST", "/api/market/config", patch);
+
+// ---- Logs + service control --------------------------------------------
+export interface LogSource {
+  name: string;
+  exists: boolean;
+}
+export interface LogSourcesResp {
+  ok: boolean;
+  sources: LogSource[];
+}
+export interface LogTailResp {
+  ok: boolean;
+  source: string;
+  exists: boolean;
+  lines: string[];
+  count: number;
+  tail: number;
+}
+
+export const fetchLogSources = () => api<LogSourcesResp>("GET", "/api/logs/sources");
+export const fetchLogs = (source: string, tail = 200) =>
+  api<LogTailResp>("GET", `/api/logs?source=${encodeURIComponent(source)}&tail=${tail}`);
+export const restartService = (service: string) =>
+  api<PublishResult & { error?: string }>("POST", "/api/svc/restart", { service });

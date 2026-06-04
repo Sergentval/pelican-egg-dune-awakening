@@ -2064,6 +2064,65 @@ SQL
         echo "publish=db-write market-bot-buy order=$oid"
         exit 0
         ;;
+    svc-restart)
+        # Restart ONE supervised background service without bouncing the container.
+        # console.sh's watchdog is stateless — it re-derives liveness from the
+        # pidfile every 5s and never respawns — so the safe recipe is: recover the
+        # service's own launch env, kill it (TERM, 10s grace, KILL — mirroring
+        # console.sh's per-service shutdown), then re-launch via its start-<svc>.sh.
+        # Restartable set is an allowlist (subset of SERVICES): NO postgres/mq-*
+        # (dependents cascade) and NO ue5-* (slow start + the 90s all-UE5-dead
+        # grace can recycle the container). Mirror the allowlist in admin_logs.py.
+        svc="${1:-}"
+        case "$svc" in
+            admin-http|scheduler|welcome-scanner|market-bot|mock-k8s|director|gateway|text-router|fls-stub) ;;
+            *) echo "[admin-publish] ERROR svc-restart: refusing to restart '$svc' (not in the restartable allowlist)" >&2; exit 2 ;;
+        esac
+        start="$BASE/scripts/start-$svc.sh"
+        [ -r "$start" ] || { echo "[admin-publish] ERROR svc-restart: $start missing" >&2; exit 1; }
+        pidf="$BASE/runtime/pids/$svc.pid"
+        pid=""; [ -r "$pidf" ] && pid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
+        # Pick the env source: the LIVE service's own /proc/<pid>/environ is the
+        # only complete source (egg vars + prestart-generated secrets like the
+        # session secret are NOT all present in PID 1 / console.sh). Fall back to
+        # console.sh only if the service is already down. Copy it to a temp file
+        # BEFORE the kill (bash vars can't hold the NUL-separated environ).
+        envtmp="$BASE/runtime/.svc-restart-env.$$"
+        : > "$envtmp" 2>/dev/null || envtmp=""
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && [ -r "/proc/$pid/environ" ]; then
+            [ -n "$envtmp" ] && cat "/proc/$pid/environ" > "$envtmp" 2>/dev/null
+        else
+            csh="$(pgrep -f 'scripts/console.sh' 2>/dev/null | head -1)"
+            [ -n "$csh" ] && [ -r "/proc/$csh/environ" ] && [ -n "$envtmp" ] && cat "/proc/$csh/environ" > "$envtmp" 2>/dev/null
+        fi
+        # Kill the running instance (leader pid; matches console.sh shutdown).
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+        fi
+        # Re-launch detached in a CLEAN subshell that restores the recovered env,
+        # so killing admin-http (our own caller) can't abort the relaunch.
+        # start-<svc>.sh -> launch_bg rewrites the pidfile the watchdog reads.
+        (
+            if [ -n "$envtmp" ] && [ -s "$envtmp" ]; then
+                while IFS= read -r -d '' kv; do
+                    case "${kv%%=*}" in [A-Za-z_][A-Za-z0-9_]*) export "$kv" 2>/dev/null || true ;; esac
+                done < "$envtmp"
+            fi
+            exec setsid bash "$start" "$BASE" >/dev/null 2>&1 </dev/null
+        ) &
+        sleep 3
+        [ -n "$envtmp" ] && rm -f "$envtmp" 2>/dev/null || true
+        newpid=""; [ -r "$pidf" ] && newpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
+        if [ -n "$newpid" ] && kill -0 "$newpid" 2>/dev/null; then
+            echo "[admin-publish] OK svc-restart $svc (pid $newpid)"
+        else
+            echo "[admin-publish] WARN svc-restart $svc relaunched; liveness not yet confirmed (it may still be starting)" >&2
+        fi
+        echo "publish=ok svc-restart $svc"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

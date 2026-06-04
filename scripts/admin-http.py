@@ -54,6 +54,7 @@ from admin_status import merge_status, parse_player_counts  # noqa: E402  # type
 import admin_ini_merge  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure INI read/upsert engine, no DB/network)
 import admin_map  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure map-key validation + marker CSV parse, no DB/network)
 import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure JSON locations store, no DB/network)
+import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -64,6 +65,7 @@ LISTEN_PORT = int(os.environ.get("DUNE_ADMIN_HTTP_PORT", "8089"))
 SHARED_AUTH = os.environ.get("DUNE_ADMIN_HTTP_AUTH", "")
 BASE_DIR = os.environ.get("DUNE_BASE_DIR", "/home/container")
 SCRIPTS_DIR = BASE_DIR + "/scripts"
+LOGS_DIR = BASE_DIR + "/logs"
 # mock-k8s serves its /status (per-map instance/scale) over HTTPS on this port.
 MOCK_K8S_PORT = int(os.environ.get("K8S_MOCK_PORT", "6443"))
 # mock-k8s writes its self-signed cert here (in-cluster SA mount); we pin the
@@ -1238,6 +1240,41 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, {"entries": entries, "total": len(HISTORY)})
             return
 
+        # List the log sources the SPA may tail (fixed services + globbed ue5-*).
+        # Operator-only — explicit auth even though the shared gate above already
+        # applies, because logs can carry secrets.
+        if path == "/api/logs/sources":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            self._write(200, {"ok": True, "sources": admin_logs.list_sources(LOGS_DIR)})
+            return
+
+        # Tail a single log, redacted. GET /api/logs?source=<svc>&tail=N. The
+        # source is allowlist+shape validated and resolved under LOGS_DIR (no path
+        # traversal); every returned line passes admin_logs.redact (secrets out).
+        if path == "/api/logs":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            source = (query.get("source") or [""])[0]
+            log_path = admin_logs.resolve_log_path(LOGS_DIR, source)
+            if log_path is None:
+                self._write(400, {"error": "unknown log source",
+                                  "sources": [s["name"] for s in admin_logs.list_sources(LOGS_DIR)]})
+                return
+            try:
+                tail_n = int((query.get("tail") or [str(admin_logs.LOG_TAIL_DEFAULT)])[0])
+            except ValueError:
+                tail_n = admin_logs.LOG_TAIL_DEFAULT
+            lines, exists = admin_logs.tail_file(log_path, tail_n)
+            self._write(200, {
+                "ok": True, "source": source, "exists": exists,
+                "lines": admin_logs.redact_lines(lines), "count": len(lines),
+                "tail": max(1, min(admin_logs.LOG_TAIL_MAX, tail_n)),
+            })
+            return
+
         if path == "/api/lookup/vehicles":
             self._write(200, {"vehicles": _DATA["vehicles"]})
             return
@@ -2002,6 +2039,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             r = run_market("buy-tick", timeout=120)
             self._write(200, r.get("data", {"ok": False, "error": "buy-tick failed"}))
+            return
+
+        # Restart ONE supervised background service (kill + relaunch via its
+        # start-<svc>.sh, env recovered from its own /proc/<pid>/environ). Allowlist
+        # is enforced HERE and again in admin-publish.sh; ue5-*/postgres/mq-* are
+        # not restartable. POST /api/svc/restart  body {"service": "<name>"}.
+        if path == "/api/svc/restart":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            service = body.get("service") if isinstance(body, dict) else None
+            if not isinstance(service, str) or not admin_logs.valid_restartable_service(service):
+                self._write(400, {"error": "service must be one of the restartable services",
+                                  "services": list(admin_logs.RESTARTABLE_SERVICES)})
+                return
+            entry = run_publish(["svc-restart", service], timeout=60)
+            self._write(200, entry)
             return
 
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;
