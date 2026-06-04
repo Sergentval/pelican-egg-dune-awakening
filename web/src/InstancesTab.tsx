@@ -12,6 +12,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
+import { SietchConfigEditor } from "./SietchConfigEditor";
 import {
   addSietch,
   dimensionDown,
@@ -73,6 +74,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [dimConfirm, setDimConfirm] = useState<null | { partition: number; players: number }>(null);
   const [addingSietch, setAddingSietch] = useState(false);
   const [sietchConfirm, setSietchConfirm] = useState<null | { partition: number; players: number }>(null);
+  const [editSietch, setEditSietch] = useState<null | { pid: number; label: string; players: number }>(null);
 
   async function doAddSietch() {
     setAddingSietch(true);
@@ -195,6 +197,10 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
                   disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "down")}>↓ offline</button>
               : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
                   disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}>↑ start</button>}
+            {p.map === "Survival_1" && (
+              <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙</button>
+            )}
             {p.map === "Survival_1" && (
               <button className="btn-ghost text-[10px] border border-red-900/60 text-red-400 px-1.5 py-0"
                 disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch">✕</button>
@@ -319,6 +325,17 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
         }}
         onCancel={() => setSietchConfirm(null)}
       />
+
+      {editSietch && (
+        <SietchConfigEditor
+          partitionId={editSietch.pid}
+          label={editSietch.label}
+          players={editSietch.players}
+          setConsoleEntries={setConsoleEntries}
+          onClose={() => setEditSietch(null)}
+          onApplied={() => void load()}
+        />
+      )}
     </div>
   );
 }

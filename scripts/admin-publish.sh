@@ -2289,6 +2289,27 @@ SQL
         echo "publish=db-write sietch-remove $pid_arg"
         exit 0
         ;;
+    sietch-rename)
+        # Rename a sietch: its world_partition.label = the browser display name
+        # (start-ue5.sh feeds it to the per-instance UserEngine.ini on (re)spawn).
+        # Survival_1 dim>0 only (never the Abbir base / other maps). Applies on
+        # the sietch's next restart.
+        pid_arg="${1:-}"; newlabel="${2:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-rename: partition_id must be an integer" >&2; exit 2 ;; esac
+        [ -n "$newlabel" ] || { echo "[admin-publish] ERROR sietch-rename: a non-empty label is required" >&2; exit 2; }
+        case "$newlabel" in *'"'*) echo "[admin-publish] ERROR sietch-rename: label cannot contain a double quote" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition || exit 3
+        n=$(dune_psql_q -tA -q --set=p="$pid_arg" --set=l="$newlabel" <<'SQL'
+UPDATE dune.world_partition SET label = :'l'
+WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0
+RETURNING partition_id
+SQL
+)
+        [ -n "$(printf '%s' "$n" | tr -d '[:space:]')" ] || { echo "[admin-publish] ERROR sietch-rename: $pid_arg is not a Survival_1 sietch (dimension_index>0)" >&2; exit 1; }
+        echo "[admin-publish] OK sietch-rename partition=$pid_arg label='$newlabel'"
+        echo "publish=db-write sietch-rename $pid_arg"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

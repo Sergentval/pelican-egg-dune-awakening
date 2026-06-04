@@ -55,6 +55,25 @@ cd "$GS/home/dune/server"
 # symlink here. Without it UE5 silently ignores UserEngine.ini entirely
 # (no [ConsoleVariables], no gameplay overrides).
 UE5_HOME="$STATE/ue5-saved"
+# Per-sietch config: a sietch (Survival_1 dimension partition) with its own name
+# or gameplay overrides gets its OWN config dir — a fresh copy of the shared
+# UserSettings with this sietch's overrides + display name merged into
+# UserEngine/UserGame.ini (admin_sietch.py materialize). Done via the INI files
+# (not -ini CLI) because UE5 mangles spaces in CLI cvar values; the INI form
+# handles spaces, exactly like the global server name. Rebuilt each spawn so
+# global (Phase-5) changes propagate. Falls back to the shared config on failure.
+if [ -n "${DUNE_PARTITION:-}" ] && \
+   { [ -f "$STATE/sietch-overrides/${DUNE_PARTITION}.json" ] || [ -n "${DUNE_INSTANCE_DISPLAY_NAME:-}" ]; }; then
+  _SIETCH_HOME="$STATE/sietch-config/${DUNE_PARTITION}"
+  if DUNE_BASE_DIR="$BASE" "${DUNE_PYTHON3:-python3}" "$SCRIPTS/admin_sietch.py" materialize \
+       "$DUNE_PARTITION" "$STATE/ue5-saved/UserSettings" "$_SIETCH_HOME/UserSettings" \
+       "${DUNE_INSTANCE_DISPLAY_NAME:-}" >/dev/null 2>&1; then
+    UE5_HOME="$_SIETCH_HOME"
+    log "  per-sietch config: $UE5_HOME/UserSettings (overrides + name='${DUNE_INSTANCE_DISPLAY_NAME:-}')"
+  else
+    log "  WARN per-sietch config materialize failed for partition $DUNE_PARTITION — using shared config"
+  fi
+fi
 UE5_USER_CFG="$UE5_HOME/.config/Epic/Unreal Engine/Engine/Config"
 mkdir -p "$UE5_HOME/.config/Epic/Unreal Engine/Engine"
 if [ -d "$UE5_USER_CFG" ] && [ ! -L "$UE5_USER_CFG" ]; then
@@ -93,7 +112,7 @@ if [ -s "$FLS_STUB_CA" ]; then
 fi
 
 launch_bg "$INSTANCE_ID" "$LOGS/$INSTANCE_ID.log" -- env \
-  HOME="$STATE/ue5-saved" \
+  HOME="$UE5_HOME" \
   POD_IP="$DUNE_BIND_IP" \
   POD_NAME="$DUNE_WORLD_NAME-$MAP" \
   NODE_NAME="$DUNE_WORLD_NAME" \

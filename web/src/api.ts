@@ -730,6 +730,35 @@ export const addSietch = (label?: string) =>
 export const removeSietch = (partitionId: number, force = false) =>
   api<DimResult>("POST", `/api/sietches/${partitionId}/remove`, { force });
 
+// Per-sietch config (heterogeneous sietches: name + PvP/harvest/etc.).
+export interface SietchCapableSetting {
+  id: string;
+  label?: string;
+  category?: string;
+  key: string;
+  type: string;
+  enum?: string[] | null;
+  quoted?: boolean;
+  default?: string;
+  verified?: boolean;
+}
+export interface SietchConfigResp {
+  ok: boolean;
+  overrides: Record<string, string>;
+  settings: SietchCapableSetting[];
+}
+export interface SietchConfigResult extends DimResult {
+  applied?: string[];
+  skipped?: string[];
+  restarted?: boolean;
+}
+export const fetchSietchConfig = (partitionId: number) =>
+  api<SietchConfigResp>("GET", `/api/sietches/${partitionId}/config`);
+export const setSietchConfig = (
+  partitionId: number,
+  body: { name?: string; overrides?: Record<string, string>; force?: boolean },
+) => api<SietchConfigResult>("POST", `/api/sietches/${partitionId}/config`, body);
+
 // ---- Phase 5: server settings ----
 
 export interface SettingItem {
