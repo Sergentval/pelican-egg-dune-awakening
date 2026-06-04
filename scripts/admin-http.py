@@ -71,6 +71,12 @@ MOCK_K8S_PORT = int(os.environ.get("K8S_MOCK_PORT", "6443"))
 # mock-k8s writes its self-signed cert here (in-cluster SA mount); we pin the
 # /status fetch to it rather than disabling TLS verification.
 SA_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
+# Maps the Instances tab may scale via mock-k8s ServerSetScale replicas. The
+# on-demand maps only — never the always-warm Survival_1 / Overmap (stopping those
+# breaks the base game loop). Phase-1 cap is small (no validated routing past a
+# few instances). The backend re-validates; mirror in InstancesTab.tsx.
+SCALABLE_MAPS = ("DeepDesert_1", "SH_Arrakeen", "SH_HarkoVillage")
+SCALE_REPLICAS_MAX = 4
 # Server-settings catalogue (shared with apply-config.sh) + the INI sinks it
 # resolves to. GET/PUT /api/settings read/write these directly (local files,
 # no PG). Logical sink name -> path, matching apply-config.sh's FILES.
@@ -463,6 +469,39 @@ def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def mock_k8s_request(method: str, path: str, body: "dict | None" = None,
+                     port: int = MOCK_K8S_PORT, timeout: int = 10):
+    """CA-pinned (unverified fallback) HTTPS request to mock-k8s, same pinning as
+    fetch_mock_status. Returns (status_code, parsed_json) or (None, None) on
+    transport failure. Used by the instance-scale PATCH — mock-k8s enforces no
+    bearer (it trusts the container netns), so no token is sent."""
+    ca = os.path.join(SA_MOUNT_PATH, "ca.crt")
+    ctx = ssl.create_default_context()
+    if os.path.exists(ca):
+        try:
+            ctx.load_verify_locations(ca)
+        except (ssl.SSLError, OSError):
+            return None, None
+    else:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", data=data, method=method)
+    if body is not None:
+        req.add_header("Content-Type", "application/merge-patch+json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (localhost, CA-pinned)
+            raw = resp.read().decode("utf-8")
+            return resp.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        except (ValueError, OSError):
+            return e.code, None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None, None
 
 
 # --------------------------------------------------------------------------
@@ -2091,6 +2130,58 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["svc-restart", service], timeout=60)
             self._write(200, entry)
+            return
+
+        # Instance control (phase 1): scale a map's instance count via mock-k8s
+        # ServerSetScale replicas — the exact, self-healing path the Director uses.
+        # Allowlisted to the on-demand maps; player-online guard on scale-down
+        # (returns requiresConfirmation -> client re-POSTs with force:true).
+        # POST /api/instances/<map>/scale  body {"replicas": 0..N, "force"?: bool}
+        if path.startswith("/api/instances/") and path.endswith("/scale"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            mp = unquote(path[len("/api/instances/"):-len("/scale")])
+            if mp not in SCALABLE_MAPS:
+                self._write(200, {"ok": False, "error": f"map not scalable (allowed: {', '.join(SCALABLE_MAPS)})"})
+                return
+            replicas = body.get("replicas") if isinstance(body, dict) else None
+            if not isinstance(replicas, int) or isinstance(replicas, bool) or replicas < 0 or replicas > SCALE_REPLICAS_MAX:
+                self._write(200, {"ok": False, "error": f"replicas (integer 0-{SCALE_REPLICAS_MAX}) required"})
+                return
+            force = bool(body.get("force")) if isinstance(body, dict) else False
+            mock = fetch_mock_status(MOCK_K8S_PORT)
+            if not mock:
+                self._write(200, {"ok": False, "error": "mock-k8s /status unreachable"})
+                return
+            mentry = next((m for m in mock.get("maps", []) if m.get("map") == mp), None)
+            if not mentry or not mentry.get("key"):
+                self._write(200, {"ok": False, "error": f"{mp} not tracked by mock-k8s"})
+                return
+            current = int(mentry.get("desired") or 0)
+            ns, _, name = str(mentry["key"]).partition("/")
+            # Player-online guard on scale-down (DST parity): refuse unless force.
+            if replicas < current:
+                pe = run_publish(["server-status"], timeout=10)
+                counts = parse_player_counts(pe["stdout"]) if pe["ok"] else {}
+                online = int(counts.get(mp, 0) or 0)
+                if online > 0 and not force:
+                    self._write(200, {"ok": False, "requiresConfirmation": True, "players": online,
+                                      "map": mp, "message": f"{online} player(s) online on {mp}"})
+                    return
+            code, resp = mock_k8s_request(
+                "PATCH",
+                f"/apis/igw.funcom.com/v1/namespaces/{ns}/serversetscales/{name}",
+                {"spec": {"replicas": replicas}},
+            )
+            if code is None or code >= 300:
+                self._write(200, {"ok": False, "error": f"mock-k8s scale failed (http {code})"})
+                return
+            applied = (resp or {}).get("spec", {}).get("replicas", replicas)
+            self._write(200, {"ok": True, "map": mp, "replicas": applied, "previous": current})
             return
 
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;

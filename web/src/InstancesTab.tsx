@@ -6,20 +6,28 @@
 // partition — warm (dimension 0) vs dimensional sandstorm-tunnel partitions
 // (DeepDesert 101/102/103 etc.) — and which are actually live.
 //
-// Phase 1 will add map spin-up/down/scale here (drives mock-k8s ServerSetScale
-// replicas); Phase 2 adds per-dimension control; Phase 3 adds Survival_1 shards.
+// Phase 1 (this file): map spin-up/down/scale via mock-k8s ServerSetScale
+// replicas, with a player-online confirm guard. Phase 2 adds per-dimension
+// control; Phase 3 adds Survival_1 shards.
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
-import { pushToConsole, type ConsoleEntry } from "./components";
+import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
   fetchPartitions,
   fetchStatus,
+  scaleInstance,
   type Partition,
+  type ScaleResult,
   type StatusGrid,
   type StatusMapRow,
 } from "./api";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
+
+// Mirror of admin-http SCALABLE_MAPS — the on-demand maps only (never the
+// always-warm Survival_1 / Overmap). The backend re-validates.
+const SCALABLE = new Set(["DeepDesert_1", "SH_Arrakeen", "SH_HarkoVillage"]);
+const SCALE_MAX = 4;
 
 function statusPill(status?: string): string {
   switch (status) {
@@ -30,11 +38,51 @@ function statusPill(status?: string): string {
   }
 }
 
+// Per-map replicas input + Apply (its own state so each card is independent).
+function ScaleControl({ current, busy, onApply }: { current: number; busy: boolean; onApply: (n: number) => void }) {
+  const [n, setN] = useState(current);
+  useEffect(() => { setN(current); }, [current]);
+  return (
+    <span className="flex items-center gap-1">
+      <input
+        type="number" min={0} max={SCALE_MAX} value={n}
+        onChange={(e) => setN(Math.max(0, Math.min(SCALE_MAX, parseInt(e.target.value || "0", 10))))}
+        className="input-field w-14 text-xs font-mono"
+      />
+      <button className="btn-ghost text-xs border border-slate-700" disabled={busy || n === current} onClick={() => onApply(n)}>
+        apply
+      </button>
+    </span>
+  );
+}
+
 export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
   const [grid, setGrid] = useState<StatusGrid | null>(null);
   const [parts, setParts] = useState<Partition[]>([]);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(false);
+  const [busy, setBusy] = useState("");
+  // Pending force-confirm after the player-online guard returns requiresConfirmation.
+  const [confirm, setConfirm] = useState<null | { map: string; replicas: number; players: number }>(null);
+
+  async function scale(map: string, replicas: number, force = false) {
+    setBusy(map);
+    const res = await scaleInstance(map, replicas, force).catch(() => null);
+    setBusy("");
+    if (!res) {
+      pushToConsole(setConsoleEntries, `scale ${map}`, "request failed", false);
+      return;
+    }
+    const b = res.body as ScaleResult;
+    if (res.ok && b.requiresConfirmation) {
+      setConfirm({ map, replicas, players: b.players ?? 0 });
+      return;
+    }
+    const ok = res.ok && b.ok === true;
+    pushToConsole(setConsoleEntries, `scale ${map} → ${replicas}`,
+      ok ? `replicas ${b.previous}→${b.replicas}` : (b.error || "failed"), ok);
+    if (ok) void load();
+  }
 
   async function load() {
     setLoading(true);
@@ -112,7 +160,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           Read-only topology. <span className="text-sky-300">warm</span> = always-on landing zone (dimension 0);{" "}
           <span className="text-orange-300">dim N</span> = per-player sandstorm-tunnel partitions. Dot:{" "}
           <span className="text-emerald-400">live</span> / <span className="text-amber-400">registering</span> /{" "}
-          <span className="text-slate-500">declared</span>. Spin-up / shutdown controls land in the next phase.
+          <span className="text-slate-500">declared</span>. On-demand maps (Deep Desert, Arrakeen, Harko) have spin-up / shutdown / scale controls; scaling down with players online asks to confirm.
         </div>
       </div>
 
@@ -138,9 +186,35 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
                 ? <div className="text-xs text-slate-500 italic py-1">no declared partitions</div>
                 : mps.map(partRow)}
             </div>
+            {SCALABLE.has(map) && (
+              <div className="px-4 pb-3 pt-2 flex flex-wrap items-center gap-2 border-t border-slate-800">
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 mr-1">scale</span>
+                <button className="btn-ghost text-xs border border-slate-700"
+                  disabled={busy === map || (st?.desired ?? 0) >= 1}
+                  onClick={() => void scale(map, 1)}>▶ start</button>
+                <button className="btn-ghost text-xs border border-red-900/60 text-red-300"
+                  disabled={busy === map || (st?.desired ?? 0) === 0}
+                  onClick={() => void scale(map, 0)}>■ stop</button>
+                <ScaleControl current={st?.desired ?? 0} busy={busy === map} onApply={(n) => void scale(map, n)} />
+                {busy === map && <span className="text-xs text-slate-500">working…</span>}
+              </div>
+            )}
           </div>
         );
       })}
+
+      <Confirm
+        open={confirm !== null}
+        title={`${confirm?.players ?? 0} player(s) online on ${confirm?.map ?? ""}`}
+        message={`Scaling ${confirm?.map ?? "this map"} to ${confirm?.replicas ?? 0} replica(s) will disconnect ${confirm?.players ?? 0} connected player(s). Proceed?`}
+        confirmLabel="Scale anyway"
+        onConfirm={() => {
+          const c = confirm;
+          setConfirm(null);
+          if (c) void scale(c.map, c.replicas, true);
+        }}
+        onCancel={() => setConfirm(null)}
+      />
     </div>
   );
 }

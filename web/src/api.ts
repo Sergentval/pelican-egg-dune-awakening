@@ -695,6 +695,20 @@ export interface PartitionsResp {
 }
 export const fetchPartitions = () => api<PartitionsResp>("GET", "/api/partitions");
 
+// Instance scale (Instances tab, phase 1) — drives mock-k8s ServerSetScale replicas.
+export interface ScaleResult {
+  ok: boolean;
+  map?: string;
+  replicas?: number;
+  previous?: number;
+  requiresConfirmation?: boolean;
+  players?: number;
+  message?: string;
+  error?: string;
+}
+export const scaleInstance = (map: string, replicas: number, force = false) =>
+  api<ScaleResult>("POST", `/api/instances/${encodeURIComponent(map)}/scale`, { replicas, force });
+
 // ---- Phase 5: server settings ----
 
 export interface SettingItem {
