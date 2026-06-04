@@ -465,6 +465,22 @@ SQL
 fi
 
 # --------------------------------------------------------------------------
+# 6d. Boot reconcile: sweep ORPHAN farm_state (a server registration claimed by
+# NO world_partition row). These are left behind by removed sietches/dimensions
+# whose server_id was NULL/mismatched at teardown; a stale, heartbeat-less
+# farm_state row crashes the Director's FLS reconcile (PrepareServerHeartbeatUpdates
+# -> "Could not find heartbeat for Server") and makes deleted sietches linger in
+# the in-game browser forever. Safe here: no UE5 is spawned yet, and the stock
+# warm maps keep their own matching rows. Idempotent. (No :'var' params -> -c ok.)
+# --------------------------------------------------------------------------
+SWEPT=$(env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
+  "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune -tAc \
+  "WITH del AS (DELETE FROM dune.farm_state fs WHERE NOT EXISTS (SELECT 1 FROM dune.world_partition wp WHERE wp.server_id = fs.server_id) RETURNING 1) SELECT count(*) FROM del" 2>/dev/null | tr -dc '0-9')
+if [ -n "$SWEPT" ] && [ "$SWEPT" != "0" ]; then
+  log "  boot reconcile: swept $SWEPT orphan farm_state row(s)"
+fi
+
+# --------------------------------------------------------------------------
 # 7. Stop pg if we started it — start-pg.sh will bring it up as the real
 # long-lived background process.
 # --------------------------------------------------------------------------

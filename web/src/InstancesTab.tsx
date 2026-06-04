@@ -20,9 +20,11 @@ import {
   fetchPartitions,
   fetchStatus,
   removeSietch,
+  repairBrowser,
   scaleInstance,
   type DimResult,
   type Partition,
+  type PublishResult,
   type ScaleResult,
   type StatusGrid,
   type StatusMapRow,
@@ -75,6 +77,18 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [addingSietch, setAddingSietch] = useState(false);
   const [sietchConfirm, setSietchConfirm] = useState<null | { partition: number; players: number }>(null);
   const [editSietch, setEditSietch] = useState<null | { pid: number; label: string; players: number }>(null);
+  const [repairing, setRepairing] = useState(false);
+
+  // Sweep orphan farm_state + resync the Director — fixes removed sietches/dimensions
+  // that linger in the in-game browser (the Director never self-prunes them).
+  async function doRepair() {
+    setRepairing(true);
+    const res = await repairBrowser().catch(() => null);
+    setRepairing(false);
+    const ok = !!res && res.ok && (res.body as PublishResult)?.ok !== false;
+    pushToConsole(setConsoleEntries, "repair browser", res ? (res.body as PublishResult) : "request failed", ok);
+    if (ok) void load();
+  }
 
   async function doAddSietch() {
     setAddingSietch(true);
@@ -229,6 +243,11 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
             </label>
             <button className="btn-ghost text-xs" onClick={() => void load()} disabled={loading}>
               {loading ? "…" : "refresh"}
+            </button>
+            <button className="btn-ghost text-xs border border-amber-900/50 text-amber-300"
+              onClick={() => void doRepair()} disabled={repairing || loading}
+              title="Sweep orphan server registrations + resync the Director — fixes removed sietches/dimensions that linger in the in-game browser">
+              {repairing ? "…" : "🔧 Repair browser"}
             </button>
           </div>
         </header>

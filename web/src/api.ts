@@ -750,6 +750,9 @@ export const dimensionUp = (partitionId: number) =>
   api<DimResult>("POST", `/api/instances/dimension/${partitionId}/up`, {});
 export const dimensionDown = (partitionId: number, force = false) =>
   api<DimResult>("POST", `/api/instances/dimension/${partitionId}/down`, { force });
+// Repair the in-game browser: sweep orphan farm_state + resync the Director.
+export const repairBrowser = () =>
+  api<PublishResult>("POST", "/api/instances/repair", {});
 
 // Multi-Sietch: add / remove a player-choosable Survival_1 sietch (a Survival_1
 // dimension partition). Spin up/down of an existing sietch reuses dimensionUp/Down.

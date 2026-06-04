@@ -2230,21 +2230,26 @@ SQL
         IFS='|' read -r DMAP DDIM DSID <<<"$row"
         # Kill the dim's UE5 process group via its pidfile (setsid leader == PGID).
         pidf="$BASE/runtime/pids/ue5-${DMAP}-dim${DDIM}-p${pid_arg}.pid"
+        DPORT=""
         if [ -r "$pidf" ]; then
             dpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
             if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+                [ -r "/proc/$dpid/cmdline" ] && DPORT=$(tr '\0' '\n' < "/proc/$dpid/cmdline" 2>/dev/null | sed -n 's/^-Port=\([0-9]\{1,\}\)$/\1/p' | head -1)
                 kill -TERM -- "-$dpid" 2>/dev/null || kill -TERM "$dpid" 2>/dev/null || true
                 for _ in $(seq 1 10); do kill -0 "$dpid" 2>/dev/null || break; sleep 1; done
                 kill -0 "$dpid" 2>/dev/null && { kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true; }
             fi
             rm -f "$pidf"
         fi
-        # NULL the writeback + drop the stale farm_state registration (atomic).
+        # NULL the writeback + drop the stale farm_state registration (by server_id AND
+        # the dead UE5's port, so a NULL/mismatched server_id can't leave a heartbeat-
+        # less orphan that crashes the Director's FLS reconcile). Atomic.
         rc=0
-        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$DSID" >/dev/null 2>&1 <<'SQL' || rc=$?
+        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$DSID" --set=port="${DPORT:-0}" --set=m="$DMAP" >/dev/null 2>&1 <<'SQL' || rc=$?
 BEGIN;
 UPDATE dune.world_partition SET server_id = NULL WHERE partition_id = :'p'::bigint;
 DELETE FROM dune.farm_state WHERE server_id = NULLIF(:'sid', '');
+DELETE FROM dune.farm_state WHERE map = :'m' AND game_port = NULLIF(:'port', '0')::int;
 COMMIT;
 SQL
         if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR dimension-down: DB update failed (rolled back)" >&2; exit 1; fi
@@ -2322,9 +2327,19 @@ SQL
         exit 0
         ;;
     sietch-remove)
-        # Remove a player-choosable Survival_1 sietch entirely: tear its UE5 down
-        # (kill + drop farm_state) and DELETE the world_partition row. Refuses the
-        # stock Abbir sietch (dimension_index 0) and non-Survival_1 partitions.
+        # Remove a player-choosable Survival_1 sietch entirely: tear its UE5 down,
+        # ROBUSTLY drop its farm_state, DELETE the world_partition row, then resync the
+        # Director so the sietch leaves the in-game browser. Refuses the stock Abbir
+        # sietch (dimension_index 0) and non-Survival_1 partitions.
+        #
+        # farm_state is dropped by server_id AND by the live UE5's game port (captured
+        # from /proc before the kill). A sietch whose world_partition.server_id was NULL
+        # at removal (downed / post-reboot orphan) would otherwise leave a stale,
+        # heartbeat-less farm_state row that CRASHES the Director's FLS reconcile
+        # (PrepareServerHeartbeatUpdates -> "Could not find heartbeat for Server"),
+        # which makes deleted sietches linger in the browser forever. The Director
+        # never self-prunes a removed partition from its in-memory battlegroup, so we
+        # svc-restart it to flush (use `repair-browser` for a global orphan sweep).
         pid_arg="${1:-}"
         case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-remove: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
         dune_require_tables dune.world_partition dune.farm_state || exit 3
@@ -2336,9 +2351,11 @@ SQL
         if [ -z "$row" ]; then echo "[admin-publish] ERROR sietch-remove: $pid_arg is not a removable Survival_1 sietch (need map=Survival_1, dimension_index>0; the Abbir base sietch cannot be removed)" >&2; exit 1; fi
         IFS='|' read -r SDIM SSID <<<"$row"
         pidf="$BASE/runtime/pids/ue5-Survival_1-dim${SDIM}-p${pid_arg}.pid"
+        SPORT=""
         if [ -r "$pidf" ]; then
             dpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
             if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+                [ -r "/proc/$dpid/cmdline" ] && SPORT=$(tr '\0' '\n' < "/proc/$dpid/cmdline" 2>/dev/null | sed -n 's/^-Port=\([0-9]\{1,\}\)$/\1/p' | head -1)
                 kill -TERM -- "-$dpid" 2>/dev/null || kill -TERM "$dpid" 2>/dev/null || true
                 for _ in $(seq 1 10); do kill -0 "$dpid" 2>/dev/null || break; sleep 1; done
                 kill -0 "$dpid" 2>/dev/null && { kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true; }
@@ -2346,15 +2363,43 @@ SQL
             rm -f "$pidf"
         fi
         rc=0
-        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$SSID" >/dev/null 2>&1 <<'SQL' || rc=$?
+        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$SSID" --set=port="${SPORT:-0}" >/dev/null 2>&1 <<'SQL' || rc=$?
 BEGIN;
 DELETE FROM dune.farm_state WHERE server_id = NULLIF(:'sid', '');
+DELETE FROM dune.farm_state WHERE map = 'Survival_1' AND game_port = NULLIF(:'port', '0')::int;
 DELETE FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0;
 COMMIT;
 SQL
         if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR sietch-remove: DB delete failed (rolled back)" >&2; exit 1; fi
-        echo "[admin-publish] OK sietch-remove partition=$pid_arg dim=$SDIM"
+        # Flush the Director's sticky in-memory battlegroup (it never self-prunes a
+        # deleted partition) so the sietch disappears from the browser. Best-effort.
+        bash "$BASE/scripts/admin-publish.sh" svc-restart director >/dev/null 2>&1 || true
+        echo "[admin-publish] OK sietch-remove partition=$pid_arg dim=$SDIM (Director resynced)"
         echo "publish=db-write sietch-remove $pid_arg"
+        exit 0
+        ;;
+    repair-browser)
+        # Fix the in-game server browser when a removed sietch/dimension lingers.
+        # (1) Sweep ALL orphan farm_state (server_id claimed by no world_partition row):
+        # these stale, heartbeat-less servers crash the Director's FLS reconcile
+        # (PrepareServerHeartbeatUpdates) and keep deleted sietches in the browser.
+        # (2) svc-restart the Director to flush its sticky in-memory battlegroup so it
+        # re-declares only the partitions that actually exist. Safe any time: live
+        # players' maps keep their farm_state link (untouched); the only theoretical
+        # risk is a sietch mid-spawn whose server_id isn't linked yet — re-run after.
+        dune_require_tables dune.world_partition dune.farm_state || exit 3
+        swept=$(dune_psql_q -tA -q <<'SQL'
+WITH del AS (
+  DELETE FROM dune.farm_state fs
+   WHERE NOT EXISTS (SELECT 1 FROM dune.world_partition wp WHERE wp.server_id = fs.server_id)
+   RETURNING 1)
+SELECT count(*) FROM del
+SQL
+)
+        swept=$(printf '%s' "$swept" | tr -dc '0-9'); swept="${swept:-0}"
+        bash "$BASE/scripts/admin-publish.sh" svc-restart director >/dev/null 2>&1 || true
+        echo "[admin-publish] OK repair-browser: swept $swept orphan farm_state row(s), Director resynced"
+        echo "publish=ok repair-browser swept=$swept"
         exit 0
         ;;
     sietch-rename)
