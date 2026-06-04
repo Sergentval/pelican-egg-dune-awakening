@@ -2211,6 +2211,84 @@ SQL
         echo "publish=ok dimension-up $pid_arg spawning"
         exit 0
         ;;
+    sietch-add)
+        # Add a player-choosable Survival_1 sietch: INSERT the next Survival_1
+        # dimension-partition row (dim = max+1, id in the sietch range) + background
+        # spawn its UE5. Survival_1 is Dimension mode (Funcom director_config), so
+        # the new sietch becomes selectable (client TargetDimension) on the
+        # Director's next cache refresh — no restart. dim 0 = stock Abbir sietch.
+        # Optional label arg (default "Sietch <n>"). Shares the one DD/Arrakeen/Harko.
+        label="${1:-}"
+        dune_require_tables dune.world_partition || exit 3
+        base="${DUNE_SURVIVAL_SIETCH_ID_BASE:-200}"
+        case "$base" in ''|*[!0-9]*) base=200 ;; esac
+        newrow=$(dune_psql_q -tA -q --set=b="$base" <<'SQL'
+SELECT COALESCE(MAX(dimension_index),0)+1 || '|' ||
+       (GREATEST(COALESCE(MAX(partition_id) FILTER (WHERE partition_id >= :'b'::bigint), :'b'::bigint - 1), :'b'::bigint - 1)+1)
+FROM dune.world_partition WHERE map='Survival_1'
+SQL
+)
+        IFS='|' read -r NEWDIM NEWPID <<<"$(printf '%s' "$newrow" | tr -d ' ')"
+        case "${NEWDIM:-}" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-add: could not compute next sietch dim" >&2; exit 1 ;; esac
+        case "${NEWPID:-}" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-add: could not compute next sietch id" >&2; exit 1 ;; esac
+        [ -n "$label" ] || label="Sietch $((NEWDIM + 1))"
+        rc=0
+        dune_psql_q -q -v ON_ERROR_STOP=1 --set=pid="$NEWPID" --set=dim="$NEWDIM" --set=lbl="$label" >/dev/null 2>&1 <<'SQL' || rc=$?
+INSERT INTO dune.world_partition (partition_id, map, partition_definition, dimension_index, blocked, label)
+VALUES (:'pid'::bigint, 'Survival_1',
+        '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb,
+        :'dim'::int, false, :'lbl')
+ON CONFLICT (partition_id) DO NOTHING;
+SQL
+        if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR sietch-add: insert failed" >&2; exit 1; fi
+        # Background the spawn EXACTLY like dimension-up: the `&` must bind to the
+        # `setsid ...` (whose fds are redirected) so the backgrounded job does NOT
+        # inherit admin-publish's stdout pipe. Do NOT use `[ -r ] && setsid &` —
+        # that backgrounds the whole AND-list in a subshell that keeps the pipe
+        # open, hanging the HTTP caller until run_publish's timeout.
+        if [ -r "$BASE/scripts/spawn-dimension.sh" ]; then
+            setsid bash "$BASE/scripts/spawn-dimension.sh" "$BASE" "$NEWPID" >> "$BASE/logs/spawn-dimension.log" 2>&1 </dev/null &
+        fi
+        echo "[admin-publish] OK sietch-add partition=$NEWPID dim=$NEWDIM label='$label' (spawning; poll /api/partitions)"
+        echo "publish=db-write sietch-add $NEWPID"
+        exit 0
+        ;;
+    sietch-remove)
+        # Remove a player-choosable Survival_1 sietch entirely: tear its UE5 down
+        # (kill + drop farm_state) and DELETE the world_partition row. Refuses the
+        # stock Abbir sietch (dimension_index 0) and non-Survival_1 partitions.
+        pid_arg="${1:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-remove: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition dune.farm_state || exit 3
+        row=$(dune_psql_q -tA -q --set=p="$pid_arg" <<'SQL'
+SELECT dimension_index || '|' || COALESCE(server_id,'')
+FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0
+SQL
+)
+        if [ -z "$row" ]; then echo "[admin-publish] ERROR sietch-remove: $pid_arg is not a removable Survival_1 sietch (need map=Survival_1, dimension_index>0; the Abbir base sietch cannot be removed)" >&2; exit 1; fi
+        IFS='|' read -r SDIM SSID <<<"$row"
+        pidf="$BASE/runtime/pids/ue5-Survival_1-dim${SDIM}-p${pid_arg}.pid"
+        if [ -r "$pidf" ]; then
+            dpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
+            if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+                kill -TERM -- "-$dpid" 2>/dev/null || kill -TERM "$dpid" 2>/dev/null || true
+                for _ in $(seq 1 10); do kill -0 "$dpid" 2>/dev/null || break; sleep 1; done
+                kill -0 "$dpid" 2>/dev/null && { kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true; }
+            fi
+            rm -f "$pidf"
+        fi
+        rc=0
+        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$SSID" >/dev/null 2>&1 <<'SQL' || rc=$?
+BEGIN;
+DELETE FROM dune.farm_state WHERE server_id = NULLIF(:'sid', '');
+DELETE FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0;
+COMMIT;
+SQL
+        if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR sietch-remove: DB delete failed (rolled back)" >&2; exit 1; fi
+        echo "[admin-publish] OK sietch-remove partition=$pid_arg dim=$SDIM"
+        echo "publish=db-write sietch-remove $pid_arg"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

@@ -2225,6 +2225,55 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, run_publish(["dimension-down", pid_str], timeout=60))
             return
 
+        # Multi-Sietch (player-chosen Survival_1 instances). Survival_1 runs
+        # Dimension mode, so each sietch = a Survival_1 dimension partition.
+        # POST /api/sietches            {label?}  -> add + spawn a new sietch
+        # POST /api/sietches/<pid>/remove {force?} -> tear down + delete (player-guarded)
+        if path == "/api/sietches":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            label = body.get("label") if isinstance(body, dict) else None
+            argv = ["sietch-add"]
+            if isinstance(label, str) and label.strip():
+                argv.append(label.strip()[:48])
+            self._write(200, run_publish(argv, timeout=30))
+            return
+        if path.startswith("/api/sietches/") and path.endswith("/remove"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            pid_str = path[len("/api/sietches/"):-len("/remove")]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "sietch partition id must be numeric"})
+                return
+            # Player-online guard from the partition topology read (same as dim-down).
+            force = bool(body.get("force")) if isinstance(body, dict) else False
+            pe = run_publish(["world-partition-list"], timeout=15)
+            players, found = 0, False
+            if pe["ok"]:
+                for line in (pe.get("stdout") or "").splitlines():
+                    f = line.strip().split("|")
+                    if len(f) >= 10 and f[0] == pid_str:
+                        found = True
+                        players = int(f[9]) if f[9].isdigit() else 0
+                        break
+            if not found:
+                self._write(200, {"ok": False, "error": f"sietch {pid_str} not found"})
+                return
+            if players > 0 and not force:
+                self._write(200, {"ok": False, "requiresConfirmation": True, "players": players,
+                                  "partition": int(pid_str), "message": f"{players} player(s) in sietch {pid_str}"})
+                return
+            self._write(200, run_publish(["sietch-remove", pid_str], timeout=60))
+            return
+
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;
         # gathers root+descendants and calls complete_journey_story_nodes_for_player.
         # POST /api/players/<id>/progression-unlock  body {"preset": "<id>"}

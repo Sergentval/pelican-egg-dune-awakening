@@ -13,10 +13,12 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
+  addSietch,
   dimensionDown,
   dimensionUp,
   fetchPartitions,
   fetchStatus,
+  removeSietch,
   scaleInstance,
   type DimResult,
   type Partition,
@@ -69,6 +71,36 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [confirm, setConfirm] = useState<null | { map: string; replicas: number; players: number }>(null);
   const [dimBusy, setDimBusy] = useState(0);
   const [dimConfirm, setDimConfirm] = useState<null | { partition: number; players: number }>(null);
+  const [addingSietch, setAddingSietch] = useState(false);
+  const [sietchConfirm, setSietchConfirm] = useState<null | { partition: number; players: number }>(null);
+
+  async function doAddSietch() {
+    setAddingSietch(true);
+    const res = await addSietch().catch(() => null);
+    setAddingSietch(false);
+    const ok = !!res && res.ok && (res.body as DimResult)?.ok === true;
+    pushToConsole(setConsoleEntries, "add sietch",
+      ok ? "new Survival_1 sietch added (spawning…)" : ((res?.body as DimResult)?.error || "failed"), ok);
+    if (ok) void load();
+  }
+
+  async function doRemoveSietch(partition: number, force = false) {
+    setDimBusy(partition);
+    const res = await removeSietch(partition, force).catch(() => null);
+    setDimBusy(0);
+    if (!res) {
+      pushToConsole(setConsoleEntries, `remove sietch ${partition}`, "request failed", false);
+      return;
+    }
+    const b = res.body as DimResult;
+    if (res.ok && b.requiresConfirmation) {
+      setSietchConfirm({ partition, players: b.players ?? 0 });
+      return;
+    }
+    const ok = res.ok && b.ok === true;
+    pushToConsole(setConsoleEntries, `remove sietch ${partition}`, ok ? "removed" : (b.error || "failed"), ok);
+    if (ok) void load();
+  }
 
   async function dimAct(partition: number, action: "up" | "down", force = false) {
     setDimBusy(partition);
@@ -163,6 +195,10 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
                   disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "down")}>↓ offline</button>
               : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
                   disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}>↑ start</button>}
+            {p.map === "Survival_1" && (
+              <button className="btn-ghost text-[10px] border border-red-900/60 text-red-400 px-1.5 py-0"
+                disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch">✕</button>
+            )}
             {dimBusy === p.partition_id && <span className="text-slate-500">…</span>}
           </span>
         )}
@@ -195,6 +231,14 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           <span className="text-orange-300">dim N</span> = per-player sandstorm-tunnel partitions. Dot:{" "}
           <span className="text-emerald-400">live</span> / <span className="text-amber-400">registering</span> /{" "}
           <span className="text-slate-500">declared</span>. On-demand maps (Deep Desert, Arrakeen, Harko) have spin-up / shutdown / scale controls; scaling down with players online asks to confirm.
+        </div>
+        <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
+          <button className="btn-primary text-xs" disabled={addingSietch} onClick={() => void doAddSietch()}>
+            {addingSietch ? "adding…" : "➕ Add Sietch"}
+          </button>
+          <span className="text-xs text-slate-500">
+            spawns a new player-choosable Survival_1 sietch (a dimension partition). All sietches share the one Deep Desert / Arrakeen / Harko. Players pick a sietch from the game browser (✕ on a Survival_1 sietch removes it).
+          </span>
         </div>
       </div>
 
@@ -261,6 +305,19 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           if (c) void dimAct(c.partition, "down", true);
         }}
         onCancel={() => setDimConfirm(null)}
+      />
+
+      <Confirm
+        open={sietchConfirm !== null}
+        title={`${sietchConfirm?.players ?? 0} player(s) in sietch ${sietchConfirm?.partition ?? ""}`}
+        message={`Removing sietch ${sietchConfirm?.partition ?? ""} destroys it and disconnects ${sietchConfirm?.players ?? 0} player(s) currently in it. Proceed?`}
+        confirmLabel="Remove sietch anyway"
+        onConfirm={() => {
+          const c = sietchConfirm;
+          setSietchConfirm(null);
+          if (c) void doRemoveSietch(c.partition, true);
+        }}
+        onCancel={() => setSietchConfirm(null)}
       />
     </div>
   );
