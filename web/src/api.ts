@@ -847,10 +847,34 @@ export interface MarketBotStatus {
   inventory?: string;
 }
 
+export interface MarketConfig {
+  enabled?: boolean;
+  max_listings?: number;
+  buy_threshold?: number;
+  gamble_die?: number;
+  gamble_target?: number;
+  max_buys_per_tick?: number;
+  scan_interval_secs?: number;
+  disabled_items?: string[];
+}
+
 export interface MarketInfo {
   ok: boolean;
   catalog?: { items?: number; vendor_priced?: number; fallback_priced?: number };
+  config?: MarketConfig;
   orders?: unknown;
+}
+
+// 7b-3 gamble-buy tick result (manual trigger or autonomous loop).
+export interface MarketBuyResult {
+  ok: boolean;
+  bought?: number;
+  errors?: number;
+  considered?: number;
+  chosen?: number;
+  posted?: number;
+  skipped?: string;
+  error?: string;
 }
 
 export const fetchMarket = () => api<MarketInfo>("GET", "/api/market");
@@ -859,3 +883,7 @@ export const marketPost = (limit: number) =>
   api<PublishResult & { error?: string }>("POST", "/api/market/post", { limit });
 export const marketClear = () =>
   api<PublishResult & { error?: string }>("POST", "/api/market/clear", {});
+export const marketBuy = () =>
+  api<MarketBuyResult>("POST", "/api/market/buy", {});
+export const marketConfig = (patch: Partial<MarketConfig>) =>
+  api<{ ok: boolean; config?: MarketConfig; error?: string }>("POST", "/api/market/config", patch);

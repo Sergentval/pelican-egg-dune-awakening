@@ -1975,6 +1975,95 @@ SQL
         echo "publish=db-write market-bot-clear remaining=$remaining"
         exit 0
         ;;
+    market-bot-buy-list)
+        # Read-only: PLAYER sell orders (is_npc_order FALSE) on the bot's exchange
+        # that the bot may buy to inject demand. Emits pipe lines:
+        #   order_id|template|price|item_id|seller|stack|grade
+        # The python buy loop (admin_market.py) applies the price gate + d-die
+        # gamble and then calls market-bot-buy per chosen order. Excludes the
+        # bot's own listings structurally (they are is_npc_order TRUE).
+        limit="${1:-50}"
+        case "$limit" in ''|*[!0-9]*) echo "[admin-publish] ERROR market-bot-buy-list: limit must be an integer, got '$limit'" >&2; exit 2 ;; esac
+        dune_require_tables dune.dune_exchange_orders dune.dune_exchange_sell_orders || exit 3
+        prov=$(dune_market_provision) || { echo "[admin-publish] ERROR market-bot-buy-list: provision failed" >&2; exit 1; }
+        IFS='|' read -r OWNER EXCH AP INV <<<"$prov"
+        dune_psql_q -tA -q --set=e="$EXCH" --set=lim="$limit" <<'SQL'
+SELECT o.id || '|' || o.template_id || '|' || o.item_price || '|' ||
+       COALESCE(o.item_id,0) || '|' || o.owner_id || '|' ||
+       COALESCE(i.stack_size, s.initial_stack_size, 1) || '|' ||
+       COALESCE(o.quality_level,0)
+FROM dune.dune_exchange_orders o
+JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
+LEFT JOIN dune.items i ON i.id = o.item_id
+WHERE o.is_npc_order = FALSE AND o.exchange_id = :'e'::bigint
+LIMIT :'lim'::int
+SQL
+        echo "publish=ok market-bot-buy-list"
+        exit 0
+        ;;
+    market-bot-buy)
+        # Buy ONE player sell order (is_npc_order FALSE) as the market bot, to
+        # inject demand. Faithful port of dune-admin buyPlayerListings (MIT): the
+        # bot pays the SELLER (a completion_type=4 'Take Solari' log order owned by
+        # the seller), debits its own exchange-user balance, then removes the
+        # player's sell order + order + backing item. The purchased item is
+        # destroyed — the bot is a pure demand sink and keeps no inventory. One
+        # atomic BEGIN/COMMIT tx; ON_ERROR_STOP rolls back on any failure (e.g. the
+        # order vanished between list and buy). Refuses NPC orders (the bot's own).
+        oid="${1:-}"
+        case "$oid" in ''|*[!0-9]*) echo "[admin-publish] ERROR market-bot-buy: order_id must be an integer, got '$oid'" >&2; exit 2 ;; esac
+        dune_require_tables dune.dune_exchange_orders dune.dune_exchange_sell_orders dune.dune_exchange_fulfilled_orders dune.dune_exchange_users dune.items dune.actors || exit 3
+        prov=$(dune_market_provision) || { echo "[admin-publish] ERROR market-bot-buy: provision failed" >&2; exit 1; }
+        IFS='|' read -r OWNER EXCH AP INV <<<"$prov"
+        rc=0
+        out=$(dune_psql_q -q -v ON_ERROR_STOP=1 --set=o="$OWNER" --set=ord="$oid" -tA 2>&1 <<'SQL'
+BEGIN;
+-- Bot balance floor: top up to 9e12 when below 1e12 (faithful initBotUser seed)
+-- so a buy never drives the synthetic bot balance negative.
+UPDATE dune.dune_exchange_users
+   SET solari_balance = COALESCE(solari_balance,0) + 9000000000000
+ WHERE owner_id = :'o'::bigint AND COALESCE(solari_balance,0) < 1000000000000;
+-- Snapshot the player order being bought (must still exist + be a player order).
+-- One row required; if it vanished, the following statements error -> rollback.
+SELECT o.id AS oid, o.exchange_id AS exch, o.access_point_id AS ap,
+       o.owner_id AS seller, o.template_id AS tmpl,
+       COALESCE(o.item_id,0) AS item, o.item_price AS price,
+       COALESCE(i.stack_size, s.initial_stack_size, 1) AS stack
+FROM dune.dune_exchange_orders o
+JOIN dune.dune_exchange_sell_orders s ON s.order_id = o.id
+LEFT JOIN dune.items i ON i.id = o.item_id
+WHERE o.id = :'ord'::bigint AND o.is_npc_order = FALSE
+\gset
+-- Seller payment-log order (completion_type 4 = sale fulfilled; owner=seller so
+-- the seller sees the claimed-solaris toast). item_price = total sale value.
+INSERT INTO dune.dune_exchange_orders
+  (exchange_id,access_point_id,owner_id,template_id,expiration_time,
+   durability_cur,durability_max,item_price,category_mask,category_depth,is_npc_order)
+VALUES (:exch,:ap,:seller,:'tmpl',999999999,1.0,1.0,:price*:stack,0,0,FALSE)
+RETURNING id AS logid
+\gset
+INSERT INTO dune.dune_exchange_fulfilled_orders
+  (order_id,source_order_id,completion_type,stack_size,original_order_id)
+VALUES (:logid,NULL,4,:stack,:oid);
+UPDATE dune.dune_exchange_users
+   SET solari_balance = COALESCE(solari_balance,0) - (:price*:stack)
+ WHERE owner_id = :'o'::bigint;
+DELETE FROM dune.dune_exchange_sell_orders WHERE order_id = :oid;
+DELETE FROM dune.dune_exchange_orders WHERE id = :oid;
+DELETE FROM dune.items WHERE id = :item AND :item <> 0;
+COMMIT;
+SELECT :oid || '|' || :'tmpl' || '|' || (:price*:stack);
+SQL
+) || rc=$?
+        info=$(printf '%s\n' "$out" | tail -n1 | tr -d '\r\n')
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR market-bot-buy: transaction failed (rolled back)" >&2
+            printf '%s\n' "$out" >&2; exit 1
+        fi
+        echo "[admin-publish] OK market-bot-buy order=$oid result=$info"
+        echo "publish=db-write market-bot-buy order=$oid"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:

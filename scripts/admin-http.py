@@ -421,7 +421,8 @@ def run_schedule(sub: str, *args: str, timeout: int = 60) -> dict:
 def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     """Run scripts/admin_market.py <sub> [args] <BASE_DIR> out-of-process.
     Returns {ok, data, ...} where `data` is the script's parsed JSON output.
-    Read-only (pricing + market summary); no exchange writes in Phase 7a."""
+    Mostly read-only (pricing + market summary); the 7b-3 buy-tick/set-config
+    subcommands shell admin-publish.sh for the actual exchange writes."""
     res = subprocess.run(
         [sys.executable, os.path.join(SCRIPTS_DIR, "admin_market.py"), sub, *args, BASE_DIR],
         capture_output=True, text=True, timeout=timeout)
@@ -1971,6 +1972,36 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["market-bot-clear"], timeout=60)
             self._write(200, entry)
+            return
+
+        # Economy config: arm/disarm the autonomous loop + tune buy/gamble fields.
+        # POST /api/market/config  body {enabled?, max_listings?, buy_threshold?,
+        # gamble_die?, gamble_target?, max_buys_per_tick?, scan_interval_secs?,
+        # disabled_items?}. Validated + persisted to market-bot.json by admin_market.
+        # Returns 200 + {ok, config|error} (CF-safe: errors carried in the body).
+        if path == "/api/market/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_market("set-config", json.dumps(body if isinstance(body, dict) else {}), timeout=15)
+            self._write(200, r.get("data", {"ok": False, "error": "set-config failed"}))
+            return
+
+        # Economy WRITE: run ONE gamble-buy pass right now (manual trigger). Buys
+        # cheap player orders (price gate + d-die gamble), bounded by
+        # max_buys_per_tick. POST /api/market/buy. Runs regardless of enabled.
+        if path == "/api/market/buy":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_market("buy-tick", timeout=120)
+            self._write(200, r.get("data", {"ok": False, "error": "buy-tick failed"}))
             return
 
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;

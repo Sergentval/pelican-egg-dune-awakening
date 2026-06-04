@@ -1,11 +1,12 @@
 {
-  "_comment": "Market-bot config. Phase 7a ships the pricing engine (scripts/admin_market.py) + a read-only market view only; the order-posting / d12-gamble-buy bot loop is 7b and is OFF until verified. Pricing uses the Coastal sane-pricing model: list price = vendor_price x vendor_multiplier (or a tier/stack fallback) x grade_multiplier, step-rounded, hard-capped at price_cap. The 7b bot fields (max_listings, gamble_die/target, max_buys_per_tick, scan_interval_secs) are recorded here for when the loop lands.",
+  "_comment": "Market-bot config. enabled:false = the autonomous loop (start-market-bot.sh / admin_market.py scan-loop) is a no-op; flip to true to arm it. Each tick the bot tops its NPC listings up toward max_listings (priced by the Coastal sane-pricing model: vendor_price x vendor_multiplier or a tier/stack fallback x grade_multiplier, step-rounded, capped at price_cap) and runs a gamble-buy pass: it buys cheap PLAYER sell orders (per-item price <= our price x buy_threshold) gated by a d-die roll (buy iff roll in 1..gamble_target on a gamble_die-sided die), up to max_buys_per_tick per tick, paying the seller and destroying the item (pure demand sink). Set gamble_target:0 or buy_threshold:0 to disable buying while still posting. scan_interval_secs is the loop cadence (min 30).",
   "enabled": false,
   "grade_multipliers": [1.0, 1.25, 1.55, 2.0, 2.6, 3.3],
   "rarity_multipliers": {"common": 1.0, "rare": 5.0, "unique": 5.0, "memento": 2.0},
   "vendor_multipliers": {"common": 1.0, "rare": 5.0, "unique": 5.0, "memento": 2.0},
   "price_cap": 100000,
   "max_listings": 200,
+  "buy_threshold": 1.05,
   "gamble_die": 12,
   "gamble_target": 5,
   "max_buys_per_tick": 5,
