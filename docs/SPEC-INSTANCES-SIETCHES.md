@@ -149,6 +149,36 @@ Ships behind an explicit unlock.
 
 ---
 
+## Phase 4 — Per-sietch config (heterogeneous sietches: PvP/PvE, names) [DONE, this PR]
+
+Each sietch (a Survival_1 dimension partition) is its own UE5 process that
+self-reports its name + gameplay settings, so a sietch can have its OWN name +
+any of the ~190 server-authoritative settings (PvP, security zones, harvest,
+sandworm, difficulty, password, …) while the others stay on the global defaults.
+USER-CONFIRMED working in-game (Sietch 2 joinable); per-sietch PvP/harvest +
+spaced names live-verified server-side.
+
+Mechanism (per-instance INI, NOT -ini CLI — UE5 mangles spaces in CLI cvar
+values; the INI form handles them, like the global name):
+- `admin_sietch.py`: per-sietch overrides `{schema_id: value}` (source of truth) +
+  `materialize()` — builds a per-instance UE5 config dir = a fresh copy of the
+  shared Phase-5 UserSettings with this sietch's overrides + display name merged
+  into UserEngine/UserGame.ini (reuses admin_ini_merge). Only UE5-process settings
+  (file != ondemand) are per-sietch-capable (192).
+- `start-ue5.sh`: when a sietch has overrides or a display name, points `HOME` at a
+  per-instance config dir (materialized at spawn so global changes propagate),
+  falling back to shared on failure. The name = the sietch's `world_partition.label`
+  via `DUNE_INSTANCE_DISPLAY_NAME` (spawners thread it through).
+- `admin-publish.sh sietch-rename`; `admin-http.py` GET/POST
+  `/api/sietches/<pid>/config` (set name + overrides → restart the sietch to apply;
+  player-online guard). `SietchConfigEditor` (⚙ on each sietch) — name field +
+  filterable per-setting inherit/override + Apply.
+
+Apply restarts that one sietch (settings read at UE5 startup). CAVEAT: rapid
+back-to-back restarts of the SAME sietch race (materialize rm -rf's the config dir
+mid-boot → SIGTERM 143); a single Apply is clean. A future guard could serialize
+per-sietch restarts.
+
 ## Cross-phase notes
 
 - **mock-k8s auth/TLS**: HTTPS :6443 self-signed + `AMP_TOKEN` bearer; admin-http

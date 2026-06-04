@@ -66,7 +66,7 @@ fi
 # to spawn.
 mapfile -t ROWS < <(
   "${PSQL_ENV[@]}" "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune -tA -F'|' <<'SQL'
-SELECT partition_id, map, dimension_index
+SELECT partition_id, map, dimension_index, COALESCE(label, '')
 FROM dune.world_partition
 WHERE dimension_index > 0
   AND server_id IS NULL
@@ -93,7 +93,7 @@ SPAWN_STAGGER_SEC="${DUNE_DIM_SPAWN_STAGGER_SEC:-20}"
 PORT_OFFSET=0
 for row in "${ROWS[@]}"; do
   [ -z "$row" ] && continue
-  IFS='|' read -r PART_ID MAP DIM <<<"$row"
+  IFS='|' read -r PART_ID MAP DIM LABEL <<<"$row"
   GAME_PORT=$((DIM_GAME_PORT_BASE + PORT_OFFSET))
   IGW_PORT=$((DIM_IGW_PORT_BASE + PORT_OFFSET))
   PORT_OFFSET=$((PORT_OFFSET + 1))
@@ -110,6 +110,7 @@ for row in "${ROWS[@]}"; do
   DUNE_PARTITION="$PART_ID" \
   DUNE_GAME_PORT="$GAME_PORT" \
   DUNE_IGW_PORT="$IGW_PORT" \
+  DUNE_INSTANCE_DISPLAY_NAME="$LABEL" \
     bash "$SCRIPTS/start-ue5.sh" "$BASE" "$MAP" "$SUFFIX" || warn "  spawn failed for $SUFFIX"
 
   # Extra cushion between spawns. UDP-bind doesn't mean RMQ-ready.

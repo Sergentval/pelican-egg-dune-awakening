@@ -426,6 +426,22 @@ def run_schedule(sub: str, *args: str, timeout: int = 60) -> dict:
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
+def run_sietch(sub: str, *args: str, timeout: int = 20) -> dict:
+    """Run scripts/admin_sietch.py <sub> [args] out-of-process (per-sietch config
+    I/O; no DB/network). BASE via env so file/dir args aren't mistaken for it.
+    Returns {ok, data, ...} where `data` is the script's parsed JSON output."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_sietch.py"), sub, *args],
+        capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, "DUNE_BASE_DIR": BASE_DIR})
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     """Run scripts/admin_market.py <sub> [args] <BASE_DIR> out-of-process.
     Returns {ok, data, ...} where `data` is the script's parsed JSON output.
@@ -1160,6 +1176,23 @@ class Handler(BaseHTTPRequestHandler):
                     "players": int(players) if players.isdigit() else 0,
                 })
             self._write(200, {"ok": True, "partitions": parts})
+            return
+
+        # Per-sietch config: current overrides + the catalogue of overridable
+        # settings (for the editor). GET /api/sietches/<pid>/config
+        if path.startswith("/api/sietches/") and path.endswith("/config"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            pid_str = path[len("/api/sietches/"):-len("/config")]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "sietch partition id must be numeric"})
+                return
+            self._write(200, {
+                "ok": True,
+                "overrides": run_sietch("get", pid_str).get("data", {}).get("overrides", {}),
+                "settings": run_sietch("capable").get("data", {}).get("settings", []),
+            })
             return
 
         # Phase 5: server-settings catalogue + current values, grouped by
@@ -2272,6 +2305,54 @@ class Handler(BaseHTTPRequestHandler):
                                   "partition": int(pid_str), "message": f"{players} player(s) in sietch {pid_str}"})
                 return
             self._write(200, run_publish(["sietch-remove", pid_str], timeout=60))
+            return
+
+        # Per-sietch config: set this sietch's name + gameplay overrides, then
+        # restart it to apply (settings are read at UE5 startup). Player-online
+        # guard (restart disconnects them). POST /api/sietches/<pid>/config
+        #   body {name?: str, overrides?: {schema_id: value}, force?: bool}
+        if path.startswith("/api/sietches/") and path.endswith("/config"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            pid_str = path[len("/api/sietches/"):-len("/config")]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "sietch partition id must be numeric"})
+                return
+            name = body.get("name") if isinstance(body, dict) else None
+            overrides = body.get("overrides") if isinstance(body, dict) else None
+            force = bool(body.get("force")) if isinstance(body, dict) else False
+            # Player-online guard — applying restarts the sietch's UE5.
+            pe = run_publish(["world-partition-list"], timeout=15)
+            players = 0
+            if pe["ok"]:
+                for line in (pe.get("stdout") or "").splitlines():
+                    f = line.strip().split("|")
+                    if len(f) >= 10 and f[0] == pid_str:
+                        players = int(f[9]) if f[9].isdigit() else 0
+                        break
+            if players > 0 and not force:
+                self._write(200, {"ok": False, "requiresConfirmation": True, "players": players,
+                                  "partition": int(pid_str), "message": f"applying restarts sietch {pid_str} ({players} player(s) online)"})
+                return
+            if isinstance(name, str) and name.strip():
+                rn = run_publish(["sietch-rename", pid_str, name.strip()[:48]], timeout=15)
+                if not rn["ok"]:
+                    self._write(200, {"ok": False, "error": (rn.get("stderr") or "rename failed").strip()})
+                    return
+            rs = run_sietch("set", pid_str, json.dumps(overrides if isinstance(overrides, dict) else {}), timeout=15)
+            if not rs["ok"]:
+                self._write(200, {"ok": False, "error": "set overrides failed"})
+                return
+            # Restart the sietch so the new per-instance config is materialized.
+            run_publish(["dimension-down", pid_str], timeout=60)
+            up = run_publish(["dimension-up", pid_str], timeout=30)
+            d = rs.get("data", {})
+            self._write(200, {"ok": True, "applied": d.get("applied", []), "skipped": d.get("skipped", []),
+                              "restarted": up.get("ok", False)})
             return
 
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;

@@ -37,9 +37,9 @@ psql_q() { "${PSQL_ENV[@]}" "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U po
 wait_for_port 127.0.0.1 "$DUNE_PG_PORT" 30 || die "postgres unreachable on 127.0.0.1:$DUNE_PG_PORT"
 
 # Resolve the row — must be a dim that is currently OFFLINE (server_id IS NULL).
-ROW="$(psql_q -F'|' -c "SELECT map, dimension_index FROM dune.world_partition WHERE partition_id=$PART_ID AND dimension_index>0 AND server_id IS NULL")"
+ROW="$(psql_q -F'|' -c "SELECT map, dimension_index, COALESCE(label,'') FROM dune.world_partition WHERE partition_id=$PART_ID AND dimension_index>0 AND server_id IS NULL")"
 [ -n "$ROW" ] || die "partition $PART_ID is not an offline dimensional partition (need dimension_index>0 AND server_id IS NULL)"
-IFS='|' read -r MAP DIM <<<"$ROW"
+IFS='|' read -r MAP DIM LABEL <<<"$ROW"
 
 # Canonical port offset = rank of this row among all dim rows by (map, dimension_index).
 OFFSET="$(psql_q -c "SELECT count(*) FROM dune.world_partition WHERE dimension_index>0 AND (map < '$MAP' OR (map='$MAP' AND dimension_index < $DIM))")"
@@ -51,6 +51,7 @@ log "spawning $MAP partition=$PART_ID dim=$DIM offset=$OFFSET port=$GAME_PORT ig
 DUNE_PARTITION="$PART_ID" \
 DUNE_GAME_PORT="$GAME_PORT" \
 DUNE_IGW_PORT="$IGW_PORT" \
+DUNE_INSTANCE_DISPLAY_NAME="$LABEL" \
   bash "$SCRIPTS/start-ue5.sh" "$BASE" "$MAP" "$SUFFIX" || die "spawn failed for $SUFFIX"
 
 # Poll farm_state for this game_port to register ready (UE5 needs 30-90s post-bind).
