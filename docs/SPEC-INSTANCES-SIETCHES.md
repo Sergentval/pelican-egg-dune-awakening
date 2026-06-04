@@ -63,7 +63,17 @@ Risk: low — drives the same self-healing engine the Director uses; idempotent.
 Caveat: desired replicas are in-memory in mock-k8s (lost on its restart; re-derived
 from AlwaysWarm) — surface that in the UI.
 
-## Phase 2 — DeepDesert dimension runtime control
+## Phase 2 — DeepDesert dimension runtime control [this PR — spin down/up of configured dims]
+
+Scope note: this PR ships **spin down / spin up of already-configured dims**
+(101/102/103) — the clean, reversible, restart-free core (the decompiled Director
+routes on `world_partition.server_id` → `farm_state`, and our
+`IGNORE_IGWO_API_SERVER_CHECK` neutralizes the CR brown-gate, so down = NULL
+server_id + kill is graceful and up = respawn at the canonical port + writeback
+routes within a tick). Changing the dim COUNT (add/remove a partition id) stays a
+boot-config op (`DUNE_DD_DIMENSIONS`) for persistence consistency, since
+prestart re-seeds from the env on each boot.
+
 
 The per-player tunnel partitions (101/102/103) are outside mock-k8s — boot-only,
 no teardown today. Add runtime control.

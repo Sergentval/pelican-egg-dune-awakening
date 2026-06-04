@@ -709,6 +709,20 @@ export interface ScaleResult {
 export const scaleInstance = (map: string, replicas: number, force = false) =>
   api<ScaleResult>("POST", `/api/instances/${encodeURIComponent(map)}/scale`, { replicas, force });
 
+// Phase 2: spin a single dimension partition up (respawn) / down (offline).
+export interface DimResult {
+  ok: boolean;
+  requiresConfirmation?: boolean;
+  players?: number;
+  partition?: number;
+  message?: string;
+  error?: string;
+}
+export const dimensionUp = (partitionId: number) =>
+  api<DimResult>("POST", `/api/instances/dimension/${partitionId}/up`, {});
+export const dimensionDown = (partitionId: number, force = false) =>
+  api<DimResult>("POST", `/api/instances/dimension/${partitionId}/down`, { force });
+
 // ---- Phase 5: server settings ----
 
 export interface SettingItem {

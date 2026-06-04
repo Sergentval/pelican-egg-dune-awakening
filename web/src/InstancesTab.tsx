@@ -13,9 +13,12 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
+  dimensionDown,
+  dimensionUp,
   fetchPartitions,
   fetchStatus,
   scaleInstance,
+  type DimResult,
   type Partition,
   type ScaleResult,
   type StatusGrid,
@@ -64,6 +67,27 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [busy, setBusy] = useState("");
   // Pending force-confirm after the player-online guard returns requiresConfirmation.
   const [confirm, setConfirm] = useState<null | { map: string; replicas: number; players: number }>(null);
+  const [dimBusy, setDimBusy] = useState(0);
+  const [dimConfirm, setDimConfirm] = useState<null | { partition: number; players: number }>(null);
+
+  async function dimAct(partition: number, action: "up" | "down", force = false) {
+    setDimBusy(partition);
+    const res = await (action === "up" ? dimensionUp(partition) : dimensionDown(partition, force)).catch(() => null);
+    setDimBusy(0);
+    if (!res) {
+      pushToConsole(setConsoleEntries, `dimension ${action} ${partition}`, "request failed", false);
+      return;
+    }
+    const b = res.body as DimResult;
+    if (res.ok && b.requiresConfirmation) {
+      setDimConfirm({ partition, players: b.players ?? 0 });
+      return;
+    }
+    const ok = res.ok && b.ok === true;
+    pushToConsole(setConsoleEntries, `dimension ${action} ${partition}`,
+      ok ? (action === "up" ? "spawning… (poll for live)" : "offline") : (b.error || "failed"), ok);
+    if (ok) void load();
+  }
 
   async function scale(map: string, replicas: number, force = false) {
     setBusy(map);
@@ -132,6 +156,16 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
         {p.players > 0 && <span className="text-spice-300">{p.players}p</span>}
         {p.blocked && <span className="text-red-400 text-[10px]">blocked</span>}
         {p.alive && !p.ready && <span className="text-amber-400 text-[10px]">not ready</span>}
+        {p.dimension > 0 && (
+          <span className="ml-auto flex items-center gap-1">
+            {p.server_id
+              ? <button className="btn-ghost text-[10px] border border-red-900/60 text-red-300 px-1.5 py-0"
+                  disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "down")}>↓ offline</button>
+              : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                  disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}>↑ start</button>}
+            {dimBusy === p.partition_id && <span className="text-slate-500">…</span>}
+          </span>
+        )}
       </div>
     );
   }
@@ -214,6 +248,19 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           if (c) void scale(c.map, c.replicas, true);
         }}
         onCancel={() => setConfirm(null)}
+      />
+
+      <Confirm
+        open={dimConfirm !== null}
+        title={`${dimConfirm?.players ?? 0} player(s) on partition ${dimConfirm?.partition ?? ""}`}
+        message={`Taking dimension partition ${dimConfirm?.partition ?? ""} offline will disconnect ${dimConfirm?.players ?? 0} player(s) in that tunnel. Proceed?`}
+        confirmLabel="Take offline anyway"
+        onConfirm={() => {
+          const c = dimConfirm;
+          setDimConfirm(null);
+          if (c) void dimAct(c.partition, "down", true);
+        }}
+        onCancel={() => setDimConfirm(null)}
       />
     </div>
   );

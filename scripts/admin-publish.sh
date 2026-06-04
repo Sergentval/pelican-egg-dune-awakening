@@ -2143,6 +2143,74 @@ SQL
         echo "publish=ok world-partition-list"
         exit 0
         ;;
+    dimension-down)
+        # Take ONE dimensional UE5 partition offline (REVERSIBLE): kill its process
+        # group, NULL world_partition.server_id, delete its stale farm_state row.
+        # Director stops routing next refresh tick (server_id NULL -> GetServerState
+        # NotAvailable; the dim entry is never pruned -> no crash). The
+        # world_partition row stays (server_id NULL) so dimension-up can respawn it.
+        # Isolated: warm DD (#8) and the other dims have separate pidfiles/ports/rows.
+        pid_arg="${1:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR dimension-down: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition dune.farm_state || exit 3
+        row=$(dune_psql_q -tA -q --set=p="$pid_arg" <<'SQL'
+SELECT map || '|' || dimension_index || '|' || COALESCE(server_id,'')
+FROM dune.world_partition WHERE partition_id = :'p'::bigint AND dimension_index > 0
+SQL
+)
+        if [ -z "$row" ]; then echo "[admin-publish] ERROR dimension-down: $pid_arg is not a dimensional partition (dimension_index>0)" >&2; exit 1; fi
+        IFS='|' read -r DMAP DDIM DSID <<<"$row"
+        # Kill the dim's UE5 process group via its pidfile (setsid leader == PGID).
+        pidf="$BASE/runtime/pids/ue5-${DMAP}-dim${DDIM}-p${pid_arg}.pid"
+        if [ -r "$pidf" ]; then
+            dpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
+            if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+                kill -TERM -- "-$dpid" 2>/dev/null || kill -TERM "$dpid" 2>/dev/null || true
+                for _ in $(seq 1 10); do kill -0 "$dpid" 2>/dev/null || break; sleep 1; done
+                kill -0 "$dpid" 2>/dev/null && { kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true; }
+            fi
+            rm -f "$pidf"
+        fi
+        # NULL the writeback + drop the stale farm_state registration (atomic).
+        rc=0
+        dune_psql_q -q -v ON_ERROR_STOP=1 --set=p="$pid_arg" --set=sid="$DSID" >/dev/null 2>&1 <<'SQL' || rc=$?
+BEGIN;
+UPDATE dune.world_partition SET server_id = NULL WHERE partition_id = :'p'::bigint;
+DELETE FROM dune.farm_state WHERE server_id = NULLIF(:'sid', '');
+COMMIT;
+SQL
+        if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR dimension-down: DB update failed (rolled back)" >&2; exit 1; fi
+        echo "[admin-publish] OK dimension-down partition=$pid_arg map=$DMAP dim=$DDIM"
+        echo "publish=db-write dimension-down $pid_arg"
+        exit 0
+        ;;
+    dimension-up)
+        # Bring ONE downed dimensional partition back online: background
+        # spawn-dimension.sh (canonical port -> spawn UE5 -> wait farm_state ->
+        # writeback server_id). Returns immediately; the spawn takes minutes, so
+        # poll /api/partitions until the dim shows live.
+        pid_arg="${1:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR dimension-up: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition || exit 3
+        [ -r "$BASE/scripts/spawn-dimension.sh" ] || { echo "[admin-publish] ERROR dimension-up: spawn-dimension.sh missing" >&2; exit 1; }
+        st=$(dune_psql_q -tA -q --set=p="$pid_arg" <<'SQL'
+SELECT CASE WHEN dimension_index > 0 AND server_id IS NULL THEN 'ok'
+            WHEN dimension_index > 0 THEN 'up'
+            ELSE 'notdim' END
+FROM dune.world_partition WHERE partition_id = :'p'::bigint
+SQL
+)
+        case "${st:-missing}" in
+            ok) ;;
+            up) echo "[admin-publish] dimension-up: partition $pid_arg already online" >&2; echo "publish=ok dimension-up $pid_arg already-online"; exit 0 ;;
+            notdim) echo "[admin-publish] ERROR dimension-up: $pid_arg is not a dimensional partition" >&2; exit 1 ;;
+            *) echo "[admin-publish] ERROR dimension-up: partition $pid_arg not found" >&2; exit 1 ;;
+        esac
+        setsid bash "$BASE/scripts/spawn-dimension.sh" "$BASE" "$pid_arg" >> "$BASE/logs/spawn-dimension.log" 2>&1 </dev/null &
+        echo "[admin-publish] OK dimension-up partition=$pid_arg spawning (poll /api/partitions; ~1-3 min to live)"
+        echo "publish=ok dimension-up $pid_arg spawning"
+        exit 0
+        ;;
     item-delete)
         # Hard-delete a single item stack by its dune.items.id via dune.delete_item.
         # Ported from dune-admin cmdDeleteItem (MIT). Hardened beyond dune-admin:
