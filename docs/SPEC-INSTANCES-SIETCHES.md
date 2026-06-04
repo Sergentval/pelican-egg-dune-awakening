@@ -20,7 +20,7 @@ All writes reuse admin-http's session/jti auth + CSRF and return HTTP 200 +
 
 ---
 
-## Phase 0 — Topology VIEW (read-only) [this PR]
+## Phase 0 — Topology VIEW (read-only) [DONE, PR #31 merged]
 
 A new 🧩 **Instances** tab that shows the full instance + partition topology by
 combining the existing `/api/status` (per-map desired/current/status/players)
@@ -41,7 +41,7 @@ with a new partition read.
 Risk: none (read-only). Delivers the "see every DD/sietch instance + partition"
 view DST lacks at this fidelity.
 
-## Phase 1 — Map spin-up / shutdown / scale (mock-k8s engine)
+## Phase 1 — Map spin-up / shutdown / scale (mock-k8s engine) [this PR]
 
 Drive the proven `ServerSetScale` path; covers DST feature #2 (per-map
 spin-up/shutdown) and "manage the DeepDesert instance" at the map level.
