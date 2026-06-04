@@ -1326,6 +1326,7 @@ SQL
         }
         result=$(printf '%s' "$out" | tail -1 | tr -d '[:space:]')
         echo "publish=ok tech-unlock pawn=$pawn mode=$mode purchased/total=$result"
+        exit 0
         ;;
 
     grant-keystones)
