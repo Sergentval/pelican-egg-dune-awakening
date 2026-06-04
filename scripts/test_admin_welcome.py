@@ -10,6 +10,7 @@ import unittest
 from admin_welcome import (
     WelcomeLedger,
     parse_accounts_csv,
+    render_announce,
     scan_once,
     validate_items,
 )
@@ -123,6 +124,43 @@ class TestScanOnce(unittest.TestCase):
         self.led.delete_failed("A", "v1", 1)
         r3 = scan_once("v1", self.items, accounts, self.led, self._grant_ok)
         self.assertEqual(r3["granted"], 1)
+
+    def test_on_granted_fires_once_per_fresh_grant_only(self):
+        announced = []
+        accounts = [{"fls": "A", "account_id": 1, "character_name": "Alice"},
+                    {"fls": "B", "account_id": 2, "character_name": "Bob"}]
+        scan_once("v1", self.items, accounts, self.led, self._grant_ok,
+                  on_granted=lambda acc: announced.append(acc["character_name"]))
+        self.assertEqual(announced, ["Alice", "Bob"])
+        # second scan: already granted -> skipped -> no announce
+        announced.clear()
+        scan_once("v1", self.items, accounts, self.led, self._grant_ok,
+                  on_granted=lambda acc: announced.append(acc["character_name"]))
+        self.assertEqual(announced, [])
+
+    def test_on_granted_not_fired_on_failure(self):
+        announced = []
+        accounts = [{"fls": "A", "account_id": 1, "character_name": "Alice"}]
+        scan_once("v1", self.items, accounts, self.led, self._grant_fail,
+                  on_granted=lambda acc: announced.append(acc["character_name"]))
+        self.assertEqual(announced, [])
+
+
+class TestRenderAnnounce(unittest.TestCase):
+    def test_disabled_or_no_body_returns_none(self):
+        self.assertIsNone(render_announce({"announce": False, "announce_text": "hi"}, "Alice"))
+        self.assertIsNone(render_announce({"announce": True, "announce_text": "  "}, "Alice"))
+        self.assertIsNone(render_announce({}, "Alice"))
+
+    def test_renders_name_substitution(self):
+        cfg = {"announce": True, "announce_title": "Hi {name}", "announce_text": "Welcome {name}!"}
+        self.assertEqual(render_announce(cfg, "Alice"), ("Hi Alice", "Welcome Alice!"))
+
+    def test_default_title_and_unknown_name(self):
+        cfg = {"announce": True, "announce_text": "{name} joined"}
+        title, body = render_announce(cfg, "")
+        self.assertEqual(title, "Welcome!")
+        self.assertEqual(body, "A new player joined")
 
 
 if __name__ == "__main__":

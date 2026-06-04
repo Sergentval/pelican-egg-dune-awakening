@@ -215,6 +215,19 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
               {busy === "grant-keystones" ? "…" : "Grant all 205 keystones"}
             </button>
           </div>
+          <div>
+            <label className="label">Tech tree (discovered recipes, offline)</label>
+            <div className="flex gap-2">
+              <button className="btn-ghost border border-slate-700 flex-1" disabled={anyBusy}
+                onClick={() => run("tech-unlock", { mode: "unlock-all" }, `tech-unlock ${pid} unlock-all`)}>
+                {busy === "tech-unlock" ? "…" : "Unlock all tech"}
+              </button>
+              <button className="btn-ghost border border-slate-700 flex-1" disabled={anyBusy}
+                onClick={() => run("tech-unlock", { mode: "lock-all" }, `tech-unlock ${pid} lock-all`)}>
+                {busy === "tech-unlock" ? "…" : "Lock all tech"}
+              </button>
+            </div>
+          </div>
         </Section>
 
         {/* Identity */}

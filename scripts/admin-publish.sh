@@ -74,6 +74,7 @@
 #   tags-update <player_id> <add-csv> <remove-csv> -- add/remove progression tags (offline only)
 #   award-char-xp <player_id> <amount>           -- award/deduct char XP; recompute level/SP/intel (offline only)
 #   grant-keystones <player_id>                  -- grant all 205 keystones + recompute SP (offline only)
+#   tech-unlock <player_id> <unlock-all|lock-all> -- flip discovered recipes' UnlockedState on the pawn (offline only, reversible)
 #   give-item <player_id> <ItemTemplate> [qty=1] [quality=0]
 #                                                -- grant items: online+quality0 -> RMQ AddItemToInventory;
 #                                                   offline -> direct dune.items INSERT (stack/slot/volume planned)
@@ -383,6 +384,38 @@ WHERE id = :'ctrl'::bigint;
 COMMIT;
 SELECT reputation_amount FROM dune.player_faction_reputation
 WHERE actor_id = :'ctrl'::bigint AND faction_id = :'fid'::smallint;
+SQL
+}
+
+# Set every entry's UnlockedState (+ bIsNewEntry) in the pawn's
+# TechKnowledgePlayerComponent.m_TechKnowledge.m_TechKnowledgeData array in one
+# transaction (ON_ERROR_STOP so a failure rolls back). Echoes "<at-state>/<total>"
+# as the last line. Mirrors dune_apply_faction_rep's jsonb-rebuild shape. Only the
+# entries already in the array (recipes the player has discovered) are touched;
+# m_TechKnowledgePoints / m_NextTechTreeUpgradeIndex are left as-is.
+dune_apply_tech_unlock() {
+    local pawn=$1 state=$2 bnew=$3
+    dune_psql_q -q -v ON_ERROR_STOP=1 \
+        --set=pawn="$pawn" --set=state="$state" --set=bnew="$bnew" -tA 2>&1 <<'SQL'
+BEGIN;
+UPDATE dune.actors SET properties = jsonb_set(
+    properties,
+    '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}',
+    (SELECT jsonb_agg(
+         jsonb_set(elem, '{UnlockedState}', to_jsonb(:'state'::text))
+           || jsonb_build_object('bIsNewEntry', :'bnew'::boolean)
+         ORDER BY ord)
+     FROM jsonb_array_elements(
+            properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData'
+          ) WITH ORDINALITY AS t(elem, ord)),
+    true)
+WHERE id = :'pawn'::bigint
+  AND (properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge') ? 'm_TechKnowledgeData';
+COMMIT;
+SELECT count(*) FILTER (WHERE e->>'UnlockedState' = :'state') || '/' || count(*)
+FROM dune.actors a,
+     jsonb_array_elements(a.properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData') e
+WHERE a.id = :'pawn'::bigint;
 SQL
 }
 
@@ -1261,6 +1294,40 @@ SQL
         echo "publish=db-write award-char-xp pawn=$pawn xp=$applied_xp level=$new_level"
         exit 0
         ;;
+    tech-unlock)
+        # Flip every DISCOVERED recipe in the pawn's TechKnowledgePlayerComponent
+        # .m_TechKnowledge.m_TechKnowledgeData to Purchased (unlock-all) or
+        # NotPurchased (lock-all). PAWN-keyed, offline-gated, reversible. Does NOT
+        # add recipes the player never encountered (those aren't in the array), and
+        # leaves m_TechKnowledgePoints untouched (admin unlock is free).
+        raw="${1:?usage: tech-unlock <fls_id|me|steam:<id>|name:<n>> <unlock-all|lock-all>}"
+        mode="${2:?usage: tech-unlock <player> <unlock-all|lock-all>}"
+        case "$mode" in
+            unlock-all) tk_state="Purchased";    tk_bnew="false" ;;
+            lock-all)   tk_state="NotPurchased"; tk_bnew="true"  ;;
+            *) echo "[admin-publish] ERROR tech-unlock: mode must be unlock-all|lock-all" >&2; exit 2 ;;
+        esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR tech-unlock: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.actors || exit 3
+        assert_player_offline "$fls_id" || exit $?
+        pawn=$(dune_pc_actor_id "$fls_id")
+        if [ -z "$pawn" ]; then
+            echo "[admin-publish] ERROR tech-unlock: no player-character actor for $fls_id (never spawned?)" >&2
+            exit 1
+        fi
+        out=$(dune_apply_tech_unlock "$pawn" "$tk_state" "$tk_bnew") || {
+            echo "[admin-publish] ERROR tech-unlock: db write failed" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        }
+        result=$(printf '%s' "$out" | tail -1 | tr -d '[:space:]')
+        echo "publish=ok tech-unlock pawn=$pawn mode=$mode purchased/total=$result"
+        ;;
+
     grant-keystones)
         # Grant all 205 specialization keystones (insert into purchased_
         # specialization_keystones on the CONTROLLER, ON CONFLICT DO NOTHING)
