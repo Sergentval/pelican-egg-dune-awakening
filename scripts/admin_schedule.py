@@ -14,6 +14,7 @@ the I/O (subprocess, HTTP, sqlite) is thin and isolated for monkeypatching.
 import http.client
 import json
 import os
+import re
 import socket
 import sqlite3
 import ssl
@@ -23,14 +24,35 @@ import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
+# Sibling import (resolves whether run as a script, via importlib in tests, or -m),
+# mirroring admin-http.py. Gives the scale-instance task the shared mock-k8s
+# primitives without duplicating the CA-pinned transport.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from admin_instances import (  # noqa: E402
+    SCALABLE_MAPS,
+    SCALE_REPLICAS_MAX,
+    fetch_mock_status,
+    mock_k8s_request,
+    resolve_scale_key,
+)
+
 DEFAULT_TICK_SECS = 30
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 PENDING_KEY = "pending_restart_at"
+
+# Generic scheduled-task framework (Phase 1). Tasks live in an array alongside
+# the special-cased restart/backup, each: {id, type, enabled, schedule, params}.
+# Their runs are recorded in the same ledger under task:<id>, so the existing
+# run-history surface shows them automatically.
+TASK_TYPES = ("broadcast", "scale-instance")
+_TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+DAILY_CATCHUP_GRACE_SECS = 3600  # don't fire a stale daily slot after this window
 
 DEFAULT_CONFIG = {
     "restart": {"enabled": False, "time": "08:00", "days": list(DAYS),
                 "warn_lead_secs": 300, "warn_freq_secs": 60, "catch_up_grace_secs": 3600},
     "backup": {"enabled": False, "every_hours": 24, "retention": 7},
+    "tasks": [],
 }
 
 
@@ -59,16 +81,20 @@ def ledger_path(base):
 
 def load_config(base):
     """Read schedule.json, shallow-merged over defaults so missing keys never crash."""
-    out = {"restart": dict(DEFAULT_CONFIG["restart"]), "backup": dict(DEFAULT_CONFIG["backup"])}
+    out = {"restart": dict(DEFAULT_CONFIG["restart"]),
+           "backup": dict(DEFAULT_CONFIG["backup"]),
+           "tasks": []}
     try:
         with open(config_path(base), encoding="utf-8") as f:
             c = json.load(f)
     except (OSError, ValueError):
         return out
     if isinstance(c, dict):
-        for k in out:
+        for k in ("restart", "backup"):
             if isinstance(c.get(k), dict):
                 out[k].update(c[k])
+        if isinstance(c.get("tasks"), list):
+            out["tasks"] = c["tasks"]
     return out
 
 
@@ -101,7 +127,107 @@ def validate_config(raw):
         out["backup"]["retention"] = max(int(b.get("retention", 7)), 1)
     except (TypeError, ValueError):
         return None, "backup.every_hours and backup.retention must be integers"
-    return out, None
+    raw_tasks = raw.get("tasks", [])
+    if not isinstance(raw_tasks, list):
+        return None, "tasks must be a list"
+    tasks, seen = [], set()
+    for i, t in enumerate(raw_tasks):
+        vt, err = validate_task(t)
+        if err or vt is None:
+            return None, f"tasks[{i}]: {err}"
+        if vt["id"] in seen:
+            return None, f"duplicate task id: {vt['id']}"
+        seen.add(vt["id"])
+        tasks.append(vt)
+    return {**out, "tasks": tasks}, None
+
+
+def _validate_schedule(raw):
+    """Validate + coerce a task schedule. Returns (schedule, None) or (None, err)."""
+    if not isinstance(raw, dict):
+        return None, "schedule must be an object"
+    kind = raw.get("kind")
+    if kind == "daily":
+        t = str(raw.get("time", "08:00"))
+        if _slot_today(_now_dt(), t) is None:
+            return None, "schedule.time must be HH:MM"
+        days = raw.get("days", list(DAYS))
+        if not isinstance(days, list) or not days or not all(d in DAYS for d in days):
+            return None, "schedule.days must be a non-empty subset of mon..sun"
+        return {"kind": "daily", "time": t, "days": [d for d in DAYS if d in days]}, None
+    if kind == "interval":
+        try:
+            every = int(raw.get("every_minutes", 60))
+        except (TypeError, ValueError):
+            return None, "schedule.every_minutes must be an integer"
+        if every < 1:
+            return None, "schedule.every_minutes must be >= 1"
+        return {"kind": "interval", "every_minutes": every}, None
+    return None, "schedule.kind must be 'daily' or 'interval'"
+
+
+def _coerce_bool(v):
+    """Coerce a config value to bool: real bools pass through; strings like
+    'true'/'1'/'yes'/'on' are truthy; everything else falls back to bool()."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def _validate_task_params(ttype, raw):
+    """Validate + coerce per-type task params. Returns (params, None) or (None, err)."""
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        return None, "params must be an object"
+    if ttype == "broadcast":
+        title = str(raw.get("title", "")).strip()
+        body = str(raw.get("body", "")).strip()
+        if not title:
+            return None, "broadcast params.title required"
+        if not body:
+            return None, "broadcast params.body required"
+        try:
+            dur = max(int(raw.get("duration", 30)), 1)
+        except (TypeError, ValueError):
+            return None, "broadcast params.duration must be an integer"
+        return {"title": title[:200], "body": body[:500], "duration": dur}, None
+    if ttype == "scale-instance":
+        mp = raw.get("map")
+        if mp not in SCALABLE_MAPS:
+            return None, f"scale-instance params.map must be one of: {', '.join(SCALABLE_MAPS)}"
+        replicas = raw.get("replicas")
+        if isinstance(replicas, bool) or not isinstance(replicas, (int, str)):
+            return None, "scale-instance params.replicas must be an integer"
+        try:
+            replicas = int(replicas)
+        except (TypeError, ValueError):
+            return None, "scale-instance params.replicas must be an integer"
+        if replicas < 0 or replicas > SCALE_REPLICAS_MAX:
+            return None, f"scale-instance params.replicas must be 0-{SCALE_REPLICAS_MAX}"
+        return {"map": mp, "replicas": replicas, "force": _coerce_bool(raw.get("force", False))}, None
+    return {}, None
+
+
+def validate_task(raw):
+    """Validate + coerce one generic task. Returns (task, None) or (None, err). Pure."""
+    if not isinstance(raw, dict):
+        return None, "task must be an object"
+    tid = str(raw.get("id", "")).strip()
+    if not _TASK_ID_RE.match(tid):
+        return None, "id must match [a-z0-9][a-z0-9_-]{0,63}"
+    ttype = raw.get("type")
+    if ttype not in TASK_TYPES:
+        return None, f"type must be one of: {', '.join(TASK_TYPES)}"
+    sched, err = _validate_schedule(raw.get("schedule"))
+    if err:
+        return None, err
+    params, err = _validate_task_params(ttype, raw.get("params"))
+    if err:
+        return None, err
+    return {"id": tid, "type": ttype, "enabled": bool(raw.get("enabled", False)),
+            "schedule": sched, "params": params}, None
 
 
 def save_config(base, config):
@@ -116,9 +242,9 @@ def save_config(base, config):
 def _slot_today(now, hhmm):
     try:
         h, m = (int(x) for x in str(hhmm).split(":"))
+        return now.replace(hour=h, minute=m, second=0, microsecond=0)
     except (ValueError, AttributeError):
-        return None
-    return now.replace(hour=h, minute=m, second=0, microsecond=0)
+        return None  # bad format OR out-of-range hour/minute (replace raises ValueError)
 
 
 def restart_due(rcfg, now, last_warn):
@@ -149,6 +275,34 @@ def backup_due(bcfg, now, last_backup):
     return now >= lb + timedelta(hours=max(int(bcfg.get("every_hours", 24)), 1))
 
 
+def task_due(task, now, last_run):
+    """True if a generic task should fire now. Pure. Mirrors restart/backup due-logic:
+    'daily' fires once per slot within a catch-up grace; 'interval' fires every N
+    minutes (and immediately when never run, like backup)."""
+    if not task.get("enabled"):
+        return False
+    sched = task.get("schedule") or {}
+    kind = sched.get("kind")
+    if kind == "interval":
+        try:
+            every = max(int(sched.get("every_minutes", 60)), 1)
+        except (TypeError, ValueError):
+            return False
+        lr = _parse_iso(last_run)
+        return lr is None or now >= lr + timedelta(minutes=every)
+    if kind == "daily":
+        if DAYS[now.weekday()] not in (sched.get("days") or DAYS):
+            return False
+        slot = _slot_today(now, sched.get("time", "08:00"))
+        if slot is None or now < slot:
+            return False
+        if now >= slot + timedelta(seconds=DAILY_CATCHUP_GRACE_SECS):
+            return False  # missed the window — don't fire a stale catch-up
+        lr = _parse_iso(last_run)
+        return lr is None or lr < slot  # not already fired this slot
+    return False
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scheduler_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +330,17 @@ class SchedulerLedger:
     def last(self, task):
         cur = self.conn.execute(
             "SELECT at FROM scheduler_runs WHERE task=? ORDER BY id DESC LIMIT 1", (task,))
+        r = cur.fetchone()
+        return r[0] if r else None
+
+    def last_settled(self, task):
+        """Most recent run that SETTLED the schedule slot (status ok or skipped) —
+        excludes 'error' so a transient failure self-heals on the next tick within
+        the catch-up grace instead of consuming the slot. Used for generic tasks[]
+        dedupe; restart/backup keep their own last()-based logic."""
+        cur = self.conn.execute(
+            "SELECT at FROM scheduler_runs WHERE task=? AND status IN ('ok','skipped') "
+            "ORDER BY id DESC LIMIT 1", (task,))
         r = cur.fetchone()
         return r[0] if r else None
 
@@ -220,6 +385,89 @@ def run_backup(base):
     if ok:
         return True, (r.stdout.strip().splitlines() or [""])[-1]
     return False, (r.stderr.strip()[:300] or "pg_dump failed")
+
+
+def run_broadcast(base, params):
+    """admin-publish broadcast <title> <body> <duration>. Returns (ok, detail)."""
+    params = params or {}
+    title = str(params.get("title", "")).strip()
+    body = str(params.get("body", "")).strip()
+    if not title or not body:
+        return False, "broadcast: title and body required"
+    try:
+        dur = max(int(params.get("duration", 30)), 1)
+    except (TypeError, ValueError):
+        dur = 30
+    try:
+        r = subprocess.run(["bash", _publish(base), "broadcast", title, body, str(dur)],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"broadcast error: {e}"[:300]
+    return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())[:300]
+
+
+def online_count_for_map(base, mp):
+    """Online players on one map via admin-publish server-status. Returns the count,
+    or None if it could NOT be confirmed (subprocess / non-zero exit / parse failure)
+    — distinct from a genuine 0 so the scale-down guard can fail safe rather than
+    evicting players on an unreadable status. Isolated for test monkeypatch."""
+    try:
+        r = subprocess.run(["bash", _publish(base), "server-status"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        import admin_status  # noqa: PLC0415 - lazy: only the scale guard needs it
+        return int(admin_status.parse_player_counts(r.stdout).get(mp, 0) or 0)
+    except Exception:  # noqa: BLE001 - couldn't parse -> unconfirmed, not zero
+        return None
+
+
+def run_scale_instance(base, task):
+    """Scale a map to params.replicas via mock-k8s ServerSetScale. Returns
+    (status, detail) with status in (ok|skipped|error). Idempotent no-op when
+    already at target; a scale-down with players online is skipped unless force.
+    Mechanism (fetch/resolve/PATCH) is shared via admin_instances; the guard +
+    idempotency policy live here (the interactive endpoint owns its own)."""
+    p = task.get("params") or {}
+    mp, replicas, force = p.get("map"), p.get("replicas"), bool(p.get("force", False))
+    if mp not in SCALABLE_MAPS or not isinstance(replicas, int) or isinstance(replicas, bool):
+        return "error", f"invalid scale params: map={mp!r} replicas={replicas!r}"
+    mock = fetch_mock_status()
+    if not mock:
+        return "error", "mock-k8s /status unreachable"
+    key = resolve_scale_key(mock, mp)
+    if key is None:
+        return "error", f"{mp} not tracked by mock-k8s"
+    ns, name, current = key
+    if replicas == current:
+        return "ok", f"already at {replicas}"
+    if replicas < current and not force:
+        online = online_count_for_map(base, mp)
+        if online is None:
+            return "skipped", f"could not confirm players on {mp}; not scaled (force=false)"
+        if online > 0:
+            return "skipped", f"{online} player(s) online on {mp}; not scaled (force=false)"
+    code, _ = mock_k8s_request(
+        "PATCH", f"/apis/igw.funcom.com/v1/namespaces/{ns}/serversetscales/{name}",
+        {"spec": {"replicas": replicas}})
+    if code is None or code >= 300:
+        return "error", f"mock-k8s scale failed (http {code})"
+    return "ok", f"scaled {mp} {current}->{replicas}"
+
+
+def run_task(base, task):
+    """Dispatch one generic scheduled task by type. Returns (status, detail) with
+    status in (ok|error|skipped). I/O; isolated for monkeypatch."""
+    ttype = task.get("type")
+    if ttype == "broadcast":
+        ok, detail = run_broadcast(base, task.get("params") or {})
+        return ("ok" if ok else "error"), detail
+    if ttype == "scale-instance":
+        return run_scale_instance(base, task)
+    return "error", f"unknown task type: {ttype}"
 
 
 def broadcast_restart(base, lead, freq):
@@ -341,6 +589,26 @@ def run_tick(base, ledger, now=None, cfg=None):
         ledger.record("backup", "ok" if ok else "error", detail)
         actions.append(("backup", ok, detail))
 
+    # 4) generic scheduled tasks (broadcast, scale-instance, ...). One bad task
+    # never kills the rest. Dedupe keys off last_settled (ok/skipped) so a
+    # transient error self-heals on the next tick instead of poisoning the slot.
+    for task in (cfg.get("tasks") or []):
+        key = f"task:{task.get('id', '?')}"
+        # Dedupe source is kind-aware: a daily slot keys off last_settled (ok/skipped)
+        # so a transient error retries within the catch-up grace; an interval keys off
+        # last() (any terminal run, incl. error) so it respects every_minutes and does
+        # not storm every tick while erroring.
+        kind = (task.get("schedule") or {}).get("kind")
+        last = ledger.last(key) if kind == "interval" else ledger.last_settled(key)
+        try:
+            if task_due(task, now, last):
+                status, detail = run_task(base, task)
+                ledger.record(key, status, detail)
+                actions.append((key, status == "ok", detail))
+        except Exception as e:  # noqa: BLE001 - isolate one task's failure from the loop
+            ledger.record(key, "error", f"task error: {e}"[:200])
+            actions.append((key, False, f"task error: {e}"[:200]))
+
     return actions
 
 
@@ -378,6 +646,19 @@ def _main(argv):
         led.close()
         print(json.dumps({"ok": ok, "detail": detail}))
         return 0
+    if cmd == "run-task":
+        tid = argv[3] if len(argv) > 3 else ""
+        led = SchedulerLedger(ledger_path(base))
+        task = next((t for t in load_config(base).get("tasks", []) if t.get("id") == tid), None)
+        if task is None:
+            led.close()
+            print(json.dumps({"ok": False, "error": f"no task with id {tid!r}"}))
+            return 1
+        status, detail = run_task(base, task)
+        led.record(f"task:{tid}", status, detail)
+        led.close()
+        print(json.dumps({"ok": status == "ok", "status": status, "detail": detail}))
+        return 0
     if cmd == "set-config":
         raw = argv[3] if len(argv) > 3 else ""
         try:
@@ -401,7 +682,8 @@ def _main(argv):
             except Exception as e:  # never let the loop die
                 print(f"[scheduler] tick error: {e}", flush=True)
             time.sleep(DEFAULT_TICK_SECS)
-    print("usage: admin_schedule.py <scan-loop|status|runs|run-backup|run-restart> [BASE]", file=sys.stderr)
+    print("usage: admin_schedule.py <scan-loop|status|runs|run-backup|run-restart|run-task <id>|set-config <json>> [BASE]",
+          file=sys.stderr)
     return 2
 
 

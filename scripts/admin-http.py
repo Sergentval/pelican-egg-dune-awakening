@@ -36,7 +36,6 @@ import os
 import re
 import secrets
 import shlex
-import ssl
 import subprocess
 import sys
 import time
@@ -55,6 +54,7 @@ import admin_ini_merge  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_map  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure map-key validation + marker CSV parse, no DB/network)
 import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure JSON locations store, no DB/network)
 import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
+import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 
 
 # --------------------------------------------------------------------------
@@ -66,17 +66,15 @@ SHARED_AUTH = os.environ.get("DUNE_ADMIN_HTTP_AUTH", "")
 BASE_DIR = os.environ.get("DUNE_BASE_DIR", "/home/container")
 SCRIPTS_DIR = BASE_DIR + "/scripts"
 LOGS_DIR = BASE_DIR + "/logs"
-# mock-k8s serves its /status (per-map instance/scale) over HTTPS on this port.
-MOCK_K8S_PORT = int(os.environ.get("K8S_MOCK_PORT", "6443"))
-# mock-k8s writes its self-signed cert here (in-cluster SA mount); we pin the
-# /status fetch to it rather than disabling TLS verification.
-SA_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
-# Maps the Instances tab may scale via mock-k8s ServerSetScale replicas. The
-# on-demand maps only — never the always-warm Survival_1 / Overmap (stopping those
-# breaks the base game loop). Phase-1 cap is small (no validated routing past a
-# few instances). The backend re-validates; mirror in InstancesTab.tsx.
-SCALABLE_MAPS = ("DeepDesert_1", "SH_Arrakeen", "SH_HarkoVillage")
-SCALE_REPLICAS_MAX = 4
+# mock-k8s instance primitives + constants now live in admin_instances.py (shared
+# with the scheduler's scale-instance task); re-exported here so the routes below
+# stay unchanged. SCALABLE_MAPS = on-demand maps only — never the always-warm
+# Survival_1 / Overmap (stopping those breaks the base game loop). The backend
+# re-validates; mirror in InstancesTab.tsx.
+MOCK_K8S_PORT = admin_instances.MOCK_K8S_PORT
+SA_MOUNT_PATH = admin_instances.SA_MOUNT_PATH
+SCALABLE_MAPS = admin_instances.SCALABLE_MAPS
+SCALE_REPLICAS_MAX = admin_instances.SCALE_REPLICAS_MAX
 # Server-settings catalogue (shared with apply-config.sh) + the INI sinks it
 # resolves to. GET/PUT /api/settings read/write these directly (local files,
 # no PG). Logical sink name -> path, matching apply-config.sh's FILES.
@@ -458,66 +456,10 @@ def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
-def fetch_mock_status(port: int, timeout: int = 5) -> dict | None:
-    """GET mock-k8s's /status (HTTPS with a self-signed cert -> verification
-    disabled) and return the parsed snapshot, or None if it is unreachable or
-    unparseable. /status needs no auth. Used by GET /api/status to read per-map
-    instance/scale state; a None result is surfaced to the caller (not silently
-    swallowed) via the route's `sources` flags."""
-    # Pin to mock-k8s's own self-signed cert (written to the in-cluster SA
-    # ca.crt). The cert carries 127.0.0.1 + localhost SANs, so default hostname
-    # verification holds and the connection is cryptographically bound to
-    # mock-k8s. Only if that ca.crt is absent (mock-k8s not up yet) do we fall
-    # back to an unverified loopback fetch.
-    ca = os.path.join(SA_MOUNT_PATH, "ca.crt")
-    ctx = ssl.create_default_context()
-    if os.path.exists(ca):
-        try:
-            ctx.load_verify_locations(ca)
-        except (ssl.SSLError, OSError):
-            return None
-    else:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    url = f"https://127.0.0.1:{port}/status"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:  # noqa: S310 (localhost, CA-pinned)
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-
-
-def mock_k8s_request(method: str, path: str, body: "dict | None" = None,
-                     port: int = MOCK_K8S_PORT, timeout: int = 10):
-    """CA-pinned (unverified fallback) HTTPS request to mock-k8s, same pinning as
-    fetch_mock_status. Returns (status_code, parsed_json) or (None, None) on
-    transport failure. Used by the instance-scale PATCH — mock-k8s enforces no
-    bearer (it trusts the container netns), so no token is sent."""
-    ca = os.path.join(SA_MOUNT_PATH, "ca.crt")
-    ctx = ssl.create_default_context()
-    if os.path.exists(ca):
-        try:
-            ctx.load_verify_locations(ca)
-        except (ssl.SSLError, OSError):
-            return None, None
-    else:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", data=data, method=method)
-    if body is not None:
-        req.add_header("Content-Type", "application/merge-patch+json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (localhost, CA-pinned)
-            raw = resp.read().decode("utf-8")
-            return resp.status, (json.loads(raw) if raw.strip() else {})
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode("utf-8"))
-        except (ValueError, OSError):
-            return e.code, None
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, None
+# CA-pinned mock-k8s transport — defined in admin_instances.py, re-exported so the
+# GET /api/status + instance-scale routes below call them unchanged.
+fetch_mock_status = admin_instances.fetch_mock_status
+mock_k8s_request = admin_instances.mock_k8s_request
 
 
 # --------------------------------------------------------------------------
@@ -2190,12 +2132,11 @@ class Handler(BaseHTTPRequestHandler):
             if not mock:
                 self._write(200, {"ok": False, "error": "mock-k8s /status unreachable"})
                 return
-            mentry = next((m for m in mock.get("maps", []) if m.get("map") == mp), None)
-            if not mentry or not mentry.get("key"):
+            key = admin_instances.resolve_scale_key(mock, mp)
+            if key is None:
                 self._write(200, {"ok": False, "error": f"{mp} not tracked by mock-k8s"})
                 return
-            current = int(mentry.get("desired") or 0)
-            ns, _, name = str(mentry["key"]).partition("/")
+            ns, name, current = key
             # Player-online guard on scale-down (DST parity): refuse unless force.
             if replicas < current:
                 pe = run_publish(["server-status"], timeout=10)
@@ -2478,7 +2419,9 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if r["ok"] else 400, r.get("data", r))
             return
 
-        # Manual task trigger: /api/tasks/trigger/<backup|restart> (auth+csrf).
+        # Manual task trigger: /api/tasks/trigger/<backup|restart|task-id> (auth+csrf).
+        # backup/restart hit their bespoke runners; any other id is a generic
+        # scheduled task run on demand (run-task ignores the schedule/enabled gate).
         if path.startswith("/api/tasks/trigger/"):
             if not self._auth_ok():
                 self._write(401, {"error": "auth required"})
@@ -2486,12 +2429,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self._csrf_ok():
                 self._write(403, {"error": "csrf token missing or invalid"})
                 return
-            task = path[len("/api/tasks/trigger/"):]
+            task = unquote(path[len("/api/tasks/trigger/"):])
             sub = {"backup": "run-backup", "restart": "run-restart"}.get(task)
-            if sub is None:
-                self._write(400, {"error": "unknown task (backup|restart)"})
+            if sub is not None:
+                r = run_schedule(sub, timeout=600 if task == "backup" else 60)
+            elif task:
+                r = run_schedule("run-task", task, timeout=120)
+            else:
+                self._write(400, {"error": "task id required"})
                 return
-            r = run_schedule(sub, timeout=600 if task == "backup" else 60)
             self._write(200, r.get("data", r))
             return
 
