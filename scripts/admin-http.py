@@ -2131,6 +2131,18 @@ class Handler(BaseHTTPRequestHandler):
 
         # Instance control (phase 1): scale a map's instance count via mock-k8s
         # ServerSetScale replicas — the exact, self-healing path the Director uses.
+        # Repair the in-game browser: sweep orphan farm_state + resync the Director,
+        # fixing deleted sietches/dimensions that linger in the browser. POST /api/instances/repair
+        if path == "/api/instances/repair":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            self._write(200, run_publish(["repair-browser"], timeout=60))
+            return
+
         # Allowlisted to the on-demand maps; player-online guard on scale-down
         # (returns requiresConfirmation -> client re-POSTs with force:true).
         # POST /api/instances/<map>/scale  body {"replicas": 0..N, "force"?: bool}
