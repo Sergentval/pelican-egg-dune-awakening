@@ -20,6 +20,7 @@ import { SchedulerTab } from "./SchedulerTab";
 import { PlayerEditorTab } from "./PlayerEditorTab";
 import { SpiceTab } from "./SpiceTab";
 import { MarketTab } from "./MarketTab";
+import { LogsTab } from "./LogsTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
@@ -43,6 +44,7 @@ type TabId =
   | "welcome"
   | "maintenance"
   | "scheduler"
+  | "logs"
   | "history";
 
 interface TabDef {
@@ -71,6 +73,7 @@ const TABS: TabDef[] = [
   { id: "settings", label: "Settings", icon: "⚙", group: "system" },
   { id: "maintenance", label: "Maintenance", icon: "🛠", group: "system" },
   { id: "scheduler", label: "Scheduler", icon: "⏰", group: "system" },
+  { id: "logs", label: "Logs", icon: "📜", group: "system" },
   { id: "history", label: "History", icon: "🗒", group: "system" },
 ];
 
@@ -216,6 +219,7 @@ export default function App() {
           {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
+          {tab === "logs" && <LogsTab setConsoleEntries={setEntries} />}
           {tab === "history" && <HistoryTab />}
 
           <OutputConsole entries={entries} onClear={() => setEntries([])} />
