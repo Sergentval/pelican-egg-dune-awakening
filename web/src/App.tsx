@@ -18,7 +18,7 @@ import {
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { PlayerEditorTab } from "./PlayerEditorTab";
-import { SpiceTab } from "./SpiceTab";
+import { LootTab } from "./LootTab";
 import { MarketTab } from "./MarketTab";
 import { LogsTab } from "./LogsTab";
 import { InstancesTab } from "./InstancesTab";
@@ -35,7 +35,7 @@ type TabId =
   | "inventory"
   | "kits"
   | "items"
-  | "spice"
+  | "loot"
   | "market"
   | "skills"
   | "vehicles"
@@ -67,7 +67,7 @@ const TABS: TabDef[] = [
   { id: "player-editor", label: "Player Editor", icon: "🪪", group: "commands" },
   { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
   { id: "items", label: "Items", icon: "📦", group: "commands" },
-  { id: "spice", label: "Spice", icon: "🌶", group: "commands" },
+  { id: "loot", label: "Loot & Spice", icon: "🎲", group: "commands" },
   { id: "market", label: "Market", icon: "🪙", group: "commands" },
   { id: "skills", label: "Skills", icon: "✨", group: "commands" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
@@ -212,7 +212,7 @@ export default function App() {
           {tab === "player-editor" && <PlayerEditorTab setConsoleEntries={setEntries} />}
           {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
-          {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
+          {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
           {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
