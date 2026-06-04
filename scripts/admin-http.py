@@ -2184,6 +2184,47 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, {"ok": True, "map": mp, "replicas": applied, "previous": current})
             return
 
+        # Instance control (phase 2): spin a single DeepDesert/Arrakeen/Harko
+        # DIMENSION partition down (offline, reversible) or up (respawn). down =
+        # kill UE5 + NULL world_partition.server_id + drop farm_state (Director
+        # stops routing, graceful); up = background spawn-dimension.sh. Player
+        # guard on down (confirm -> force). POST /api/instances/dimension/<pid>/{up,down}
+        if path.startswith("/api/instances/dimension/") and (path.endswith("/up") or path.endswith("/down")):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            action = "up" if path.endswith("/up") else "down"
+            pid_str = path[len("/api/instances/dimension/"):-(len(action) + 1)]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "partition id must be numeric"})
+                return
+            if action == "up":
+                self._write(200, run_publish(["dimension-up", pid_str], timeout=30))
+                return
+            # down: player-online guard from the partition topology read.
+            force = bool(body.get("force")) if isinstance(body, dict) else False
+            pe = run_publish(["world-partition-list"], timeout=15)
+            players, found = 0, False
+            if pe["ok"]:
+                for line in (pe.get("stdout") or "").splitlines():
+                    f = line.strip().split("|")
+                    if len(f) >= 10 and f[0] == pid_str:
+                        found = True
+                        players = int(f[9]) if f[9].isdigit() else 0
+                        break
+            if not found:
+                self._write(200, {"ok": False, "error": f"partition {pid_str} not found"})
+                return
+            if players > 0 and not force:
+                self._write(200, {"ok": False, "requiresConfirmation": True, "players": players,
+                                  "partition": int(pid_str), "message": f"{players} player(s) on partition {pid_str}"})
+                return
+            self._write(200, run_publish(["dimension-down", pid_str], timeout=60))
+            return
+
         # Player WRITE: apply (unlock) a journey-progression preset. Offline-gated;
         # gathers root+descendants and calls complete_journey_story_nodes_for_player.
         # POST /api/players/<id>/progression-unlock  body {"preset": "<id>"}
