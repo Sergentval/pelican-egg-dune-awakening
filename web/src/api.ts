@@ -270,7 +270,30 @@ export interface ScheduleRestart {
   catch_up_grace_secs: number;
 }
 export interface ScheduleBackup { enabled: boolean; every_hours: number; retention: number; }
-export interface ScheduleConfig { restart: ScheduleRestart; backup: ScheduleBackup; }
+// Generic scheduled tasks (broadcast, scale-instance) — mirror admin_schedule.py.
+export interface TaskSchedule {
+  kind: "daily" | "interval";
+  time?: string;            // daily: "HH:MM" (UTC)
+  days?: string[];          // daily: subset of mon..sun
+  every_minutes?: number;   // interval
+}
+export interface BroadcastParams { title: string; body: string; duration: number }
+export interface ScaleParams { map: string; replicas: number; force: boolean }
+export interface ScheduledTask {
+  id: string;
+  type: "broadcast" | "scale-instance";
+  enabled: boolean;
+  schedule: TaskSchedule;
+  params: Partial<BroadcastParams> & Partial<ScaleParams>;
+}
+export interface ScheduleConfig {
+  restart: ScheduleRestart;
+  backup: ScheduleBackup;
+  tasks: ScheduledTask[];
+}
+// Mirror admin_instances.SCALABLE_MAPS / SCALE_REPLICAS_MAX (the backend re-validates).
+export const SCALABLE_MAPS = ["DeepDesert_1", "SH_Arrakeen", "SH_HarkoVillage"] as const;
+export const SCALE_REPLICAS_MAX = 4;
 export interface TaskRun { task: string; status: string; detail: string; at: string; }
 export interface ScheduleResponse {
   ok: boolean;
@@ -282,8 +305,13 @@ export interface ScheduleResponse {
 export const fetchSchedule = () => api<ScheduleResponse>("GET", "/api/schedule");
 export const saveSchedule = (config: ScheduleConfig) =>
   api<{ ok: boolean; config?: ScheduleConfig; error?: string }>("POST", "/api/schedule", config);
+// run-backup/run-restart/run-task all return {ok, status?, detail?|error?} — NOT a
+// PublishResult. Type it honestly so the UI can surface the detail/error message.
+export interface TriggerResult { ok: boolean; status?: string; detail?: string; error?: string }
 export const triggerTask = (task: "backup" | "restart") =>
-  api<PublishResult>("POST", `/api/tasks/trigger/${task}`);
+  api<TriggerResult>("POST", `/api/tasks/trigger/${task}`);
+export const triggerTaskById = (id: string) =>
+  api<TriggerResult>("POST", `/api/tasks/trigger/${encodeURIComponent(id)}`);
 
 export interface BackupTable { headers: string[]; rows: string[][] }
 export const fetchBackups = () => api<BackupTable>("GET", "/api/database/backups");

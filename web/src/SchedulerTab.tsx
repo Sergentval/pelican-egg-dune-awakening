@@ -8,15 +8,18 @@ import {
   fetchSchedule,
   saveSchedule,
   triggerTask,
+  triggerTaskById,
   type BackupTable,
-  type PublishResult,
+  type TriggerResult,
   type ScheduleBackup,
   type ScheduleConfig,
+  type ScheduledTask,
   type ScheduleResponse,
   type ScheduleRestart,
   type TaskRun,
 } from "./api";
 import { pushToConsole, type ConsoleEntry } from "./components";
+import { TaskEditor, newTask, taskScheduleSummary, taskParamsSummary } from "./SchedulerTaskEditor";
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -27,6 +30,7 @@ export function SchedulerTab({ setConsoleEntries }: { setConsoleEntries: Dispatc
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editor, setEditor] = useState<{ task: ScheduledTask; isNew: boolean } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,15 +52,61 @@ export function SchedulerTab({ setConsoleEntries }: { setConsoleEntries: Dispatc
   const setB = (p: Partial<ScheduleBackup>) =>
     setCfg((c) => (c ? { ...c, backup: { ...c.backup, ...p } } : c));
 
-  async function save() {
-    if (!cfg) return;
+  async function persist(next: ScheduleConfig, label: string): Promise<boolean> {
     setSaving(true);
-    const res = await saveSchedule(cfg);
+    const res = await saveSchedule(next);
     setSaving(false);
     const ok = res.ok && (res.body as { ok?: boolean }).ok !== false;
-    pushToConsole(setConsoleEntries, "save schedule",
-      ok ? "schedule saved" : ((res.body as { error?: string }).error || "save failed"), ok);
+    pushToConsole(setConsoleEntries, label,
+      ok ? "saved" : ((res.body as { error?: string }).error || "save failed"), ok);
     if (ok) load();
+    return ok;
+  }
+
+  function save() {
+    if (cfg) void persist(cfg, "save schedule");
+  }
+
+  // Task ops persist the full config (restart+backup+tasks) immediately so an
+  // add/remove/toggle takes effect without a separate save click. cfg already
+  // carries the saved restart/backup unless the user is mid-editing them.
+  function saveTask(task: ScheduledTask, isNew: boolean) {
+    if (!cfg) return;
+    if (isNew && cfg.tasks.some((t) => t.id === task.id)) {
+      pushToConsole(setConsoleEntries, "add task", `id "${task.id}" already exists`, false);
+      return;
+    }
+    const tasks = isNew
+      ? [...cfg.tasks, task]
+      : cfg.tasks.map((t) => (t.id === task.id ? task : t));
+    void persist({ ...cfg, tasks }, `${isNew ? "add" : "update"} task ${task.id}`).then((ok) => {
+      if (ok) setEditor(null);
+    });
+  }
+
+  function removeTask(id: string) {
+    if (!cfg || !window.confirm(`Remove scheduled task "${id}"?`)) return;
+    void persist({ ...cfg, tasks: cfg.tasks.filter((t) => t.id !== id) }, `remove task ${id}`);
+  }
+
+  function toggleTask(id: string) {
+    if (!cfg) return;
+    void persist({ ...cfg, tasks: cfg.tasks.map((t) => (t.id === id ? { ...t, enabled: !t.enabled } : t)) },
+      `toggle task ${id}`);
+  }
+
+  function triggerMessage(body: unknown, ok: boolean): string {
+    const b = (body ?? {}) as TriggerResult;
+    return b.detail || b.error || (ok ? "done" : "failed");
+  }
+
+  async function runTaskNow(id: string) {
+    setBusy(true);
+    const res = await triggerTaskById(id);
+    setBusy(false);
+    const ok = res.ok && (res.body as TriggerResult).ok !== false;
+    pushToConsole(setConsoleEntries, `run task ${id} now`, triggerMessage(res.body, ok), ok);
+    load();
   }
 
   async function run(task: "backup" | "restart") {
@@ -65,8 +115,8 @@ export function SchedulerTab({ setConsoleEntries }: { setConsoleEntries: Dispatc
     setBusy(true);
     const res = await triggerTask(task);
     setBusy(false);
-    const ok = res.ok && (res.body as PublishResult).ok !== false;
-    pushToConsole(setConsoleEntries, `run ${task} now`, res.body as PublishResult, ok);
+    const ok = res.ok && (res.body as TriggerResult).ok !== false;
+    pushToConsole(setConsoleEntries, `run ${task} now`, triggerMessage(res.body, ok), ok);
     load();
   }
 
@@ -161,6 +211,55 @@ export function SchedulerTab({ setConsoleEntries }: { setConsoleEntries: Dispatc
           </div>
         )}
       </div>
+
+      {/* scheduled tasks */}
+      <div className="card">
+        <header className="card-header">
+          <div>
+            <h3 className="font-semibold text-sm">Scheduled tasks</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Recurring broadcasts + time-based instance scaling. Apply on the next tick (~30s). Runs land in the history below.
+            </p>
+          </div>
+          <button className="btn-primary text-xs" disabled={!cfg || saving}
+            onClick={() => setEditor({ task: newTask(), isNew: true })}>+ add task</button>
+        </header>
+        <div className="divide-y divide-slate-900">
+          {(cfg?.tasks || []).length === 0 && (
+            <p className="px-4 py-3 text-sm text-slate-500 italic">
+              No scheduled tasks. Add one to broadcast a message or scale a map on a schedule.
+            </p>
+          )}
+          {(cfg?.tasks || []).map((task: ScheduledTask) => (
+            <div key={task.id} className="px-4 py-2 flex items-center gap-3 text-xs">
+              <button className={task.enabled ? "pill-ok" : "pill-err"} disabled={saving}
+                onClick={() => toggleTask(task.id)} title="toggle enabled">
+                {task.enabled ? "on" : "off"}
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-slate-200">{task.id}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">{task.type}</span>
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">
+                  {taskScheduleSummary(task.schedule)} · {taskParamsSummary(task)}
+                </div>
+              </div>
+              <button className="btn-ghost text-xs border border-slate-700" disabled={busy}
+                onClick={() => void runTaskNow(task.id)} title="run now (ignores schedule + enabled)">run now</button>
+              <button className="btn-ghost text-xs" disabled={saving}
+                onClick={() => setEditor({ task, isNew: false })}>edit</button>
+              <button className="btn-ghost text-xs text-red-300" disabled={saving}
+                onClick={() => removeTask(task.id)}>remove</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {editor && (
+        <TaskEditor initial={editor.task} isNew={editor.isNew} busy={saving}
+          onSave={(task) => saveTask(task, editor.isNew)} onClose={() => setEditor(null)} />
+      )}
 
       {/* existing backups */}
       <div className="card">
