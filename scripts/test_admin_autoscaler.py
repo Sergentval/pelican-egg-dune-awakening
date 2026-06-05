@@ -241,13 +241,25 @@ class TestValidateConfigCoercion(unittest.TestCase):
 
 
 class TestParseTravelDemandHardening(unittest.TestCase):
+    def test_nested_paren_serverid_real_format(self):
+        # THE LIVE FORMAT: a warm map's record carries the server id in a NESTED paren
+        # "(servers: [4 (id)], num: 0)". num must be read past the inner paren — not
+        # mis-read as num-less (which would phantom a wake and pin a cold map warm).
+        line = "Processing travel queue for SH_HarkoVillage (servers: [4 (C3JSKchzQw+a_Lrr+9XHRw)], num: 0)"
+        self.assertEqual(az.parse_travel_demand([line]), {"SH_HarkoVillage": 0})
+
+    def test_nested_paren_serverid_with_demand(self):
+        # same nested-paren format but real inbound demand -> wake still parses
+        line = "Processing travel queue for SH_HarkoVillage (servers: [4 (idHere)], num: 3)"
+        self.assertEqual(az.parse_travel_demand([line]), {"SH_HarkoVillage": 3})
+
     def test_no_cross_record_borrow(self):
-        # Two records concatenated onto one physical line by the gateway dedup. The
-        # num must bind to each record's OWN parenthetical: DD has none (-> 1), Arrakeen
-        # has num=6 and must NOT be swallowed.
+        # Two records concatenated on one physical line by the gateway dedup. num must
+        # bind to each record's OWN segment: DD is num-less (-> 0), Arrakeen num=6 and
+        # must NOT be swallowed.
         line = ("Processing travel queue for DeepDesert_1 (Deep Desert S1, id=Q, dimension=1, "
                 "partition=101) Processing travel queue for SH_Arrakeen (Arrakeen, dimension=0, num=6)")
-        self.assertEqual(az.parse_travel_demand([line]), {"DeepDesert_1": 1, "SH_Arrakeen": 6})
+        self.assertEqual(az.parse_travel_demand([line]), {"DeepDesert_1": 0, "SH_Arrakeen": 6})
 
     def test_name_strips_trailing_punctuation(self):
         # trailing comma / no-space "(" must not taint the captured map name (else the
@@ -259,10 +271,12 @@ class TestParseTravelDemandHardening(unittest.TestCase):
             az.parse_travel_demand(["Received travel request for 2 player(s) to SH_HarkoVillage(mode=x)"]),
             {"SH_HarkoVillage": 2})
 
-    def test_numless_travel_line_is_one(self):
+    def test_numless_travel_line_is_zero(self):
+        # A travel record with NO num is treated as no demand (real records always carry
+        # num — defaulting to 1 is what phantomed demand onto warm maps' server-id lines).
         self.assertEqual(
             az.parse_travel_demand(["Processing travel queue for DeepDesert_1 (Deep Desert S1, dimension=1)"]),
-            {"DeepDesert_1": 1})
+            {"DeepDesert_1": 0})
 
 
 class TestDemandForMap(unittest.TestCase):

@@ -158,42 +158,52 @@ def validate_config(raw):
 
 
 # -- travel-demand parsing -----------------------------------------------------
-# The Director logs inbound travel as either of these shapes (seen live), each
-# carrying a player count we read as "how many are trying to reach this map now":
+# The Director logs inbound travel as these shapes (seen live), each carrying a
+# player count we read as "how many are trying to reach this map now":
 #   Processing travel queue for <MAP> (... num=N)
 #   Processing travel queue for ClassicalInstancing group <GROUP> (servers: [], num: N)
+#   Processing travel queue for <MAP> (servers: [4 (<server-id>)], num: 0)   <- WARM, nested paren!
 #   Received travel request for N player(s) to <MAP> (instancingMode=Dimension)
-# Map/partition names are all [A-Za-z0-9_]; capturing exactly that (not \S+) keeps a
-# trailing comma or a no-space "(" out of the name — otherwise the wake silently fails
-# the caller's managed-map match. num is read from the record's OWN parenthetical
-# ([^)]*), so a num-less record can't borrow the next record's count when the gateway
-# concatenates two onto one physical line.
-_TRAVEL_QUEUE_RE = re.compile(
-    r"travel queue for (?:ClassicalInstancing group )?([A-Za-z0-9_]+)[^(]*\(([^)]*)\)", re.IGNORECASE)
-_TRAVEL_REQUEST_RE = re.compile(
-    r"travel request for (\d+) player\(s\) to ([A-Za-z0-9_]+)", re.IGNORECASE)
+#
+# We split each physical line into per-record segments at the record headers, then read
+# num from WITHIN the segment. This is robust to two real hazards: (a) the gateway dedup
+# concatenates several records onto one line (segment boundary stops a record borrowing
+# the next one's num), and (b) a warm map's record nests a paren around the server id
+# ("[4 (id)]") — a naive single-paren capture stops at the inner ")" and misses num,
+# which then defaulted to a phantom 1 and pinned cold maps warm. Map/partition names are
+# [A-Za-z0-9_] (captured exactly, not \S+, so a trailing comma / no-space "(" can't taint
+# the name and lose the wake). num-less records are NO demand (0): every real travel
+# record carries num, so a missing one is malformed, not a hidden wake.
+_RECORD_START_RE = re.compile(r"travel (?:queue|request) for ", re.IGNORECASE)
+_QUEUE_NAME_RE = re.compile(r"^travel queue for (?:ClassicalInstancing group )?([A-Za-z0-9_]+)", re.IGNORECASE)
+_REQUEST_RE = re.compile(r"^travel request for (\d+) player\(s\) to ([A-Za-z0-9_]+)", re.IGNORECASE)
 _NUM_RE = re.compile(r"num[:=]\s*(\d+)", re.IGNORECASE)
 
 
 def parse_travel_demand(lines):
     """Pure. Parse a window of director.log lines into {map_or_group: peak_num}.
     Peak (max) over the window, not sum, so a tailed window can't double-count a
-    repeated line. A travel record with no explicit num still counts as one inbound
-    traveller (wake-biased — the wake path must not miss a real one). The caller maps
-    names to managed maps via demand_for_map; non-map groups are harmless.
+    repeated line. The caller maps names to managed maps via demand_for_map; non-map
+    groups are harmless.
 
     PHASE 2 CONTRACT: feed only NEW lines (track the director.log read offset). Re-reading
     a fixed window every tick would read one event as demand on every tick and pin a
     cold (min_replicas==0) map warm forever via the demand grace."""
     out: "dict[str, int]" = {}
     for line in lines:
-        for m in _TRAVEL_QUEUE_RE.finditer(line):
-            name = m.group(1)
-            nm = _NUM_RE.search(m.group(2) or "")
-            num = int(nm.group(1)) if nm else 1  # num-less travel record == one inbound
-            out[name] = max(out.get(name, 0), num)
-        for m in _TRAVEL_REQUEST_RE.finditer(line):
-            num, name = int(m.group(1)), m.group(2)
+        starts = [m.start() for m in _RECORD_START_RE.finditer(line)]
+        for i, s in enumerate(starts):
+            seg = line[s:(starts[i + 1] if i + 1 < len(starts) else len(line))]
+            req = _REQUEST_RE.match(seg)
+            if req:
+                name, num = req.group(2), int(req.group(1))
+            else:
+                q = _QUEUE_NAME_RE.match(seg)
+                if not q:
+                    continue
+                name = q.group(1)
+                nm = _NUM_RE.search(seg)  # whole segment -> finds num past a nested (server-id) paren
+                num = int(nm.group(1)) if nm else 0  # num-less == no demand
             out[name] = max(out.get(name, 0), num)
     return out
 
