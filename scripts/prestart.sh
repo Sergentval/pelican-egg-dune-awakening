@@ -173,14 +173,14 @@ if [ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ]; then
   elif [ ! -f "$ADMIN_UI_PW_FILE" ]; then
     umask 077
     openssl rand -hex 12 | tr -d '\n' > "$ADMIN_UI_PW_FILE"
-    GENERATED_PW=$(cat "$ADMIN_UI_PW_FILE")
-    log "admin-ui generated password: $GENERATED_PW"
-    log "admin-ui: copy this into DUNE_ADMIN_UI_PASSWORD to persist your choice;"
-    log "admin-ui: otherwise this auto-generated value will be re-used until you change it."
-    export DUNE_ADMIN_UI_PASSWORD="$GENERATED_PW"
+    export DUNE_ADMIN_UI_PASSWORD="$(cat "$ADMIN_UI_PW_FILE")"
+    # Do NOT log the password value — the boot/console stream is long-lived and less
+    # protected than the file. Point the operator to the (umask-077) file instead.
+    log "admin-ui: generated a new admin password -> server/state/admin-ui-password"
+    log "admin-ui: read it from that file (panel file manager / SFTP), or set DUNE_ADMIN_UI_PASSWORD to choose your own."
   else
     export DUNE_ADMIN_UI_PASSWORD="$(cat "$ADMIN_UI_PW_FILE")"
-    log "admin-ui: re-using persisted auto-generated password (see prior boot log for value)"
+    log "admin-ui: re-using persisted auto-generated password (in server/state/admin-ui-password)"
   fi
 fi
 
