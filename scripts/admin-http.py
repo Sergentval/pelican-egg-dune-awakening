@@ -380,7 +380,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "players", "resolve", "pos", "vehicles", "items", "skills", "items-json",
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
-            "server-status", "map-markers", "db-backup", "db-backup-list", "spice-list",
+            "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
         )
     )
     entry = {
@@ -1089,12 +1089,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Phase 4: live server status grid — mock-k8s per-map instance/scale
-        # status merged with per-map online player counts (from Postgres via
-        # admin-publish server-status; admin-http holds no PG connection). A
-        # missing source degrades gracefully and is flagged in `sources`.
+        # status merged with per-map LIVE connected-player counts (farm_state via
+        # admin-publish farm-player-count; admin-http holds no PG connection). Uses
+        # farm-player-count, not server-status, so the counts key on the same map
+        # names as mock-k8s (SH_HarkoVillage etc.) — server-status keys on the
+        # character's actor map ("HarkoVillage") and would show a stray orphan row.
+        # A missing source degrades gracefully and is flagged in `sources`.
         if path == "/api/status":
             mock = fetch_mock_status(MOCK_K8S_PORT)
-            entry = run_publish(["server-status"], timeout=10)
+            entry = run_publish(["farm-player-count"], timeout=10)
             counts = parse_player_counts(entry["stdout"]) if entry["ok"] else {}
             grid = merge_status(mock or {}, counts)
             grid["ok"] = True
@@ -2220,8 +2223,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ns, name, current = key
             # Player-online guard on scale-down (DST parity): refuse unless force.
+            # farm-player-count keys on the mock-k8s map name (SH_*), so a hub
+            # VISITOR is counted here — server-status keys on actor map and would
+            # miss them, letting a populated hub be scaled down without confirmation.
             if replicas < current:
-                pe = run_publish(["server-status"], timeout=10)
+                pe = run_publish(["farm-player-count"], timeout=10)
                 counts = parse_player_counts(pe["stdout"]) if pe["ok"] else {}
                 online = int(counts.get(mp, 0) or 0)
                 if online > 0 and not force:
