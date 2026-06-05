@@ -120,6 +120,13 @@ REDACTIONS = [
                 r'rmq_secret|auth_?token|session_?secret|client_?key|api_?key|steam_api_key|'
                 r'password|passwd|secret|bearer|token)\s*[=:]\s*)("?)([^"\s&]+)\2'),
      r'\1\2[REDACTED]\2'),
+    # JSON-quoted secret keys: "loginPassword":"x", "password":"x", "ServiceAuthToken":"x".
+    # The Director/UE5 log [ServerState] as JSON, so the server JOIN PASSWORD leaks into
+    # director.log / ue5-*.log; the key:value rule above only catches the unquoted form
+    # (there's a " between the key and the colon here). Only keys ENDING in a secret word
+    # match, so "tokenCount" / "connected_players" stay intact.
+    (re.compile(r'(?i)("[a-z0-9_]*(?:password|passwd|secret|authtoken|token|apikey|clientkey)"\s*:\s*)"[^"]*"'),
+     r'\1"[REDACTED]"'),
     # CLI-flag form: -DatabasePassword=…  --token …  -ini:...:ServiceAuthToken=…
     (re.compile(r'(?i)(-{1,2}[\w:\[\]]*(?:password|token|secret|key|auth)[\w:\[\]]*[= ])(?!\s)([^\s"]+)'),
      r'\1[REDACTED]'),

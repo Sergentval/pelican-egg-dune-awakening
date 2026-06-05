@@ -93,6 +93,20 @@ class TestRedact(unittest.TestCase):
         self._redacted("DUNE_ADMIN_UI_PASSWORD=Master117", must_not_contain=["Master117"])
         self._redacted("password: hunter2trustno1", must_not_contain=["hunter2trustno1"])
 
+    def test_json_quoted_secrets(self):
+        # Director/UE5 [ServerState] messages log secrets as JSON ("loginPassword":"x"),
+        # which the unquoted key:value rule misses (there's a " before the colon). This is
+        # how the server join password leaks into director.log / ue5-*.log.
+        self._redacted('[ServerState] {"serverId":"u9zV","loginPassword":"Sandw0rmJoinPw","ready":true}',
+                       must_not_contain=["Sandw0rmJoinPw"])
+        self._redacted('{"password":"hunter2trustno1"}', must_not_contain=["hunter2trustno1"])
+        self._redacted('"ServiceAuthToken":"abctok12345"', must_not_contain=["abctok12345"])
+        # non-secret JSON keys (incl. ones merely containing a secret word) are untouched
+        out = admin_logs.redact('{"connected_players":5,"tokenCount":3,"map":"Survival_1"}')
+        self.assertIn('"connected_players":5', out)
+        self.assertIn('"tokenCount":3', out)
+        self.assertIn('"map":"Survival_1"', out)
+
     def test_session_secret(self):
         self._redacted("DUNE_ADMIN_UI_SESSION_SECRET=deadbeef" * 1, must_not_contain=["deadbeef"])
 
