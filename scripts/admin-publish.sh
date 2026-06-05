@@ -2783,14 +2783,17 @@ EOF
 if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then
     echo "=== DRY RUN (DUNE_ADMIN_DRY_RUN=1) ==="
     echo "Subcommand:  $cmd $*"
-    # Decode the outer envelope back to the inner JSON for diagnostics.
+    # Redact the auth token wherever it appears so DRY-RUN output (which can land in
+    # the console stream or a paste) shows the payload STRUCTURE without the secret.
+    # Token is openssl hex (no sed metachars), so this substitution is safe.
+    _dr() { printf '%s' "$1" | sed "s/$ADMIN_TOKEN/[REDACTED_TOKEN]/g"; }
     DECODED_OUTER=$(printf '%s' "$OUTER_B64" | base64 -d 2>/dev/null || echo "<base64 decode failed>")
-    echo "Outer JSON:  $DECODED_OUTER"
-    echo "Outer base64: $OUTER_B64"
-    echo "Token:       $ADMIN_TOKEN"
+    echo "Outer JSON:  $(_dr "$DECODED_OUTER")"
+    echo "Outer base64: [redacted — base64 envelope embeds the auth token]"
+    echo "Token:       [REDACTED — ${#ADMIN_TOKEN} chars]"
     echo "Node:        $ADMIN_NODE"
     echo "Erlang publish snippet:"
-    printf '%s\n' "$ERLANG_SRC"
+    printf '%s\n' "$(_dr "$ERLANG_SRC")"
     exit 0
 fi
 
