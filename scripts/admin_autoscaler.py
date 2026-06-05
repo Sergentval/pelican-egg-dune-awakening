@@ -29,6 +29,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -53,6 +55,7 @@ DEFAULT_CONFIG = {
     "idle_drain_secs": 300,    # an empty map must stay empty this long before draining
     "demand_grace_secs": 120,  # after any inbound travel-demand, immune to drain this long
     "players_per_instance": 30,
+    "webhook_url": "",         # optional Discord-style webhook; alerts on scale up/down/error
 }
 # Per-map default: warm floor (never cold), one extra shard of headroom under load.
 DEFAULT_MAP = {"enabled": True, "min_replicas": 1, "max_replicas": 2}
@@ -137,6 +140,10 @@ def validate_config(raw):
         out[key], err = _int_field(raw, key, DEFAULT_CONFIG[key], minimum=minimum)
         if err:
             return None, err
+    wh = raw.get("webhook_url", "")
+    if not isinstance(wh, str):
+        return None, "webhook_url must be a string"
+    out["webhook_url"] = wh.strip()
     raw_maps = raw.get("maps", None)
     if raw_maps is None:
         out["maps"] = _default_maps()
@@ -525,7 +532,53 @@ def run_tick(base, cfg, ledger, now=None):
             ledger.record(mp, d.action if ok else "error",
                           d.reason if ok else f"PATCH http {code}: {d.reason}")
             actions.append((mp, d.action, ok, d.reason))
+    if actions:
+        notify(cfg.get("webhook_url", ""), format_actions(actions))
     return actions
+
+
+def format_actions(actions):
+    """Pure: a Discord-ready message summarizing a tick's scale actions, or '' if none.
+    Only up/down are recorded as actions (holds are silent), so this fires only when the
+    autoscaler actually moved an instance — low-noise."""
+    if not actions:
+        return ""
+    icon = {"up": "\U0001f7e2", "down": "\U0001f534"}  # green / red circle
+    lines = [(f"{icon.get(a, '•') if ok else '⚠️'} **{mp}** {a}: {detail}")
+             for (mp, a, ok, detail) in actions]
+    return "\U0001f6f0️ Dune autoscaler\n" + "\n".join(lines)
+
+
+def notify(webhook_url, text, timeout=5):
+    """Best-effort POST of a Discord-style {content} message to webhook_url. No-op when
+    either is empty. NEVER raises — an alert failure must not break the scan loop."""
+    if not webhook_url or not text:
+        return False
+    try:
+        req = urllib.request.Request(
+            webhook_url, data=json.dumps({"content": text[:1900]}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310 (operator-supplied webhook)
+            return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def live_status(base, cfg):
+    """Live per-managed-map view for the SPA: desired/current/status (mock-k8s) +
+    connected players (farm_state, the same signal the drain guard uses). Best-effort
+    — a field is None when its source is unreachable, flagged in `sources`."""
+    mock = fetch_mock_status()
+    counts = read_online_counts(base)
+    by_map = {m.get("map"): m for m in (mock or {}).get("maps", [])}
+    live = {}
+    for mc in cfg.get("maps", []):
+        mp = mc["map"]
+        e = by_map.get(mp) or {}
+        live[mp] = {"desired": e.get("desired"), "current": e.get("current"),
+                    "status": e.get("status"),
+                    "players": None if counts is None else int(counts.get(mp, 0))}
+    return live, {"mockK8s": mock is not None, "players": counts is not None}
 
 
 def _status(base):
@@ -534,8 +587,10 @@ def _status(base):
     state = {mc["map"]: {"idle_since": led.get_state(f"idle:{mc['map']}"),
                          "last_demand": led.get_state(f"demand:{mc['map']}")}
              for mc in cfg.get("maps", [])}
+    live, sources = live_status(base, cfg)
     out = {"ok": True, "config": {k: v for k, v in cfg.items() if k != "_comment"},
-           "runs": led.list_runs(20), "state": state, "log_offset": led.get_offset()}
+           "runs": led.list_runs(20), "state": state, "log_offset": led.get_offset(),
+           "live": live, "sources": sources}
     led.close()
     return out
 

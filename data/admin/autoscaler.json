@@ -5,6 +5,7 @@
   "idle_drain_secs": 300,
   "demand_grace_secs": 120,
   "players_per_instance": 30,
+  "webhook_url": "",
   "maps": [
     { "map": "DeepDesert_1", "enabled": true, "min_replicas": 1, "max_replicas": 2 },
     { "map": "SH_Arrakeen", "enabled": true, "min_replicas": 1, "max_replicas": 2 },

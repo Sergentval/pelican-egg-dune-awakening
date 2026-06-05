@@ -632,5 +632,81 @@ class TestReadOnlineCounts(unittest.TestCase):
             self.assertIsNone(az.read_online_counts("/base"))
 
 
+class TestLiveStatus(unittest.TestCase):
+    def test_merges_desired_current_players(self):
+        snap = {"maps": [{"map": "SH_HarkoVillage", "desired": 1, "current": 1, "status": "healthy"},
+                         {"map": "SH_Arrakeen", "desired": 0, "current": 0, "status": "idle"}]}
+        cfg = {"maps": [{"map": "SH_HarkoVillage"}, {"map": "SH_Arrakeen"}, {"map": "DeepDesert_1"}]}
+        with patch.object(az, "fetch_mock_status", lambda *a, **k: snap), \
+             patch.object(az, "read_online_counts", lambda b: {"SH_HarkoVillage": 2}):
+            live, sources = az.live_status("/base", cfg)
+        self.assertEqual(live["SH_HarkoVillage"],
+                         {"desired": 1, "current": 1, "status": "healthy", "players": 2})
+        self.assertEqual(live["SH_Arrakeen"]["players"], 0)      # readable, just absent -> 0
+        self.assertIsNone(live["DeepDesert_1"]["desired"])       # not in the mock snapshot
+        self.assertEqual(sources, {"mockK8s": True, "players": True})
+
+    def test_players_none_when_unreadable(self):
+        with patch.object(az, "fetch_mock_status", lambda *a, **k: None), \
+             patch.object(az, "read_online_counts", lambda b: None):
+            live, sources = az.live_status("/base", {"maps": [{"map": "SH_Arrakeen"}]})
+        self.assertIsNone(live["SH_Arrakeen"]["players"])        # unreadable, not 0
+        self.assertEqual(sources, {"mockK8s": False, "players": False})
+
+
+class TestWebhookNotify(unittest.TestCase):
+    def test_format_actions_empty(self):
+        self.assertEqual(az.format_actions([]), "")
+
+    def test_format_actions_lists_each(self):
+        msg = az.format_actions([("SH_HarkoVillage", "up", True, "wake to 1"),
+                                 ("SH_Arrakeen", "down", False, "PATCH http 500")])
+        self.assertIn("SH_HarkoVillage", msg)
+        self.assertIn("up", msg)
+        self.assertIn("⚠️", msg)  # the failed action is flagged
+
+    def test_notify_noop_without_url_or_text(self):
+        self.assertFalse(az.notify("", "hi"))
+        self.assertFalse(az.notify("https://x", ""))
+
+    def test_notify_posts_when_url_set(self):
+        sent = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=5):
+            sent["url"], sent["data"] = req.full_url, req.data
+            return _Resp()
+        with patch.object(az.urllib.request, "urlopen", fake_urlopen):
+            ok = az.notify("https://discord/webhook", "hello")
+        self.assertTrue(ok)
+        self.assertEqual(sent["url"], "https://discord/webhook")
+        self.assertIn(b"hello", sent["data"])
+
+    def test_notify_swallows_errors(self):
+        def boom(*a, **k):
+            raise OSError("net down")
+        with patch.object(az.urllib.request, "urlopen", boom):
+            self.assertFalse(az.notify("https://x", "hi"))
+
+
+class TestValidateWebhook(unittest.TestCase):
+    def test_accepted_and_stripped(self):
+        c, err = az.validate_config({"webhook_url": "  https://discord/w  "})
+        self.assertIsNone(err)
+        self.assertEqual(c["webhook_url"], "https://discord/w")
+
+    def test_default_empty(self):
+        self.assertEqual(az.validate_config({})[0]["webhook_url"], "")
+
+    def test_nonstring_rejected(self):
+        self.assertIsNotNone(az.validate_config({"webhook_url": 123})[1])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1017,6 +1017,7 @@ export interface AutoscalerConfig {
   idle_drain_secs: number;
   demand_grace_secs: number;
   players_per_instance: number;
+  webhook_url?: string;
   maps: AutoscalerMapCfg[];
 }
 export interface AutoscalerRun {
@@ -1025,11 +1026,19 @@ export interface AutoscalerRun {
   detail: string;
   at: string;
 }
+export interface AutoscalerLive {
+  desired: number | null;
+  current: number | null;
+  status: string | null;
+  players: number | null;
+}
 export interface AutoscalerStatus {
   ok: boolean;
   config?: AutoscalerConfig;
   runs?: AutoscalerRun[];
   state?: Record<string, { idle_since: string | null; last_demand: string | null }>;
+  live?: Record<string, AutoscalerLive>;
+  sources?: { mockK8s: boolean; players: boolean };
   log_offset?: number | null;
   error?: string;
 }

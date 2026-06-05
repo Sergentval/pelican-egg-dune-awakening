@@ -55,6 +55,7 @@ const DEFAULTS: AutoscalerConfig = {
   idle_drain_secs: 300,
   demand_grace_secs: 120,
   players_per_instance: 30,
+  webhook_url: "",
   maps: [],
 };
 
@@ -72,8 +73,17 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     }
   }
 
+  // Poll refreshes only the live/status view — NOT the editable config — so a 15s
+  // tick can't clobber edits the operator is mid-typing.
+  async function refresh() {
+    const r = await fetchAutoscaler().catch(() => null);
+    if (r && r.ok && typeof r.body === "object" && r.body) setInfo(r.body as AutoscalerStatus);
+  }
+
   useEffect(() => {
     void load();
+    const t = setInterval(() => void refresh(), 15000);
+    return () => clearInterval(t);
   }, []);
 
   async function saveConfig() {
@@ -145,6 +155,13 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
             {num("players_per_instance", "Players / instance", 1, 1000)}
           </div>
 
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-slate-400">Discord webhook URL (optional — alerts on scale up/down/error)</span>
+            <input type="text" value={cfg.webhook_url ?? ""} placeholder="https://discord.com/api/webhooks/…"
+              onChange={(e) => setCfg({ ...cfg, webhook_url: e.target.value })}
+              className="input-field w-full font-mono" />
+          </label>
+
           {/* Per-map floor/ceiling. min=0 means the map drains fully cold + wakes on demand. */}
           <div className="space-y-2">
             <div className="text-xs uppercase tracking-wider text-slate-500">Managed maps</div>
@@ -193,6 +210,42 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
             </button>
             <span className="text-xs text-slate-500">“Run one tick now” scales once immediately, ignoring the enabled flag.</span>
           </div>
+        </div>
+      </div>
+
+      {/* Live per-map occupancy + scale state (polls every 15s). */}
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Live</h2>
+          <span className="text-xs text-slate-500">players from farm_state · refreshes ~15s</span>
+        </header>
+        <div className="p-4">
+          {!info?.live || Object.keys(info.live).length === 0 ? (
+            <p className="text-xs text-slate-500">No live data.</p>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="text-slate-500 text-left">
+                <tr><th className="pb-1">Map</th><th className="pb-1">Players</th><th className="pb-1">Desired</th><th className="pb-1">Current</th><th className="pb-1">Status</th></tr>
+              </thead>
+              <tbody className="font-mono">
+                {Object.entries(info.live).map(([mp, lv]) => (
+                  <tr key={mp} className="border-t border-slate-800/60">
+                    <td className="py-1 pr-3">{mp}</td>
+                    <td className={"py-1 pr-3 " + ((lv.players ?? 0) > 0 ? "text-spice-300" : "text-slate-500")}>{lv.players ?? "—"}</td>
+                    <td className="py-1 pr-3">{lv.desired ?? "—"}</td>
+                    <td className="py-1 pr-3">{lv.current ?? "—"}</td>
+                    <td className="py-1 text-slate-400">{lv.status ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {info?.sources && (info.sources.mockK8s === false || info.sources.players === false) && (
+            <p className="text-xs text-amber-400 mt-2">
+              {info.sources.mockK8s === false && "mock-k8s unreachable. "}
+              {info.sources.players === false && "player count unreadable."}
+            </p>
+          )}
         </div>
       </div>
 
