@@ -708,5 +708,217 @@ class TestValidateWebhook(unittest.TestCase):
         self.assertIsNotNone(az.validate_config({"webhook_url": 123})[1])
 
 
+def _dim(pid, online, players):
+    return {"partition_id": pid, "dimension_index": pid - 100, "online": online, "players": players}
+
+
+class TestDecideDimensionPool(unittest.TestCase):
+    def test_spawn_to_floor(self):
+        dims = [_dim(101, False, 0), _dim(102, False, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, max_dims=3)
+        self.assertEqual((d.action, d.target), ("spawn", 101))  # lowest offline, reach floor
+
+    def test_spawn_on_load(self):
+        dims = [_dim(101, True, 30), _dim(102, False, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=3, min_dims=1)
+        self.assertEqual((d.action, d.target), ("spawn", 102))
+
+    def test_no_spawn_below_threshold(self):
+        dims = [_dim(101, True, 20), _dim(102, False, 0)]
+        self.assertEqual(az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, min_dims=1).action, "hold")
+
+    def test_no_spawn_at_max(self):
+        dims = [_dim(101, True, 99), _dim(102, True, 99), _dim(103, True, 99)]
+        self.assertEqual(az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=3).action, "hold")
+
+    def test_no_spawn_without_offline_row(self):
+        dims = [_dim(101, True, 99)]  # over threshold but nothing left to spawn
+        self.assertEqual(az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=4).action, "hold")
+
+    def test_spawn_cooldown_blocks(self):
+        dims = [_dim(101, True, 99), _dim(102, False, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=3,
+                                     last_spawn=NOW - timedelta(seconds=60), demand_grace_secs=300)
+        self.assertEqual(d.action, "hold")
+
+    def test_reap_empty_past_idle(self):
+        dims = [_dim(101, True, 5), _dim(102, True, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={102: NOW - timedelta(seconds=700)})
+        self.assertEqual((d.action, d.target), ("reap", 102))
+
+    def test_never_reap_occupied(self):
+        # 102 is occupied; even with a stale idle entry it must never be reaped
+        dims = [_dim(101, True, 3), _dim(102, True, 8)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={102: NOW - timedelta(seconds=9999)})
+        self.assertEqual(d.action, "hold")
+
+    def test_never_reap_below_floor(self):
+        dims = [_dim(101, True, 0)]  # lone live dim, empty + idle, but min floor is 1
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={101: NOW - timedelta(seconds=9999)})
+        self.assertEqual((d.action, d.target), ("hold", None))
+
+    def test_reap_picks_highest_empty(self):
+        dims = [_dim(101, True, 4), _dim(102, True, 0), _dim(103, True, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={102: NOW - timedelta(seconds=700), 103: NOW - timedelta(seconds=700)})
+        self.assertEqual((d.action, d.target), ("reap", 103))
+
+    def test_reap_blocked_in_cooldown(self):
+        dims = [_dim(101, True, 5), _dim(102, True, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={102: NOW - timedelta(seconds=700)},
+                                     last_spawn=NOW - timedelta(seconds=60), demand_grace_secs=300)
+        self.assertEqual(d.action, "hold")
+
+    def test_blind_holds(self):
+        dims = [_dim(101, True, 5), {"partition_id": 102, "online": True, "players": None}]
+        self.assertEqual(az.decide_dimension_pool(dims, now=NOW).action, "hold")
+
+    def test_spawn_wins_over_reap(self):
+        # avg over threshold AND an empty idle dim exists -> spawn (one action, up first)
+        dims = [_dim(101, True, 60), _dim(102, True, 0), _dim(103, False, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=3, min_dims=1,
+                                     idle_drain_secs=600, idle_since={102: NOW - timedelta(seconds=700)})
+        self.assertEqual(d.action, "spawn")
+
+    def test_max_clamped_to_declared(self):
+        # max_dims 5 but only 2 rows declared, both full -> can't exceed 2 -> hold
+        dims = [_dim(101, True, 99), _dim(102, True, 99)]
+        self.assertEqual(az.decide_dimension_pool(dims, now=NOW, players_per_dim=30, max_dims=5).action, "hold")
+
+    def test_idle_timer_starts_and_clears(self):
+        dims = [_dim(101, True, 0), _dim(102, True, 7)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=2)  # at floor, no reap
+        self.assertEqual(d.idle_since.get(101), NOW)   # empty -> timer started
+        self.assertNotIn(102, d.idle_since)            # occupied -> no timer
+
+
+class TestParseDimRows(unittest.TestCase):
+    def test_parses_and_gates_on_alive(self):
+        csv = ("partition_id,dimension_index,server_id,game_port,ready,alive,connected_players,label\n"
+               "101,1,abc,7790,true,true,3,Deep Desert\n"          # live, 3 players
+               "102,2,,,,,0,Deep Desert\n"                          # declared/offline
+               "103,3,stale,7792,false,false,9,Deep Desert\n")      # stale (alive=false) -> offline, 0
+        rows = az.parse_dim_rows(csv)
+        self.assertEqual(rows[0], {"partition_id": 101, "dimension_index": 1, "online": True, "players": 3, "label": "Deep Desert"})
+        self.assertEqual((rows[1]["online"], rows[1]["players"]), (False, 0))
+        self.assertEqual((rows[2]["online"], rows[2]["players"]), (False, 0))  # stale players NOT trusted
+
+
+class TestValidateDeepDesert(unittest.TestCase):
+    def test_default_present(self):
+        dd = az.validate_config({})[0]["deep_desert"]
+        self.assertEqual(dd["enabled"], False)
+        self.assertEqual((dd["min_dims"], dd["max_dims"], dd["players_per_dim"]), (1, 3, 30))
+
+    def test_enabled_coercion_and_clamp(self):
+        dd = az.validate_config({"deep_desert": {"enabled": "true", "min_dims": 9, "max_dims": 2}})[0]["deep_desert"]
+        self.assertTrue(dd["enabled"])
+        self.assertEqual(dd["min_dims"], 2)  # clamped to max_dims
+
+    def test_nonint_rejected(self):
+        self.assertIsNotNone(az.validate_config({"deep_desert": {"players_per_dim": "x"}})[1])
+
+    def test_nondict_rejected(self):
+        self.assertIsNotNone(az.validate_config({"deep_desert": "nope"})[1])
+
+
+class TestDimInFlightAndCooldown(unittest.TestCase):
+    def test_inflight_lock_holds(self):
+        # a spawn in flight blocks ALL action, even with load over the threshold
+        dims = [_dim(101, True, 99), _dim(102, False, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, spawning=102, players_per_dim=30, max_dims=3, min_dims=1)
+        self.assertEqual(d.action, "hold")
+
+    def test_reap_arms_cooldown(self):
+        dims = [_dim(101, True, 3), _dim(102, True, 0)]
+        d = az.decide_dimension_pool(dims, now=NOW, min_dims=1, idle_drain_secs=600,
+                                     idle_since={102: NOW - timedelta(seconds=700)})
+        self.assertEqual((d.action, d.target), ("reap", 102))
+        self.assertEqual(d.last_spawn, NOW)  # reap arms the cooldown (anti reap->respawn flap)
+
+    def test_demand_grace_floored(self):
+        dd = az.validate_config({"deep_desert": {"demand_grace_secs": 10}})[0]["deep_desert"]
+        self.assertGreaterEqual(dd["demand_grace_secs"], az.SPAWN_COOLDOWN_FLOOR)
+
+
+class TestRunDdTick(unittest.TestCase):
+    """Multi-tick DD I/O over a real in-memory ledger with faked read/actuate."""
+
+    def setUp(self):
+        self.led = az.AutoscalerLedger(":memory:")
+        self.addCleanup(self.led.close)
+        self.calls = []
+
+    def _run(self, rows, now, cfg=None, ok=True):
+        cfg = cfg or {"min_dims": 1, "max_dims": 3, "players_per_dim": 30,
+                      "idle_drain_secs": 600, "demand_grace_secs": 300}
+
+        def fake_pub(b, v, p):
+            self.calls.append((v, p))
+            return ok
+        with patch.object(az, "read_dim_rows", lambda b: rows), \
+             patch.object(az, "_run_publish_dim", fake_pub):
+            return az.run_dd_tick("/b", cfg, self.led, now)
+
+    def test_inflight_lock_blocks_respawn(self):
+        cfg = {"min_dims": 2, "max_dims": 3, "players_per_dim": 30, "idle_drain_secs": 600, "demand_grace_secs": 300}
+        rows = [_dim(101, True, 5), _dim(102, False, 0), _dim(103, False, 0)]
+        self._run(rows, NOW, cfg)
+        self.assertEqual(self.calls, [("dimension-up", 102)])
+        self.assertEqual(self.led.get_state("dd_spawning_pid"), "102")
+        # cooldown expired AND 102 still booting -> the lock holds, no second spawn
+        self._run(rows, NOW + timedelta(seconds=400), cfg)
+        self.assertEqual(self.calls, [("dimension-up", 102)])
+
+    def test_inflight_cleared_when_live(self):
+        cfg = {"min_dims": 2, "max_dims": 3, "demand_grace_secs": 300}
+        self._run([_dim(101, True, 5), _dim(102, False, 0)], NOW, cfg)
+        self.assertEqual(self.led.get_state("dd_spawning_pid"), "102")
+        self._run([_dim(101, True, 5), _dim(102, True, 0)], NOW + timedelta(seconds=350), cfg)
+        self.assertIsNone(self.led.get_state("dd_spawning_pid"))  # went live -> marker cleared
+
+    def test_inflight_times_out_then_retries(self):
+        cfg = {"min_dims": 2, "max_dims": 3, "demand_grace_secs": 300}
+        rows = [_dim(101, True, 5), _dim(102, False, 0)]
+        self._run(rows, NOW, cfg)
+        # never came up; past the in-flight window -> marker cleared -> retry
+        self._run(rows, NOW + timedelta(seconds=az.SPAWN_INFLIGHT_MAX_WAIT + 10), cfg)
+        self.assertEqual(self.calls, [("dimension-up", 102), ("dimension-up", 102)])
+
+    def test_reap_after_idle(self):
+        rows = [_dim(101, True, 5), _dim(102, True, 0)]
+        self._run(rows, NOW)                                    # 102 empty -> timer starts, no reap
+        self.assertEqual(self.calls, [])
+        self.assertIsNotNone(self.led.get_state("dd_idle:102"))
+        self._run(rows, NOW + timedelta(seconds=650))          # idle elapsed -> reap
+        self.assertEqual(self.calls, [("dimension-down", 102)])
+
+    def test_idle_timer_no_leak_on_vanish(self):
+        self._run([_dim(101, True, 5), _dim(102, True, 0)], NOW)
+        self.assertIsNotNone(self.led.get_state("dd_idle:102"))
+        # 102 drops out of the query result -> its stale timer must be cleared
+        self._run([_dim(101, True, 5)], NOW + timedelta(seconds=300))
+        self.assertIsNone(self.led.get_state("dd_idle:102"))
+        # reappears empty -> fresh timer, NOT reaped on first sight
+        self._run([_dim(101, True, 5), _dim(102, True, 0)], NOW + timedelta(seconds=400))
+        self.assertEqual(self.calls, [])
+
+    def test_failed_reap_keeps_timer(self):
+        rows = [_dim(101, True, 5), _dim(102, True, 0)]
+        self.led.set_state("dd_idle:102", az.iso(NOW - timedelta(seconds=700)))
+        self._run(rows, NOW, ok=False)                         # reap attempted, actuator fails
+        self.assertEqual(self.calls, [("dimension-down", 102)])
+        self.assertIsNotNone(self.led.get_state("dd_idle:102"))  # timer preserved for retry
+
+    def test_blind_read_holds(self):
+        with patch.object(az, "read_dim_rows", lambda b: None):
+            self.assertEqual(az.run_dd_tick("/b", {"min_dims": 1}, self.led, NOW), [])
+        self.assertEqual(self.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

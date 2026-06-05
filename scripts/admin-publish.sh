@@ -885,6 +885,34 @@ SQL
         exit 0
         ;;
 
+    dd-dim-player-count)
+        # PER-DeepDesert-DIMENSION live state for the DD-dimension autoscaler. Unlike
+        # farm-player-count (which SUMs all instances of a map) this keeps ONE row per
+        # dimensional partition so a specific dim can be targeted/reaped. Filters to
+        # map='DeepDesert_1' AND dimension_index>0 — so it can NEVER see the always-warm
+        # DD landing zone (dimension_index 0) or any Survival_1 sietch (player base).
+        # players = farm_state.connected_players (live socket count; trust only when
+        # alive='t'), NOT dune.actors/server-status (which keys on the character home map
+        # and misses hub visitors). LEFT JOIN so a downed/declared dim (server_id NULL)
+        # still appears as offline/0 rather than vanishing. Read-only.
+        # CSV: partition_id,dimension_index,server_id,game_port,ready,alive,connected_players,label
+        dune_psql -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
+            -c "SELECT wp.partition_id,
+                       wp.dimension_index,
+                       COALESCE(wp.server_id,'')             AS server_id,
+                       COALESCE(fs.game_port::text,'')       AS game_port,
+                       COALESCE(fs.ready::text,'')           AS ready,
+                       COALESCE(fs.alive::text,'')           AS alive,
+                       COALESCE(fs.connected_players,0)::int AS connected_players,
+                       COALESCE(wp.label,'')                 AS label
+                FROM dune.world_partition wp
+                LEFT JOIN dune.farm_state fs ON fs.server_id = wp.server_id
+                WHERE wp.map = 'DeepDesert_1' AND wp.dimension_index > 0
+                ORDER BY wp.dimension_index"
+        exit 0
+        ;;
+
     # ----------------------------------------------------------------------
     # Player/character read subcommands. See the header block for provenance.
     # ----------------------------------------------------------------------
