@@ -91,6 +91,9 @@ bash scripts/start-scheduler.sh "$BASE"
 # Market-bot autonomous loop (7b-3). No-op while market-bot.json enabled:false,
 # so always safe to launch; tops up listings + gamble-buys only once armed.
 bash scripts/start-market-bot.sh "$BASE"
+# Demand-based autoscaler. No-op while autoscaler.json enabled:false, so always
+# safe to launch; drains idle on-demand maps + wakes/load-scales them once armed.
+bash scripts/start-autoscaler.sh "$BASE"
 
 # Spawn dimensional UE5 partitions for cross-Sietch travel destinations.
 # prestart.sh has already seeded the dim>0 world_partition rows; this

@@ -1004,6 +1004,48 @@ export const marketBuy = () =>
 export const marketConfig = (patch: Partial<MarketConfig>) =>
   api<{ ok: boolean; config?: MarketConfig; error?: string }>("POST", "/api/market/config", patch);
 
+// ---- Autoscaler ---------------------------------------------------------
+export interface AutoscalerMapCfg {
+  map: string;
+  enabled: boolean;
+  min_replicas: number;
+  max_replicas: number;
+}
+export interface AutoscalerConfig {
+  enabled: boolean;
+  scan_interval_secs: number;
+  idle_drain_secs: number;
+  demand_grace_secs: number;
+  players_per_instance: number;
+  maps: AutoscalerMapCfg[];
+}
+export interface AutoscalerRun {
+  map: string;
+  action: string;
+  detail: string;
+  at: string;
+}
+export interface AutoscalerStatus {
+  ok: boolean;
+  config?: AutoscalerConfig;
+  runs?: AutoscalerRun[];
+  state?: Record<string, { idle_since: string | null; last_demand: string | null }>;
+  log_offset?: number | null;
+  error?: string;
+}
+export interface AutoscalerTickResult {
+  ok: boolean;
+  actions?: { map: string; action: string; ok: boolean; detail: string }[];
+  error?: string;
+}
+
+export const fetchAutoscaler = () => api<AutoscalerStatus>("GET", "/api/autoscaler");
+// The autoscaler set-config takes the FULL validated config (not a patch).
+export const autoscalerConfig = (cfg: AutoscalerConfig) =>
+  api<{ ok: boolean; config?: AutoscalerConfig; error?: string }>("POST", "/api/autoscaler/config", cfg);
+export const autoscalerTick = () =>
+  api<AutoscalerTickResult>("POST", "/api/autoscaler/tick", {});
+
 // ---- Logs + service control --------------------------------------------
 export interface LogSource {
   name: string;

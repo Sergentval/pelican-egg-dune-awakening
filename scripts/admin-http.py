@@ -456,6 +456,21 @@ def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
+def run_autoscaler(sub: str, *args: str, timeout: int = 30) -> dict:
+    """Run scripts/admin_autoscaler.py <sub> <BASE_DIR> [args] out-of-process.
+    Returns {ok, data, ...} where `data` is the script's parsed JSON output. The
+    tick/status subcommands reach mock-k8s + server-status, so keep it timeout-bounded."""
+    res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_autoscaler.py"), sub, BASE_DIR, *args],
+        capture_output=True, text=True, timeout=timeout)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 # CA-pinned mock-k8s transport — defined in admin_instances.py, re-exported so the
 # GET /api/status + instance-scale routes below call them unchanged.
 fetch_mock_status = admin_instances.fetch_mock_status
@@ -1219,6 +1234,13 @@ class Handler(BaseHTTPRequestHandler):
                     if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
                         out["bot_orders"], out["npc_orders"], out["player_orders"] = int(parts[0]), int(parts[1]), int(parts[2])
             self._write(200, out)
+            return
+
+        # Demand-based autoscaler status: config + recent scale actions + per-map
+        # timers + the director.log read offset. Read-only.
+        if path == "/api/autoscaler":
+            r = run_autoscaler("status", timeout=20)
+            self._write(200, r.get("data", {"ok": False, "error": "status failed"}))
             return
 
         # Player-editor: progression preset catalog (journey-node bundles).
@@ -2107,6 +2129,34 @@ class Handler(BaseHTTPRequestHandler):
                 return
             r = run_market("buy-tick", timeout=120)
             self._write(200, r.get("data", {"ok": False, "error": "buy-tick failed"}))
+            return
+
+        # POST /api/autoscaler/config  body = the full validated autoscaler config
+        # {enabled, scan_interval_secs, idle_drain_secs, demand_grace_secs,
+        # players_per_instance, maps:[{map,enabled,min_replicas,max_replicas}]}.
+        # Persisted to autoscaler.json by admin_autoscaler. 200 + {ok, config|error}.
+        if path == "/api/autoscaler/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_autoscaler("set-config", json.dumps(body if isinstance(body, dict) else {}), timeout=15)
+            self._write(200, r.get("data", {"ok": False, "error": "set-config failed"}))
+            return
+
+        # Run ONE autoscaler tick right now (manual trigger; ignores enabled). Reads
+        # demand + online counts and scales the managed maps. POST /api/autoscaler/tick.
+        if path == "/api/autoscaler/tick":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_autoscaler("tick", timeout=60)
+            self._write(200, r.get("data", {"ok": False, "error": "tick failed"}))
             return
 
         # Restart ONE supervised background service (kill + relaunch via its
