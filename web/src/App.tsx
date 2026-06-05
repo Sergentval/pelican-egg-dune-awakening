@@ -17,6 +17,7 @@ import {
 } from "./tabs";
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
+import { AutoscalerTab } from "./AutoscalerTab";
 import { PlayerEditorTab } from "./PlayerEditorTab";
 import { LootTab } from "./LootTab";
 import { MarketTab } from "./MarketTab";
@@ -45,6 +46,7 @@ type TabId =
   | "welcome"
   | "maintenance"
   | "scheduler"
+  | "autoscaler"
   | "logs"
   | "instances"
   | "history";
@@ -76,6 +78,7 @@ const TABS: TabDef[] = [
   { id: "settings", label: "Settings", icon: "⚙", group: "system" },
   { id: "maintenance", label: "Maintenance", icon: "🛠", group: "system" },
   { id: "scheduler", label: "Scheduler", icon: "⏰", group: "system" },
+  { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "system" },
   { id: "logs", label: "Logs", icon: "📜", group: "system" },
   { id: "history", label: "History", icon: "🗒", group: "system" },
 ];
@@ -222,6 +225,7 @@ export default function App() {
           {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
+          {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
           {tab === "logs" && <LogsTab setConsoleEntries={setEntries} />}
           {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
           {tab === "history" && <HistoryTab />}

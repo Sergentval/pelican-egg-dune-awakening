@@ -12,7 +12,7 @@ import admin_logs
 
 class TestValidLogSource(unittest.TestCase):
     def test_fixed_services_ok(self):
-        for n in ("admin-http", "postgres", "market-bot", "mq-admin"):
+        for n in ("admin-http", "postgres", "market-bot", "mq-admin", "autoscaler"):
             self.assertTrue(admin_logs.valid_log_source(n))
 
     def test_ue5_shape_ok(self):
@@ -27,7 +27,7 @@ class TestValidLogSource(unittest.TestCase):
 
 class TestValidRestartable(unittest.TestCase):
     def test_allowed(self):
-        for n in ("admin-http", "scheduler", "market-bot", "mock-k8s", "director"):
+        for n in ("admin-http", "scheduler", "market-bot", "mock-k8s", "director", "autoscaler"):
             self.assertTrue(admin_logs.valid_restartable_service(n))
 
     def test_refused(self):

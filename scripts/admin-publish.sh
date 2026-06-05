@@ -2143,7 +2143,7 @@ SQL
         # grace can recycle the container). Mirror the allowlist in admin_logs.py.
         svc="${1:-}"
         case "$svc" in
-            admin-http|scheduler|welcome-scanner|market-bot|mock-k8s|director|gateway|text-router|fls-stub) ;;
+            admin-http|scheduler|welcome-scanner|market-bot|autoscaler|mock-k8s|director|gateway|text-router|fls-stub) ;;
             *) echo "[admin-publish] ERROR svc-restart: refusing to restart '$svc' (not in the restartable allowlist)" >&2; exit 2 ;;
         esac
         start="$BASE/scripts/start-$svc.sh"

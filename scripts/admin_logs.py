@@ -16,7 +16,7 @@ from pathlib import Path
 LOG_SOURCES_FIXED = (
     "postgres", "mq-admin", "mq-game", "text-router", "fls-stub",
     "mock-k8s", "director", "gateway", "admin-http",
-    "scheduler", "welcome-scanner", "market-bot",
+    "scheduler", "welcome-scanner", "market-bot", "autoscaler",
 )
 
 # Services the panel may RESTART. Deliberately a SUBSET of the supervised set:
@@ -25,7 +25,7 @@ LOG_SOURCES_FIXED = (
 #     the container, and a live map should be drained with a broadcast first).
 # Those are restarted via a full server restart instead.
 RESTARTABLE_SERVICES = (
-    "admin-http", "scheduler", "welcome-scanner", "market-bot",
+    "admin-http", "scheduler", "welcome-scanner", "market-bot", "autoscaler",
     "mock-k8s", "director", "gateway", "text-router", "fls-stub",
 )
 
