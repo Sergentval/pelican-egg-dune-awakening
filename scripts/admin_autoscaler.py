@@ -48,6 +48,15 @@ from admin_instances import (  # noqa: E402
 
 # Loop cadence floor: server-status shells psql, so a sub-30s loop is wasteful.
 MIN_SCAN_INTERVAL_SECS = 30
+# A dimension-up spawn blocks ~1-3 min (spawn-dimension.sh's farm_state poll deadline
+# is 240s + UE5 cold boot). The DD spawn cooldown is floored to this for anti-flap.
+SPAWN_COOLDOWN_FLOOR = 300
+# How long an in-flight spawn marker is honoured before assuming the spawn FAILED and
+# allowing a retry. Set well above the worst-case spawn (2x the 240s poll deadline) so a
+# slow-but-succeeding spawn goes live (clearing the marker) long before this; only a dim
+# that never registers times out here — by then spawn-dimension.sh has exited, so a retry
+# can't collide with a still-running spawner.
+SPAWN_INFLIGHT_MAX_WAIT = 600
 
 DEFAULT_CONFIG = {
     "enabled": False,
@@ -59,6 +68,21 @@ DEFAULT_CONFIG = {
 }
 # Per-map default: warm floor (never cold), one extra shard of headroom under load.
 DEFAULT_MAP = {"enabled": True, "min_replicas": 1, "max_replicas": 2}
+
+# DeepDesert-DIMENSION pool autoscaling (separate mechanism from the SSS maps above:
+# these are world_partition rows spawned/reaped by dimension-up/down, NOT mock-k8s
+# replicas). OFF by default. demand_grace_secs is high on purpose — a dimension-up
+# spawn blocks ~1-3 min, so a just-spawned dim must be reap-immune well past that.
+# Survival_1 sietches are PLAYER BASES and are NEVER autoscaled — this config only
+# ever addresses map='DeepDesert_1' dimensions, by construction.
+DEFAULT_DEEP_DESERT = {
+    "enabled": False,
+    "min_dims": 1,             # warm floor of live DD dimensions (0 = allow fully cold)
+    "max_dims": 3,             # clamped to the seeded DUNE_DD_DIMENSIONS row count at tick time
+    "players_per_dim": 30,     # spawn another dim when the live-dim average reaches this
+    "idle_drain_secs": 600,    # an empty dim must stay empty this long before reaping
+    "demand_grace_secs": 300,  # no spawn/reap within this window of the last spawn (covers spawn time)
+}
 
 
 def iso(dt):
@@ -126,6 +150,31 @@ def _default_maps():
     return [{"map": mp, **DEFAULT_MAP} for mp in SCALABLE_MAPS]
 
 
+def _validate_deep_desert(raw):
+    """Validate + coerce the deep_desert (DD-dimension autoscaler) config sub-object.
+    Returns (clean, None) or (None, error). Pure. min_dims is clamped to <= max_dims."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        return None, "deep_desert must be an object"
+    out: dict = {"enabled": _coerce_bool(raw.get("enabled", DEFAULT_DEEP_DESERT["enabled"]))}
+    for key, minimum in (("min_dims", 0), ("max_dims", 1), ("players_per_dim", 1),
+                         ("idle_drain_secs", 0), ("demand_grace_secs", 0)):
+        v = raw.get(key, DEFAULT_DEEP_DESERT[key])
+        if isinstance(v, bool) or not isinstance(v, (int, str)):
+            return None, f"deep_desert.{key} must be an integer"
+        try:
+            out[key] = max(int(v), minimum)
+        except (TypeError, ValueError):
+            return None, f"deep_desert.{key} must be an integer"
+    if out["min_dims"] > out["max_dims"]:
+        out["min_dims"] = out["max_dims"]
+    # Floor the spawn cooldown to >= worst-case spawn time so it can never lapse
+    # mid-spawn (the in-flight-pid guard is the primary defence; this is belt-and-braces).
+    out["demand_grace_secs"] = max(out["demand_grace_secs"], SPAWN_COOLDOWN_FLOOR)
+    return out, None
+
+
 def validate_config(raw):
     """Validate + coerce a posted autoscaler config to the canonical shape.
     Returns (config, None) or (None, error). Pure (no I/O)."""
@@ -144,6 +193,10 @@ def validate_config(raw):
     if not isinstance(wh, str):
         return None, "webhook_url must be a string"
     out["webhook_url"] = wh.strip()
+    dd, err = _validate_deep_desert(raw.get("deep_desert"))
+    if err:
+        return None, err
+    out["deep_desert"] = dd
     raw_maps = raw.get("maps", None)
     if raw_maps is None:
         out["maps"] = _default_maps()
@@ -303,6 +356,121 @@ def decide_map(map_cfg, current, online, demand, *, now,
     return MapDecision("hold", current, why, started, new_last_demand)
 
 
+# -- DeepDesert-dimension pool (Phase 3): load-proportional spawn/reap ----------
+# A separate mechanism from decide_map: DD dims are individual world_partition rows
+# toggled by dimension-up/down (not mock-k8s replicas). "Capacity" = the count of
+# declared dim rows (seeded via DUNE_DD_DIMENSIONS); the autoscaler only flips
+# EXISTING rows up/down. Per-dim player counts come from farm_state.connected_players
+# (trusted only when alive), NEVER dune.actors. Survival_1 sietches never appear here
+# (the dd-dim-player-count source filters map='DeepDesert_1' dim>0), so player bases
+# are excluded by construction.
+class DimDecision(NamedTuple):
+    action: str                  # "spawn" | "reap" | "hold"
+    target: "int | None"        # partition_id to spawn (offline row) / reap (empty live dim)
+    reason: str
+    idle_since: dict             # {partition_id: datetime} per-dim empty-since timers to persist
+    last_spawn: "object | None"  # carried-forward last-spawn instant (spawn cooldown)
+
+
+def parse_dim_rows(csv_text):
+    """Pure. Parse dd-dim-player-count CSV into dim dicts. A dim is `online` only when
+    its farm_state heartbeat says alive; players is trusted only then (a stale/never-
+    spawned row reads offline/0, never a phantom occupant). CSV columns:
+    partition_id,dimension_index,server_id,game_port,ready,alive,connected_players,label."""
+    out = []
+    for line in (csv_text or "").splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("partition_id"):
+            continue
+        # split with a cap so a comma inside the trailing label can't shift earlier fields
+        # (label is the last column; the 7 before it are comma-free).
+        p = line.split(",", 7)
+        if len(p) < 7 or not p[0].strip().isdigit():
+            continue
+        alive = p[5].strip().lower() == "true"
+        try:
+            players = int(p[6])
+        except (ValueError, IndexError):
+            players = 0
+        out.append({"partition_id": int(p[0]), "dimension_index": int(p[1]) if p[1].strip().isdigit() else 0,
+                    "online": alive, "players": players if alive else 0,
+                    "label": p[7].strip() if len(p) > 7 else ""})
+    return out
+
+
+def decide_dimension_pool(dims, *, now, idle_since=None, last_spawn=None, spawning=None,
+                          min_dims=1, max_dims=3, players_per_dim=30,
+                          idle_drain_secs=600, demand_grace_secs=300):
+    """Pure load-proportional decision over the DD-dimension pool. ONE action per tick.
+
+    dims: list from parse_dim_rows (each {partition_id, online, players, ...}). `spawning`
+    is the partition_id of an in-flight dimension-up (offline until its ~1-3 min spawn
+    writes back) — it is EXCLUDED from re-pick and COUNTED as pending capacity, so a
+    mid-spawning dim is never double-spawned regardless of cooldown timing. Returns a
+    DimDecision with the action, the partition_id to act on, and the timers to persist.
+
+    UP (spawn an offline declared row): below the warm floor, or live-dim average >=
+    players_per_dim, while under max_dims (clamped to declared rows) and outside the
+    spawn cooldown. DOWN (reap): an EMPTY live dim (players==0) past idle_drain, above
+    the floor, outside the cooldown — pick the highest partition_id so low/stable dims
+    stay; a reap also ARMS the cooldown (anti reap->respawn flap). HARD GUARDS: never reap
+    an occupied dim; never act on an unreadable count (hold); never below the floor;
+    never re-spawn / double-target the in-flight dim."""
+    idle_since = dict(idle_since or {})
+    declared = len(dims)
+    max_eff = min(int(max_dims), declared)
+    min_eff = max(0, min(int(min_dims), max_eff))
+    live = [d for d in dims if d.get("online")]
+    offline = [d for d in dims if not d.get("online")]
+    live_count = len(live)
+
+    if any(d.get("players") is None for d in live):
+        return DimDecision("hold", None, "a dim's player count is unreadable; holding", idle_since, last_spawn)
+
+    total = sum(int(d.get("players") or 0) for d in live)
+    in_cooldown = last_spawn is not None and (now - last_spawn).total_seconds() < demand_grace_secs
+
+    # Per-dim empty-since timers: start/keep for empty live dims, drop for occupied or
+    # no-longer-live dims (so a stale pid can't carry a timer forward).
+    idle_since = {d["partition_id"]: (idle_since.get(d["partition_id"]) or now)
+                  for d in live if int(d.get("players") or 0) == 0}
+
+    # In-flight spawn LOCK: while a dimension-up is still booting (its pid not yet live),
+    # do nothing else — no second spawn (would race the same/another port) and no reap.
+    # The caller clears `spawning` once the dim goes live or the spawn window lapses. This
+    # is the primary double-spawn guard; the cooldown below is just anti-flap on top.
+    if spawning is not None:
+        return DimDecision("hold", None, f"spawn in flight (dim {spawning}); holding", idle_since, last_spawn)
+
+    next_offline = min((d["partition_id"] for d in offline), default=None)
+
+    # 1) warm floor — keep min_eff dims live
+    if live_count < min_eff and next_offline is not None and not in_cooldown:
+        return DimDecision("spawn", next_offline,
+                           f"below floor ({live_count}/{min_eff}); spawn dim {next_offline}", idle_since, now)
+    # 2) load — live-dim average at/over threshold, with capacity headroom
+    if live_count >= 1 and live_count < max_eff and next_offline is not None and not in_cooldown \
+            and total >= players_per_dim * live_count:
+        return DimDecision("spawn", next_offline,
+                           f"{total} players / {live_count} live >= {players_per_dim}/dim; spawn dim {next_offline}",
+                           idle_since, now)
+    # 3) reap — an empty live dim, drained past idle, above floor, outside cooldown. Keep
+    # the reaped pid's timer in idle_since (don't del): a SUCCESSFUL reap drops it from the
+    # live set next tick (run_dd_tick then clears its key), a FAILED reap keeps the timer so
+    # it retries. Arm the cooldown (return now) so a reap can't immediately re-spawn.
+    if live_count > min_eff and not in_cooldown:
+        ready_to_reap = sorted(
+            (pid for pid, ts in idle_since.items()
+             if ts is not None and (now - ts).total_seconds() >= idle_drain_secs),
+            reverse=True)
+        if ready_to_reap:
+            pid = ready_to_reap[0]
+            return DimDecision("reap", pid,
+                               f"dim {pid} empty >= {idle_drain_secs}s; reap (live {live_count}->{live_count - 1})",
+                               idle_since, now)
+    return DimDecision("hold", None, f"hold (live {live_count}, players {total})", idle_since, last_spawn)
+
+
 # ==========================================================================
 # I/O layer (Phase 2): config, the new-lines-only director.log tailer, the timer
 # ledger, the tick orchestration, and the CLI. The pure engine above is the only
@@ -418,6 +586,98 @@ def read_online_counts(base):
         return None
 
 
+def read_dim_rows(base):
+    """Per-DeepDesert-dimension live state via admin-publish dd-dim-player-count, parsed
+    into dim dicts. Returns None if unreadable (subprocess / non-zero exit) so the DD
+    tick HOLDS rather than acting blind. Only ever sees DeepDesert_1 dims (the SQL filters
+    map + dimension_index>0) — Survival_1 sietches can't appear."""
+    try:
+        r = subprocess.run(["bash", _publish(base), "dd-dim-player-count"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return parse_dim_rows(r.stdout)
+
+
+def _run_publish_dim(base, verb, pid):
+    """Shell admin-publish dimension-up/dimension-down <pid>. Returns ok. dimension-up
+    backgrounds (returns fast); dimension-down kills+cleans — give it room."""
+    try:
+        r = subprocess.run(["bash", _publish(base), verb, str(int(pid))],
+                           capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def run_dd_tick(base, dd_cfg, ledger, now):
+    """One DeepDesert-dimension autoscaler tick: read per-dim live state, decide one
+    spawn/reap via decide_dimension_pool, actuate by shelling admin-publish dimension-up/
+    down (NOT the HTTP route — internal, no auth/csrf), and persist the per-dim timers.
+    Returns [(map, action, ok, detail)] like run_tick. HOLDS (no action) on a read failure
+    — never act blind. NEVER touches Survival_1 sietches (read_dim_rows is DD-dims only)."""
+    rows = read_dim_rows(base)
+    if rows is None:
+        return []
+    live_pids = {d["partition_id"] for d in rows if d.get("online")}
+
+    # In-flight spawn lifecycle: clear the marker once that dim is live, or if it stayed
+    # offline past the spawn window (spawn failed -> allow a retry).
+    spawning = ledger.get_state("dd_spawning_pid")
+    spawning = int(spawning) if (spawning and spawning.isdigit()) else None
+    if spawning is not None:
+        sat = parse_iso(ledger.get_state("dd_spawning_at"))
+        if spawning in live_pids or (sat is not None and (now - sat).total_seconds() > SPAWN_INFLIGHT_MAX_WAIT):
+            ledger.clear_state("dd_spawning_pid")
+            ledger.clear_state("dd_spawning_at")
+            spawning = None
+
+    idle = {}
+    for k in ledger.state_keys_prefix("dd_idle:"):
+        suffix = k.split(":", 1)[1]
+        ts = parse_iso(ledger.get_state(k))
+        if suffix.isdigit() and ts is not None:
+            idle[int(suffix)] = ts
+
+    dec = decide_dimension_pool(
+        rows, now=now, idle_since=idle, last_spawn=parse_iso(ledger.get_state("dd_last_spawn")),
+        spawning=spawning,
+        min_dims=int(dd_cfg.get("min_dims", 1)), max_dims=int(dd_cfg.get("max_dims", 3)),
+        players_per_dim=int(dd_cfg.get("players_per_dim", 30)),
+        idle_drain_secs=int(dd_cfg.get("idle_drain_secs", 600)),
+        demand_grace_secs=int(dd_cfg.get("demand_grace_secs", 300)))
+
+    # Persist timers: the ledger mirrors dec.idle_since exactly — clear EVERY dd_idle key
+    # not in the new set (so a dim that vanished from the query can't orphan a stale timer
+    # that later drives a premature reap), then write the kept ones.
+    keep = {f"dd_idle:{pid}": ts for pid, ts in dec.idle_since.items() if ts is not None}
+    for k in ledger.state_keys_prefix("dd_idle:"):
+        if k not in keep:
+            ledger.clear_state(k)
+    for k, ts in keep.items():
+        ledger.set_state(k, iso(ts))
+    if dec.last_spawn is not None:
+        ledger.set_state("dd_last_spawn", iso(dec.last_spawn))
+
+    if dec.action not in ("spawn", "reap") or dec.target is None:
+        return []
+    verb = "dimension-up" if dec.action == "spawn" else "dimension-down"
+    label = "dim-up" if dec.action == "spawn" else "dim-down"
+    ok = _run_publish_dim(base, verb, dec.target)
+    if ok and dec.action == "spawn":
+        # Mark the in-flight spawn so the next ticks don't re-target it while it boots.
+        ledger.set_state("dd_spawning_pid", str(dec.target))
+        ledger.set_state("dd_spawning_at", iso(now))
+    if ok and dec.action == "reap":
+        # Drop the reaped dim's empty-timer now that it's actually been taken down.
+        ledger.clear_state(f"dd_idle:{dec.target}")
+    ledger.record("DeepDesert_1", label if ok else "error",
+                  dec.reason if ok else f"{verb} {dec.target} failed: {dec.reason}")
+    return [("DeepDesert_1", label, ok, dec.reason)]
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS autoscaler_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -464,6 +724,13 @@ class AutoscalerLedger:
     def clear_state(self, k):
         self.conn.execute("DELETE FROM autoscaler_state WHERE k=?", (k,))
         self.conn.commit()
+
+    def state_keys_prefix(self, prefix):
+        """All state keys starting with `prefix` (used by the DD tick to clear stale
+        dd_idle:<pid> timers for dims that vanished from the query)."""
+        cur = self.conn.execute("SELECT k FROM autoscaler_state WHERE k LIKE ? ESCAPE '\\'",
+                                (prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",))
+        return [r[0] for r in cur.fetchall()]
 
     def get_offset(self):
         v = self.get_state("log_offset")
@@ -532,6 +799,14 @@ def run_tick(base, cfg, ledger, now=None):
             ledger.record(mp, d.action if ok else "error",
                           d.reason if ok else f"PATCH http {code}: {d.reason}")
             actions.append((mp, d.action, ok, d.reason))
+    # DeepDesert-dimension pool (separate mechanism). Gated + isolated so it can never
+    # break the SSS-map path or the loop. Survival_1 sietches are never touched.
+    dd_cfg = cfg.get("deep_desert")
+    if isinstance(dd_cfg, dict) and dd_cfg.get("enabled"):
+        try:
+            actions += run_dd_tick(base, dd_cfg, ledger, now)
+        except Exception as e:  # noqa: BLE001 - isolate DD failure from the SSS path + loop
+            ledger.record("DeepDesert_1", "error", f"dd-tick error: {e}"[:200])
     if actions:
         notify(cfg.get("webhook_url", ""), format_actions(actions))
     return actions
