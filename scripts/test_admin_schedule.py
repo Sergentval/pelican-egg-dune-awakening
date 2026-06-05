@@ -689,5 +689,34 @@ class TestRunTaskCli(unittest.TestCase):
         self.assertEqual(row[0], "skipped")
 
 
+class TestOnlineCountForMap(unittest.TestCase):
+    """The scale-down guard's count MUST come from farm_state (farm-player-count),
+    not server-status — server-status keys on the character's actor map and misses
+    hub visitors, which would let the scheduler scale a populated hub down."""
+
+    @staticmethod
+    def _proc(rc=0, out=""):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    def test_uses_farm_player_count(self):
+        from unittest.mock import patch
+        calls = []
+
+        def fake(args, **kw):
+            calls.append(args)
+            return self._proc(out="map,players\nSH_HarkoVillage,2\n")
+        with patch.object(sch.subprocess, "run", fake):
+            n = sch.online_count_for_map("/base", "SH_HarkoVillage")
+        self.assertEqual(n, 2)
+        self.assertIn("farm-player-count", calls[0])
+        self.assertNotIn("server-status", calls[0])
+
+    def test_unconfirmed_is_none(self):
+        from unittest.mock import patch
+        with patch.object(sch.subprocess, "run", lambda *a, **k: self._proc(rc=1)):
+            self.assertIsNone(sch.online_count_for_map("/base", "SH_HarkoVillage"))
+
+
 if __name__ == "__main__":
     unittest.main()

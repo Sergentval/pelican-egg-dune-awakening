@@ -409,12 +409,15 @@ def run_broadcast(base, params):
 
 
 def online_count_for_map(base, mp):
-    """Online players on one map via admin-publish server-status. Returns the count,
-    or None if it could NOT be confirmed (subprocess / non-zero exit / parse failure)
-    — distinct from a genuine 0 so the scale-down guard can fail safe rather than
-    evicting players on an unreadable status. Isolated for test monkeypatch."""
+    """LIVE connected-player count on one map via admin-publish farm-player-count
+    (sum of farm_state.connected_players). Returns the count, or None if it could NOT
+    be confirmed (subprocess / non-zero exit / parse failure) — distinct from a genuine
+    0 so the scale-down guard can fail safe rather than evicting players on an unreadable
+    status. Uses farm-player-count, NOT server-status: server-status keys on the
+    character's actor map ("HarkoVillage"), missing hub VISITORS for the SSS map name
+    (SH_HarkoVillage) and so reading a populated hub as empty. Isolated for monkeypatch."""
     try:
-        r = subprocess.run(["bash", _publish(base), "server-status"],
+        r = subprocess.run(["bash", _publish(base), "farm-player-count"],
                            capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return None
