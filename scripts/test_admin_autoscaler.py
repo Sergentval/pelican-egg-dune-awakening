@@ -599,5 +599,38 @@ class TestRunTick(unittest.TestCase):
         self.assertIsNotNone(self.led.get_state("idle:SH_Arrakeen"))
 
 
+class TestReadOnlineCounts(unittest.TestCase):
+    """The emptiness signal MUST be farm_state.connected_players (live socket count),
+    not server-status (which groups by the character's home map and misses hub visitors
+    — the bug that drained Harko under a player and kicked them)."""
+
+    @staticmethod
+    def _proc(rc=0, out="", err=""):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+
+    def test_uses_farm_player_count_not_server_status(self):
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(args)
+            return self._proc(out="map,players\nSH_HarkoVillage,2\nDeepDesert_1,0\n")
+        with patch.object(az.subprocess, "run", fake_run):
+            out = az.read_online_counts("/base")
+        self.assertEqual(out, {"SH_HarkoVillage": 2, "DeepDesert_1": 0})
+        self.assertIn("farm-player-count", calls[0])
+        self.assertNotIn("server-status", calls[0])
+
+    def test_nonzero_exit_is_none(self):
+        with patch.object(az.subprocess, "run", lambda *a, **k: self._proc(rc=1, err="boom")):
+            self.assertIsNone(az.read_online_counts("/base"))
+
+    def test_subprocess_error_is_none(self):
+        def boom(*a, **k):
+            raise OSError("nope")
+        with patch.object(az.subprocess, "run", boom):
+            self.assertIsNone(az.read_online_counts("/base"))
+
+
 if __name__ == "__main__":
     unittest.main()

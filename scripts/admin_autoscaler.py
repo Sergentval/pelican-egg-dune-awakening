@@ -386,12 +386,19 @@ def read_new_log_lines(path, offset):
 
 
 def read_online_counts(base):
-    """One consistent per-map online-player snapshot via admin-publish server-status.
-    Returns {map: int}, or None if it could NOT be confirmed (subprocess / non-zero
-    exit / parse failure) — distinct from a genuine empty so every scale-down fails
-    safe rather than evicting on an unreadable status. One subprocess per tick."""
+    """One per-map LIVE connected-player snapshot via admin-publish farm-player-count
+    (sum of farm_state.connected_players per map). Returns {map: int}, or None if it
+    could NOT be confirmed (subprocess / non-zero exit / parse failure) — distinct
+    from a genuine empty so every scale-down fails safe rather than evicting on an
+    unreadable status. One subprocess per tick.
+
+    Uses farm_state (the instance socket count), NOT server-status: server-status
+    groups dune.actors by the character's PERSISTENT home map, so a player VISITING a
+    hub (Harko/Arrakeen) is counted under their home map, not the hub — which read the
+    hub as empty and got a visitor drained+kicked. connected_players is who's actually
+    on the instance, so the drain guard never evicts a hub visitor."""
     try:
-        r = subprocess.run(["bash", _publish(base), "server-status"],
+        r = subprocess.run(["bash", _publish(base), "farm-player-count"],
                            capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return None

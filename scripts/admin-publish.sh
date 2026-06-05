@@ -867,6 +867,24 @@ SQL
         exit 0
         ;;
 
+    farm-player-count)
+        # Autoscaler emptiness signal: per-map LIVE connected-player count from
+        # farm_state (the socket count each running instance heartbeats). Unlike
+        # server-status — which groups dune.actors by the character's PERSISTENT
+        # home map and so misses hub VISITORS (a player visiting Harko still has
+        # ac.map = their home map) — this counts players actually CONNECTED to a
+        # map's running instance(s). That's the count the drain guard must use so
+        # a visitor on Harko/Arrakeen is never read as 0 and evicted. Sums across
+        # a map's instances; emits CSV `map,players` (header). Read-only.
+        dune_psql -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
+            -c "SELECT map AS map, COALESCE(SUM(connected_players),0)::int AS players
+                FROM dune.farm_state
+                GROUP BY map
+                ORDER BY map"
+        exit 0
+        ;;
+
     # ----------------------------------------------------------------------
     # Player/character read subcommands. See the header block for provenance.
     # ----------------------------------------------------------------------
