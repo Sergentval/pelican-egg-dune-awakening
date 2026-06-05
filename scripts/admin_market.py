@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-# 7b-3 buy-side defaults (overridable per data/admin/market-bot.json).
+# 7b-3 buy-side defaults (overridable per server/state/admin/market-bot.json).
 BUY_THRESHOLD_DEFAULT = 1.05  # buy iff player price <= our price * this
 GAMBLE_DIE_DEFAULT = 12
 GAMBLE_TARGET_DEFAULT = 5
@@ -384,7 +384,9 @@ def market_summary(base):
 # 7b-3 buy/loop orchestration (I/O; shells admin-publish.sh for every DB op).
 # --------------------------------------------------------------------------
 def config_path(base):
-    return os.path.join(base, "data", "admin", "market-bot.json")
+    # Persistent (server/state/), not data/ (wiped on reinstall); seeded from the
+    # data/admin/ shipped default by prestart.sh. See admin_autoscaler.config_path.
+    return os.path.join(base, "server", "state", "admin", "market-bot.json")
 
 
 def load_config(base):
@@ -400,6 +402,7 @@ def write_config(base, cfg):
     """Atomically persist market-bot.json (tmp + os.replace) so a crash mid-write
     can never leave the loop reading a truncated config."""
     p = config_path(base)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)

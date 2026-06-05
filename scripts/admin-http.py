@@ -55,6 +55,7 @@ import admin_map  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pur
 import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure JSON locations store, no DB/network)
 import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
+import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
 
 
 # --------------------------------------------------------------------------
@@ -1198,12 +1199,9 @@ class Handler(BaseHTTPRequestHandler):
         # (read-only — pricing engine, no economy writes). Optional price
         # preview via ?template=<id>&grade=<n>.
         if path == "/api/market":
-            cfg = {}
-            try:
-                with open(os.path.join(BASE_DIR, "data", "admin", "market-bot.json"), encoding="utf-8") as f:
-                    cfg = json.load(f)
-            except (OSError, ValueError):
-                pass
+            # via admin_market.load_config so the (persistent server/state/) config
+            # path stays single-sourced — never re-hardcode data/admin here.
+            cfg = admin_market.load_config(BASE_DIR)
             cfg.pop("_comment", None)
             out = {
                 "ok": True,

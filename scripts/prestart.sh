@@ -51,6 +51,22 @@ log "  Region:       ${DUNE_REGION:-<unset>}"
 [ -d "$EXTRACTED/postgres" ] || die "extracted prerequisites missing — run the Update step first"
 
 # --------------------------------------------------------------------------
+# Operator daemon config persistence. The admin daemons read their config from
+# server/state/admin/ (see admin_*.config_path), NOT data/admin/ — because the
+# install wipes + re-ships data/ on every reinstall but never touches server/state/.
+# Seed each config from its data/admin/ shipped default ONLY when absent: first
+# boot installs the OFF defaults; an existing operator config (autoscaler arm,
+# market-bot loop, welcome kit, scheduler) is preserved across reinstalls.
+# --------------------------------------------------------------------------
+mkdir -p "$STATE/admin"
+for _cfg in autoscaler market-bot welcome-kit schedule; do
+  if [ ! -f "$STATE/admin/$_cfg.json" ] && [ -f "$BASE/data/admin/$_cfg.json" ]; then
+    cp "$BASE/data/admin/$_cfg.json" "$STATE/admin/$_cfg.json"
+    log "  seeded server/state/admin/$_cfg.json from shipped default"
+  fi
+done
+
+# --------------------------------------------------------------------------
 # 1. World identity
 # --------------------------------------------------------------------------
 log "Verifying world identity..."

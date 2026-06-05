@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unattended scheduler (Phase 2): due-logic + run ledger + auto-restart /
 auto-backup tick loop. Mirrors admin_welcome (sqlite ledger + scan-loop). Config
-in data/admin/schedule.json (OFF default); ledger in server/state/scheduler.db.
+in server/state/admin/schedule.json (OFF default, persists reinstall); ledger in server/state/scheduler.db.
 
 Restart is NON-BLOCKING: when a restart slot is due, the loop broadcasts the
 in-game countdown (admin-publish shutdown Restart) and stores a pending restart at
@@ -72,7 +72,9 @@ def _parse_iso(s):
 
 
 def config_path(base):
-    return os.path.join(base, "data", "admin", "schedule.json")
+    # Persistent (server/state/), not data/ (wiped on reinstall); seeded from the
+    # data/admin/ shipped default by prestart.sh. See admin_autoscaler.config_path.
+    return os.path.join(base, "server", "state", "admin", "schedule.json")
 
 
 def ledger_path(base):
