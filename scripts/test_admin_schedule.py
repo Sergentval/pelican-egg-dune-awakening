@@ -63,7 +63,7 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_merge_partial(self):
         d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(d, "data", "admin"))
+        os.makedirs(os.path.dirname(sch.config_path(d)), exist_ok=True)
         with open(sch.config_path(d), "w") as f:
             json.dump({"backup": {"enabled": True, "every_hours": 6}}, f)
         c = sch.load_config(d)
@@ -363,7 +363,7 @@ class TestRunTaskDispatch(unittest.TestCase):
 class TestLoadConfigTasks(unittest.TestCase):
     def test_load_includes_tasks(self):
         d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(d, "data", "admin"))
+        os.makedirs(os.path.dirname(sch.config_path(d)), exist_ok=True)
         with open(sch.config_path(d), "w") as f:
             json.dump({"tasks": [{"id": "x", "type": "broadcast"}]}, f)
         c = sch.load_config(d)
@@ -662,7 +662,7 @@ class TestRunTaskCli(unittest.TestCase):
     def setUp(self):
         self._orig = sch.run_task
         self.d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(self.d, "data", "admin"), exist_ok=True)
+        os.makedirs(os.path.dirname(sch.config_path(self.d)), exist_ok=True)
         os.makedirs(os.path.join(self.d, "server", "state"), exist_ok=True)
 
     def tearDown(self):

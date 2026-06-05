@@ -202,7 +202,9 @@ def ledger_path(base):
 
 
 def config_path(base):
-    return os.path.join(base, "data", "admin", "welcome-kit.json")
+    # Persistent (server/state/), not data/ (wiped on reinstall); seeded from the
+    # data/admin/ shipped default by prestart.sh. See admin_autoscaler.config_path.
+    return os.path.join(base, "server", "state", "admin", "welcome-kit.json")
 
 
 def load_config(base):

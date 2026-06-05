@@ -308,7 +308,10 @@ def _now():
 
 
 def config_path(base):
-    return os.path.join(base, "data", "admin", "autoscaler.json")
+    # Operator config lives under server/state/ (persistent — the install never wipes
+    # it), NOT data/ (refreshed from the repo on every reinstall). prestart.sh seeds it
+    # from the data/admin/ shipped default on first boot, so config survives reinstalls.
+    return os.path.join(base, "server", "state", "admin", "autoscaler.json")
 
 
 def ledger_path(base):
