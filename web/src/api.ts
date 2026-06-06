@@ -715,6 +715,7 @@ export interface Partition {
   ready: boolean;
   alive: boolean;
   players: number;
+  parked?: boolean; // Survival_1 sietch intentionally paused (data kept), distinct from plain offline/cold
 }
 export interface PartitionsResp {
   ok: boolean;
@@ -760,6 +761,12 @@ export const addSietch = (label?: string) =>
   api<DimResult>("POST", "/api/sietches", label && label.trim() ? { label: label.trim() } : {});
 export const removeSietch = (partitionId: number, force = false) =>
   api<DimResult>("POST", `/api/sietches/${partitionId}/remove`, { force });
+// Park = pause a sietch but KEEP all data + structures (survives reboot); unpark respawns
+// it with data intact. Distinct from removeSietch (which deletes). Park is player-guarded.
+export const parkSietch = (partitionId: number, force = false) =>
+  api<DimResult>("POST", `/api/sietches/${partitionId}/park`, { force });
+export const unparkSietch = (partitionId: number) =>
+  api<DimResult>("POST", `/api/sietches/${partitionId}/unpark`, {});
 
 // Per-sietch config (heterogeneous sietches: name + PvP/harvest/etc.).
 export interface SietchCapableSetting {

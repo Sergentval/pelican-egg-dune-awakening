@@ -19,8 +19,10 @@ import {
   dimensionUp,
   fetchPartitions,
   fetchStatus,
+  parkSietch,
   removeSietch,
   repairBrowser,
+  unparkSietch,
   scaleInstance,
   type DimResult,
   type Partition,
@@ -76,6 +78,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [dimConfirm, setDimConfirm] = useState<null | { partition: number; players: number }>(null);
   const [addingSietch, setAddingSietch] = useState(false);
   const [sietchConfirm, setSietchConfirm] = useState<null | { partition: number; players: number }>(null);
+  const [parkConfirm, setParkConfirm] = useState<null | { partition: number; players: number }>(null);
   const [editSietch, setEditSietch] = useState<null | { pid: number; label: string; players: number }>(null);
   const [repairing, setRepairing] = useState(false);
 
@@ -115,6 +118,35 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     }
     const ok = res.ok && b.ok === true;
     pushToConsole(setConsoleEntries, `remove sietch ${partition}`, ok ? "removed" : (b.error || "failed"), ok);
+    if (ok) void load();
+  }
+
+  async function doPark(partition: number, force = false) {
+    setDimBusy(partition);
+    const res = await parkSietch(partition, force).catch(() => null);
+    setDimBusy(0);
+    if (!res) {
+      pushToConsole(setConsoleEntries, `park sietch ${partition}`, "request failed", false);
+      return;
+    }
+    const b = res.body as DimResult;
+    if (res.ok && b.requiresConfirmation) {
+      setParkConfirm({ partition, players: b.players ?? 0 });
+      return;
+    }
+    const ok = res.ok && b.ok === true;
+    pushToConsole(setConsoleEntries, `park sietch ${partition}`, ok ? "parked (data kept)" : (b.error || "failed"), ok);
+    if (ok) void load();
+  }
+
+  async function doUnpark(partition: number) {
+    setDimBusy(partition);
+    const res = await unparkSietch(partition).catch(() => null);
+    setDimBusy(0);
+    const b = res?.body as DimResult | undefined;
+    const ok = !!res && res.ok && b?.ok === true;
+    pushToConsole(setConsoleEntries, `unpark sietch ${partition}`,
+      ok ? "unparking (respawning…)" : (b?.error || "request failed"), ok);
     if (ok) void load();
   }
 
@@ -192,32 +224,49 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
 
   function partRow(p: Partition) {
     const live = !!p.server_id && p.ready;
+    const isSietch = p.map === "Survival_1" && p.dimension > 0;
+    const parked = !!p.parked;
     return (
       <div key={p.partition_id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1 border-b border-slate-800 last:border-0 text-xs">
-        <span className={"w-2 h-2 rounded-full shrink-0 " + (live ? "bg-emerald-400" : p.server_id ? "bg-amber-400" : "bg-slate-600")} title={live ? "live" : p.server_id ? "registering" : "declared (no instance)"} />
+        <span className={"w-2 h-2 rounded-full shrink-0 " + (live ? "bg-emerald-400" : parked ? "bg-violet-400" : p.server_id ? "bg-amber-400" : "bg-slate-600")} title={live ? "live" : parked ? "parked (paused, data kept)" : p.server_id ? "registering" : "declared (no instance)"} />
         <span className="font-mono text-slate-400 w-14">#{p.partition_id}</span>
         <span className={"px-1.5 rounded text-[10px] " + (p.dimension === 0 ? "bg-sky-900/50 text-sky-300" : "bg-orange-900/50 text-orange-300")}>
           {p.dimension === 0 ? "warm" : `dim ${p.dimension}`}
         </span>
         {p.label && <span className="text-slate-400">{p.label}</span>}
+        {parked && <span className="px-1.5 rounded text-[10px] bg-violet-900/50 text-violet-300">parked · data kept</span>}
         {p.game_port != null && <span className="font-mono text-slate-500">:{p.game_port}</span>}
         {p.players > 0 && <span className="text-spice-300">{p.players}p</span>}
         {p.blocked && <span className="text-red-400 text-[10px]">blocked</span>}
         {p.alive && !p.ready && <span className="text-amber-400 text-[10px]">not ready</span>}
         {p.dimension > 0 && (
           <span className="ml-auto flex items-center gap-1">
-            {p.server_id
-              ? <button className="btn-ghost text-[10px] border border-red-900/60 text-red-300 px-1.5 py-0"
-                  disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "down")}>↓ offline</button>
-              : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
-                  disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}>↑ start</button>}
-            {p.map === "Survival_1" && (
-              <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
-                onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙</button>
-            )}
-            {p.map === "Survival_1" && (
-              <button className="btn-ghost text-[10px] border border-red-900/60 text-red-400 px-1.5 py-0"
-                disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch">✕</button>
+            {isSietch ? (
+              <>
+                {parked
+                  ? <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
+                      disabled={dimBusy === p.partition_id} onClick={() => void doUnpark(p.partition_id)}
+                      title="unpark: bring this sietch back online with its data">▶ unpark</button>
+                  : p.server_id
+                    ? <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
+                        disabled={dimBusy === p.partition_id} onClick={() => void doPark(p.partition_id)}
+                        title="park: pause this sietch but KEEP all its data (survives reboot)">⏸ park</button>
+                    : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                        disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}
+                        title="start this offline (crashed, not parked) sietch">↑ start</button>}
+                {!parked && (
+                  <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                    onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙</button>
+                )}
+                <button className="btn-ghost text-[10px] border border-red-900/60 text-red-400 px-1.5 py-0"
+                  disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch (DELETES its data)">✕</button>
+              </>
+            ) : (
+              p.server_id
+                ? <button className="btn-ghost text-[10px] border border-red-900/60 text-red-300 px-1.5 py-0"
+                    disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "down")}>↓ offline</button>
+                : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                    disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}>↑ start</button>
             )}
             {dimBusy === p.partition_id && <span className="text-slate-500">…</span>}
           </span>
@@ -262,7 +311,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
             {addingSietch ? "adding…" : "➕ Add Sietch"}
           </button>
           <span className="text-xs text-slate-500">
-            spawns a new player-choosable Survival_1 sietch (a dimension partition). All sietches share the one Deep Desert / Arrakeen / Harko. Players pick a sietch from the game browser (✕ on a Survival_1 sietch removes it).
+            spawns a new player-choosable Survival_1 sietch (a dimension partition). All sietches share the one Deep Desert / Arrakeen / Harko. Players pick a sietch from the game browser. Per sietch: ⏸ park (pause but keep all data, survives reboot) / ▶ unpark (restore) · ⚙ configure · ✕ remove (deletes its data).
           </span>
         </div>
       </div>
@@ -343,6 +392,19 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           if (c) void doRemoveSietch(c.partition, true);
         }}
         onCancel={() => setSietchConfirm(null)}
+      />
+
+      <Confirm
+        open={parkConfirm !== null}
+        title={`${parkConfirm?.players ?? 0} player(s) in sietch ${parkConfirm?.partition ?? ""}`}
+        message={`Parking sietch ${parkConfirm?.partition ?? ""} disconnects ${parkConfirm?.players ?? 0} player(s) currently in it. Their builds and the sietch are KEPT (this only pauses it — unpark restores everything). Proceed?`}
+        confirmLabel="Park sietch anyway"
+        onConfirm={() => {
+          const c = parkConfirm;
+          setParkConfirm(null);
+          if (c) void doPark(c.partition, true);
+        }}
+        onCancel={() => setParkConfirm(null)}
       />
 
       {editSietch && (
