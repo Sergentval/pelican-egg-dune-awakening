@@ -90,6 +90,13 @@ log "found ${#ROWS[@]} dimensional partition(s) to spawn"
 # connection burst.
 SPAWN_STAGGER_SEC="${DUNE_DIM_SPAWN_STAGGER_SEC:-20}"
 
+# PARKED sietches (server/state/admin/parked-sietches.json) must NOT auto-respawn at boot.
+# Read the set ONCE; the loop still consumes each row's port slot (so non-parked dims keep
+# their canonical ports) but SKIPS the spawn for a parked id, so it stays offline + its
+# data preserved until an explicit unpark. Fail-safe: a read error yields an empty set, so
+# everything spawns — we never silently skip (and thus kill) a live sietch.
+PARKED_CSV="$("${DUNE_PYTHON3:-python3}" "$SCRIPTS/admin_park.py" csv "$BASE" 2>/dev/null || true)"
+
 PORT_OFFSET=0
 for row in "${ROWS[@]}"; do
   [ -z "$row" ] && continue
@@ -97,6 +104,12 @@ for row in "${ROWS[@]}"; do
   GAME_PORT=$((DIM_GAME_PORT_BASE + PORT_OFFSET))
   IGW_PORT=$((DIM_IGW_PORT_BASE + PORT_OFFSET))
   PORT_OFFSET=$((PORT_OFFSET + 1))
+
+  # Reserve the port slot above, but do NOT spawn a parked sietch (it stays offline across
+  # reboot with its data intact; unpark respawns it at this same canonical slot).
+  case ",$PARKED_CSV," in
+    *",$PART_ID,"*) log "  skip PARKED sietch partition=$PART_ID dim=$DIM (paused, data preserved)"; continue ;;
+  esac
 
   SUFFIX="dim${DIM}-p${PART_ID}"
   log "  spawning $MAP partition=$PART_ID dim=$DIM port=$GAME_PORT igw=$IGW_PORT suffix=$SUFFIX"
