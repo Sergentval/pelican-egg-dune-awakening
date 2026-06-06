@@ -226,6 +226,14 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     const live = !!p.server_id && p.ready;
     const isSietch = p.map === "Survival_1" && p.dimension > 0;
     const parked = !!p.parked;
+    // Explicit state badge so cold vs parked vs live is obvious at a glance.
+    const state = parked
+      ? { t: "parked · data kept", c: "bg-violet-900/50 text-violet-300" }
+      : live
+        ? { t: "live", c: "bg-emerald-900/50 text-emerald-300" }
+        : p.server_id
+          ? { t: "starting", c: "bg-amber-900/50 text-amber-300" }
+          : { t: "cold", c: "bg-slate-700 text-slate-300" };
     return (
       <div key={p.partition_id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1 border-b border-slate-800 last:border-0 text-xs">
         <span className={"w-2 h-2 rounded-full shrink-0 " + (live ? "bg-emerald-400" : parked ? "bg-violet-400" : p.server_id ? "bg-amber-400" : "bg-slate-600")} title={live ? "live" : parked ? "parked (paused, data kept)" : p.server_id ? "registering" : "declared (no instance)"} />
@@ -234,7 +242,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           {p.dimension === 0 ? "warm" : `dim ${p.dimension}`}
         </span>
         {p.label && <span className="text-slate-400">{p.label}</span>}
-        {parked && <span className="px-1.5 rounded text-[10px] bg-violet-900/50 text-violet-300">parked · data kept</span>}
+        <span className={"px-1.5 rounded text-[10px] " + state.c}>{state.t}</span>
         {p.game_port != null && <span className="font-mono text-slate-500">:{p.game_port}</span>}
         {p.players > 0 && <span className="text-spice-300">{p.players}p</span>}
         {p.blocked && <span className="text-red-400 text-[10px]">blocked</span>}
@@ -243,17 +251,21 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           <span className="ml-auto flex items-center gap-1">
             {isSietch ? (
               <>
-                {parked
-                  ? <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
-                      disabled={dimBusy === p.partition_id} onClick={() => void doUnpark(p.partition_id)}
-                      title="unpark: bring this sietch back online with its data">▶ unpark</button>
-                  : p.server_id
-                    ? <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
-                        disabled={dimBusy === p.partition_id} onClick={() => void doPark(p.partition_id)}
-                        title="park: pause this sietch but KEEP all its data (survives reboot)">⏸ park</button>
-                    : <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
-                        disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}
-                        title="start this offline (crashed, not parked) sietch">↑ start</button>}
+                {parked && (
+                  <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
+                    disabled={dimBusy === p.partition_id} onClick={() => void doUnpark(p.partition_id)}
+                    title="unpark: bring this sietch back online with its data">▶ unpark</button>
+                )}
+                {!parked && !p.server_id && (
+                  <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
+                    disabled={dimBusy === p.partition_id} onClick={() => void dimAct(p.partition_id, "up")}
+                    title="start this cold sietch (bring it online, not parked)">↑ start</button>
+                )}
+                {!parked && (
+                  <button className="btn-ghost text-[10px] border border-violet-900/60 text-violet-300 px-1.5 py-0"
+                    disabled={dimBusy === p.partition_id} onClick={() => void doPark(p.partition_id)}
+                    title="park: pause this sietch but KEEP all its data (survives reboot) — works whether it's live or cold">⏸ park</button>
+                )}
                 {!parked && (
                   <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
                     onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙</button>
