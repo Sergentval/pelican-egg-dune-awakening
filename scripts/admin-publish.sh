@@ -2417,11 +2417,61 @@ DELETE FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Surv
 COMMIT;
 SQL
         if [ "$rc" -ne 0 ]; then echo "[admin-publish] ERROR sietch-remove: DB delete failed (rolled back)" >&2; exit 1; fi
+        # Drop any dangling parked flag for this now-removed sietch (no-op if it wasn't parked)
+        # so parked-sietches.json never points at a deleted partition. Best-effort.
+        "${DUNE_PYTHON3:-python3}" "$BASE/scripts/admin_park.py" unpark "$pid_arg" "$BASE" >/dev/null 2>&1 || true
         # Flush the Director's sticky in-memory battlegroup (it never self-prunes a
         # deleted partition) so the sietch disappears from the browser. Best-effort.
         bash "$BASE/scripts/admin-publish.sh" svc-restart director >/dev/null 2>&1 || true
         echo "[admin-publish] OK sietch-remove partition=$pid_arg dim=$SDIM (Director resynced)"
         echo "publish=db-write sietch-remove $pid_arg"
+        exit 0
+        ;;
+    sietch-park)
+        # PARK a Survival_1 sietch: pause it (free RAM) but KEEP all data, and make the
+        # pause survive reboot WITHOUT auto-respawn. = mark it parked (the boot scanner +
+        # spawn-dimension then skip it) THEN take it offline via the proven, reversible
+        # dimension-down (kill UE5, NULL server_id, drop farm_state — world_partition row +
+        # every player structure preserved; no farm_state => it leaves the browser). Refuses
+        # Abbir (dim0) / non-Survival_1. DISTINCT from sietch-remove (which DELETEs the data).
+        # Idempotent: the parked flag is durable intent, so a re-run retries a failed take-down.
+        pid_arg="${1:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-park: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition || exit 3
+        ok=$(dune_psql_q -tA -q --set=p="$pid_arg" <<'SQL'
+SELECT '1' FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0
+SQL
+)
+        if [ -z "$ok" ]; then echo "[admin-publish] ERROR sietch-park: $pid_arg is not a parkable Survival_1 sietch (need map=Survival_1, dimension_index>0; the Abbir base cannot be parked)" >&2; exit 1; fi
+        # Mark parked FIRST — durable intent: the boot-skip + spawn-guard enforce the pause
+        # even if the take-down below is interrupted (re-run sietch-park to retry the kill).
+        "${DUNE_PYTHON3:-python3}" "$BASE/scripts/admin_park.py" park "$pid_arg" "$BASE" >/dev/null || { echo "[admin-publish] ERROR sietch-park: could not record parked state" >&2; exit 1; }
+        if ! bash "$BASE/scripts/admin-publish.sh" dimension-down "$pid_arg" >/dev/null 2>&1; then
+            echo "[admin-publish] WARN sietch-park: $pid_arg marked parked but take-down failed; re-run sietch-park $pid_arg to retry" >&2
+            echo "publish=ok sietch-park $pid_arg parked-takedown-failed"
+            exit 1
+        fi
+        echo "[admin-publish] OK sietch-park partition=$pid_arg (paused, data preserved; stays parked across reboot until unpark)"
+        echo "publish=db-write sietch-park $pid_arg"
+        exit 0
+        ;;
+    sietch-unpark)
+        # UNPARK a parked Survival_1 sietch: clear the parked flag THEN respawn it via the
+        # proven dimension-up (canonical-port respawn; structures reload from partition_id).
+        # Clear-flag-FIRST is required — spawn-dimension refuses a still-parked partition.
+        pid_arg="${1:-}"
+        case "$pid_arg" in ''|*[!0-9]*) echo "[admin-publish] ERROR sietch-unpark: partition_id must be an integer, got '$pid_arg'" >&2; exit 2 ;; esac
+        dune_require_tables dune.world_partition || exit 3
+        ok=$(dune_psql_q -tA -q --set=p="$pid_arg" <<'SQL'
+SELECT '1' FROM dune.world_partition WHERE partition_id = :'p'::bigint AND map='Survival_1' AND dimension_index > 0
+SQL
+)
+        if [ -z "$ok" ]; then echo "[admin-publish] ERROR sietch-unpark: $pid_arg is not a Survival_1 sietch" >&2; exit 1; fi
+        # Clear the parked flag FIRST so spawn-dimension's parked-guard lets it respawn.
+        "${DUNE_PYTHON3:-python3}" "$BASE/scripts/admin_park.py" unpark "$pid_arg" "$BASE" >/dev/null || { echo "[admin-publish] ERROR sietch-unpark: could not clear parked state" >&2; exit 1; }
+        bash "$BASE/scripts/admin-publish.sh" dimension-up "$pid_arg" >/dev/null 2>&1 || { echo "[admin-publish] WARN sietch-unpark: $pid_arg flag cleared but respawn dispatch failed; run dimension-up $pid_arg" >&2; }
+        echo "[admin-publish] OK sietch-unpark partition=$pid_arg (respawning; poll /api/partitions, ~1-3 min to live)"
+        echo "publish=db-write sietch-unpark $pid_arg"
         exit 0
         ;;
     repair-browser)
