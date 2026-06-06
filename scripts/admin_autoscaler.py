@@ -60,7 +60,12 @@ SPAWN_INFLIGHT_MAX_WAIT = 600
 
 DEFAULT_CONFIG = {
     "enabled": False,
-    "scan_interval_secs": 60,
+    # The scan cadence doubles as the wake-NOTICE latency: a cold map's inbound-travel
+    # line waits up to one full interval before a tick reads it. Default = the MIN floor
+    # so cold->warm starts as fast as the sanctioned cadence allows (sub-floor only adds
+    # psql load for no benefit — see MIN_SCAN_INTERVAL_SECS). Phase 2 (event-driven wake)
+    # cuts the remaining mean ~15s without going below this floor.
+    "scan_interval_secs": 30,
     "idle_drain_secs": 300,    # an empty map must stay empty this long before draining
     "demand_grace_secs": 120,  # after any inbound travel-demand, immune to drain this long
     "players_per_instance": 30,

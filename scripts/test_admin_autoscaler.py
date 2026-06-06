@@ -34,7 +34,7 @@ class TestValidateConfig(unittest.TestCase):
         c, err = az.validate_config({})
         self.assertIsNone(err)
         self.assertFalse(c["enabled"])
-        self.assertEqual(c["scan_interval_secs"], 60)
+        self.assertEqual(c["scan_interval_secs"], 30)  # default = the MIN floor: fastest sanctioned wake-notice cadence
         self.assertEqual(c["idle_drain_secs"], 300)
         self.assertEqual(c["demand_grace_secs"], 120)
         self.assertEqual(c["players_per_instance"], 30)
