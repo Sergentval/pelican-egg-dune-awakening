@@ -59,7 +59,7 @@ DEADLINE=$(( $(date +%s) + 240 ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   R="$(psql_q -c "SELECT count(*) FROM dune.farm_state WHERE map='$MAP' AND game_port=$GAME_PORT AND ready=true")"
   [ "${R:-0}" -ge 1 ] && break
-  sleep 5
+  sleep 2   # tight poll: notice 'ready' ASAP (cuts wake quantization); the 240s wall-clock DEADLINE above is preserved
 done
 
 # Writeback (guarded by server_id IS NULL so a concurrent run can't double-bind).
