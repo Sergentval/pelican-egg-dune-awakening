@@ -24,6 +24,14 @@ source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
 
 case "$PART_ID" in ''|*[!0-9]*) die "usage: spawn-dimension.sh BASE PARTITION_ID (numeric)" ;; esac
 
+# Refuse to spawn a PARKED sietch: a parked partition must stay offline (its data preserved)
+# until an explicit unpark, which clears the parked flag BEFORE calling this. This guards a
+# stray dimension-up from reviving a parked sietch. is-parked exits 0 only when parked; any
+# error exits non-zero -> treated as not-parked, so a read failure never wrongly blocks a spawn.
+if "${DUNE_PYTHON3:-python3}" "$SCRIPTS/admin_park.py" is-parked "$PART_ID" "$BASE" 2>/dev/null; then
+  die "partition $PART_ID is PARKED — unpark it first (it stays offline with its data preserved)"
+fi
+
 DIM_GAME_PORT_BASE="${DUNE_DIM_GAME_PORT_BASE:-7790}"
 DIM_IGW_PORT_BASE="${DUNE_DIM_IGW_PORT_BASE:-7960}"
 PG_BIN="$(rootfs postgres)/usr/local/bin"
