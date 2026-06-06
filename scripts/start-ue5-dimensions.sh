@@ -132,7 +132,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     log "all ${#ROWS[@]} dimensional partitions ready in farm_state"
     break
   fi
-  sleep 5
+  sleep 2   # tight poll: notice 'ready' ASAP (cuts wake quantization); the 240s wall-clock DEADLINE above is preserved
 done
 
 # Map farm_state.server_id back to world_partition. Match by
