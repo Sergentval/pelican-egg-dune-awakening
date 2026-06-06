@@ -35,6 +35,7 @@ class TestValidateConfig(unittest.TestCase):
         self.assertIsNone(err)
         self.assertFalse(c["enabled"])
         self.assertEqual(c["scan_interval_secs"], 30)  # default = the MIN floor: fastest sanctioned wake-notice cadence
+        self.assertEqual(c["wake_poll_secs"], 5)       # fast demand-wake cadence between full ticks
         self.assertEqual(c["idle_drain_secs"], 300)
         self.assertEqual(c["demand_grace_secs"], 120)
         self.assertEqual(c["players_per_instance"], 30)
@@ -53,6 +54,12 @@ class TestValidateConfig(unittest.TestCase):
         self.assertEqual(az.validate_config({"scan_interval_secs": 5})[0]["scan_interval_secs"],
                          az.MIN_SCAN_INTERVAL_SECS)
         self.assertEqual(az.validate_config({"scan_interval_secs": 90})[0]["scan_interval_secs"], 90)
+
+    def test_wake_poll_floor(self):
+        # the fast demand-wake cadence is clamped up to its floor, not rejected
+        self.assertEqual(az.validate_config({"wake_poll_secs": 0})[0]["wake_poll_secs"],
+                         az.MIN_WAKE_POLL_SECS)
+        self.assertEqual(az.validate_config({"wake_poll_secs": 8})[0]["wake_poll_secs"], 8)
 
     def test_int_fields_validated(self):
         for k in ("idle_drain_secs", "demand_grace_secs", "players_per_instance", "scan_interval_secs"):
@@ -597,6 +604,97 @@ class TestRunTick(unittest.TestCase):
         az.run_tick("/base", cfg, self.led)  # empties now -> idle timer starts, no drain yet
         self.assertEqual(self.calls, [])
         self.assertIsNotNone(self.led.get_state("idle:SH_Arrakeen"))
+
+
+class TestRunWake(unittest.TestCase):
+    """The fast demand-wake pass (Phase 2a): wakes a cold/under-floor map on inbound
+    travel demand WITHOUT the psql online-count read, so it can run on a short cadence
+    between full ticks. It must NEVER scale down and NEVER touch the idle/drain timer
+    (the full tick owns that) — only arm the demand grace + bring a map UP."""
+
+    def setUp(self):
+        self.led = az.AutoscalerLedger(":memory:")
+        self.addCleanup(self.led.close)
+        self.led.set_offset(0)
+
+    def _fakes(self, *, status, demand_lines=([], 0), patch_ret=(200, {})):
+        self.calls = []
+        self.mock_fetched = []
+
+        def fake_patch(method, path, body=None, **kw):
+            self.calls.append((path, body))
+            return patch_ret
+
+        def fake_status(*a, **k):
+            self.mock_fetched.append(True)
+            return status
+
+        def boom_counts(b):
+            raise AssertionError("run_wake must NOT read online counts (psql)")
+        for name, fn in (("fetch_mock_status", fake_status),
+                         ("read_online_counts", boom_counts),
+                         ("read_new_log_lines", lambda p, o: demand_lines),
+                         ("mock_k8s_request", fake_patch)):
+            p = patch.object(az, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _cfg(self, **kw):
+        return az.validate_config({"maps": [{"map": "SH_HarkoVillage", "min_replicas": 0, "max_replicas": 2}], **kw})[0]
+
+    def test_wakes_cold_map_on_demand(self):
+        self._fakes(status=_snap({"SH_HarkoVillage": 0}),
+                    demand_lines=(["Received travel request for 2 player(s) to SH_HarkoVillage"], 60))
+        actions = az.run_wake("/base", self._cfg(), self.led)
+        self.assertEqual(self.calls[0][1], {"spec": {"replicas": 1}})  # cold -> 1 on demand
+        self.assertEqual((actions[0][0], actions[0][1], actions[0][2]), ("SH_HarkoVillage", "up", True))
+        self.assertEqual(self.led.get_offset(), 60)  # lines consumed, offset advanced
+
+    def test_idle_only_lines_short_circuit(self):
+        # only num:0 travel-queue lines -> nothing to wake, and we never even call mock-k8s
+        self._fakes(status=_snap({"SH_HarkoVillage": 0}),
+                    demand_lines=(["Processing travel queue for SH_HarkoVillage (servers: [], num: 0)"], 40))
+        self.assertEqual(az.run_wake("/base", self._cfg(), self.led), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.mock_fetched, [])      # cheapest path: no mock-k8s fetch
+        self.assertEqual(self.led.get_offset(), 40)  # offset still advances (edge-trigger)
+
+    def test_never_reads_online_counts(self):
+        # boom_counts raises if read_online_counts is called; reaching the assert proves it isn't
+        self._fakes(status=_snap({"SH_HarkoVillage": 0}),
+                    demand_lines=(["Received travel request for 1 player(s) to SH_HarkoVillage"], 30))
+        az.run_wake("/base", self._cfg(), self.led)  # would raise inside if psql were read
+
+    def test_never_scales_down(self):
+        # a map already at/above what demand asks for must hold — the fast pass never downs
+        self._fakes(status=_snap({"SH_HarkoVillage": 2}),
+                    demand_lines=(["Received travel request for 1 player(s) to SH_HarkoVillage"], 30))
+        self.assertEqual(az.run_wake("/base", self._cfg(), self.led), [])
+        self.assertEqual(self.calls, [])
+
+    def test_preserves_idle_timer(self):
+        # the idle/drain countdown is the full tick's; the fast pass must not reset it
+        self._fakes(status=_snap({"SH_HarkoVillage": 0}),
+                    demand_lines=(["Received travel request for 1 player(s) to SH_HarkoVillage"], 30))
+        ts = az.iso(az._now() - timedelta(seconds=200))
+        self.led.set_state("idle:SH_HarkoVillage", ts)
+        az.run_wake("/base", self._cfg(), self.led)
+        self.assertEqual(self.led.get_state("idle:SH_HarkoVillage"), ts)  # untouched
+
+    def test_arms_demand_grace_for_full_tick(self):
+        self._fakes(status=_snap({"SH_HarkoVillage": 0}),
+                    demand_lines=(["Received travel request for 1 player(s) to SH_HarkoVillage"], 30))
+        az.run_wake("/base", self._cfg(), self.led)
+        self.assertIsNotNone(self.led.get_state("demand:SH_HarkoVillage"))  # grace armed for the drain guard
+
+    def test_grace_armed_even_when_mock_down(self):
+        # demand seen but mock-k8s unreachable: can't wake, but still arm the grace + consume lines
+        self._fakes(status=None,
+                    demand_lines=(["Received travel request for 1 player(s) to SH_HarkoVillage"], 30))
+        self.assertEqual(az.run_wake("/base", self._cfg(), self.led), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.led.get_offset(), 30)
+        self.assertIsNotNone(self.led.get_state("demand:SH_HarkoVillage"))
 
 
 class TestReadOnlineCounts(unittest.TestCase):

@@ -1025,6 +1025,7 @@ export interface DeepDesertConfig {
 export interface AutoscalerConfig {
   enabled: boolean;
   scan_interval_secs: number;
+  wake_poll_secs: number;
   idle_drain_secs: number;
   demand_grace_secs: number;
   players_per_instance: number;

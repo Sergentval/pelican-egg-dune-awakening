@@ -2,6 +2,7 @@
   "_comment": "Demand-based autoscaler. enabled:false = the loop (start-autoscaler.sh / admin_autoscaler.py scan-loop) is a no-op; flip to true to arm it. Each tick it scales the 3 on-demand maps via mock-k8s ServerSetScale from the live online-player count + new director.log travel-demand. Per map: min_replicas>=1 keeps it warm and load-scales up (ceil(online/players_per_instance), capped at max_replicas); min_replicas==0 drains it fully cold when idle and wakes it to 1 on inbound travel. Anti-flap: an empty map must stay empty idle_drain_secs before draining, and is immune to drain for demand_grace_secs after any inbound travel. UE5 cold boot is ~40s, so use min_replicas:1 for instant joins and min_replicas:0 only where freeing RAM matters more than wake latency. Edit via the Autoscaler tab; scan_interval_secs floors at 30.",
   "enabled": false,
   "scan_interval_secs": 30,
+  "wake_poll_secs": 5,
   "idle_drain_secs": 300,
   "demand_grace_secs": 120,
   "players_per_instance": 30,
