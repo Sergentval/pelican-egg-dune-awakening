@@ -2448,6 +2448,33 @@ SQL
         echo "publish=ok repair-browser swept=$swept"
         exit 0
         ;;
+    sweep-orphans)
+        # Unattended variant of repair-browser, safe to run on the autoscaler's timer:
+        # delete ONLY the dead ghost rows (alive=false AND server_id claimed by no
+        # world_partition row) that a reap/respawn leaves behind and which double a
+        # sietch/map in the in-game browser. Two safety differences from repair-browser:
+        #   (1) alive=false guard — a sietch MID-SPAWN registers alive=true before its
+        #       server_id writeback, so it is an orphan-by-server_id but NOT dead; this
+        #       guard means the timer can never delete a legitimately-booting instance.
+        #   (2) NO Director restart — the Director re-reads farm_state on its own
+        #       DbFetchInterval, so deleting the ghost is enough to drop it; restarting
+        #       every tick would be wildly disruptive. (Use repair-browser, which DOES
+        #       restart, for a fully-removed sietch that lingers in the sticky battlegroup.)
+        dune_require_tables dune.world_partition dune.farm_state || exit 3
+        swept=$(dune_psql_q -tA -q <<'SQL'
+WITH del AS (
+  DELETE FROM dune.farm_state fs
+   WHERE fs.alive = false
+     AND NOT EXISTS (SELECT 1 FROM dune.world_partition wp WHERE wp.server_id = fs.server_id)
+   RETURNING 1)
+SELECT count(*) FROM del
+SQL
+)
+        swept=$(printf '%s' "$swept" | tr -dc '0-9'); swept="${swept:-0}"
+        echo "[admin-publish] OK sweep-orphans: swept $swept dead orphan farm_state row(s)"
+        echo "publish=ok sweep-orphans swept=$swept"
+        exit 0
+        ;;
     sietch-rename)
         # Rename a sietch: its world_partition.label = the browser display name
         # (start-ue5.sh feeds it to the per-instance UserEngine.ini on (re)spawn).
