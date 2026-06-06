@@ -10,5 +10,14 @@
     { "map": "DeepDesert_1", "enabled": true, "min_replicas": 1, "max_replicas": 2 },
     { "map": "SH_Arrakeen", "enabled": true, "min_replicas": 1, "max_replicas": 2 },
     { "map": "SH_HarkoVillage", "enabled": true, "min_replicas": 1, "max_replicas": 2 }
-  ]
+  ],
+  "_deep_desert_comment": "Load-proportional autoscaling of the DeepDesert SANDSTORM DIMENSIONS (world_partition rows map='DeepDesert_1', dimension_index>0 — spawned/reaped via dimension-up/down, a DIFFERENT mechanism from the mock-k8s 'maps' above). OFF by default. Survival_1 sietches are PLAYER BASES and are NEVER touched by this — by construction the scaler only ever sees DeepDesert_1 dims. min_dims is the warm floor of live dims (0 = allow fully cold); max_dims is clamped to the seeded DUNE_DD_DIMENSIONS row count; a new dim spawns when the live-dim average reaches players_per_dim; an empty dim is reaped after idle_drain_secs; demand_grace_secs throttles spawn/reap (floored to the worst-case spawn time, ~300s).",
+  "deep_desert": {
+    "enabled": false,
+    "min_dims": 1,
+    "max_dims": 3,
+    "players_per_dim": 30,
+    "idle_drain_secs": 600,
+    "demand_grace_secs": 300
+  }
 }

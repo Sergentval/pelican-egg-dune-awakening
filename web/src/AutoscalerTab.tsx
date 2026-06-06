@@ -17,6 +17,7 @@ import {
   type AutoscalerConfig,
   type AutoscalerMapCfg,
   type AutoscalerStatus,
+  type DeepDesertConfig,
   autoscalerConfig,
   autoscalerTick,
   fetchAutoscaler,
@@ -48,6 +49,16 @@ function logResult(setEntries: SetEntries, label: string, res: { ok: boolean; bo
 }
 
 const SCALE_MAX = 4; // mirrors admin_instances.SCALE_REPLICAS_MAX
+const DD_GRACE_FLOOR = 300; // mirrors admin_autoscaler.SPAWN_COOLDOWN_FLOOR (server clamps below this)
+
+const DD_DEFAULTS: DeepDesertConfig = {
+  enabled: false,
+  min_dims: 1,
+  max_dims: 3,
+  players_per_dim: 30,
+  idle_drain_secs: 600,
+  demand_grace_secs: 300,
+};
 
 const DEFAULTS: AutoscalerConfig = {
   enabled: false,
@@ -57,6 +68,7 @@ const DEFAULTS: AutoscalerConfig = {
   players_per_instance: 30,
   webhook_url: "",
   maps: [],
+  deep_desert: DD_DEFAULTS,
 };
 
 export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
@@ -69,7 +81,13 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     if (r && r.ok && typeof r.body === "object" && r.body) {
       const s = r.body as AutoscalerStatus;
       setInfo(s);
-      if (s.config) setCfg({ ...DEFAULTS, ...s.config, maps: s.config.maps ?? [] });
+      if (s.config)
+        setCfg({
+          ...DEFAULTS,
+          ...s.config,
+          maps: s.config.maps ?? [],
+          deep_desert: { ...DD_DEFAULTS, ...s.config.deep_desert },
+        });
     }
   }
 
@@ -103,7 +121,10 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
   const anyBusy = busy !== "";
   const armed = info?.config?.enabled === true;
 
-  function num(key: keyof Omit<AutoscalerConfig, "maps" | "enabled">, label: string, min: number, max: number) {
+  function num(
+    key: keyof Omit<AutoscalerConfig, "maps" | "enabled" | "webhook_url" | "deep_desert">,
+    label: string, min: number, max: number,
+  ) {
     return (
       <label className="flex flex-col gap-1 text-xs">
         <span className="text-slate-400">{label}</span>
@@ -121,6 +142,26 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
 
   function updateMap(i: number, patch: Partial<AutoscalerMapCfg>) {
     setCfg({ ...cfg, maps: cfg.maps.map((m, idx) => (idx === i ? { ...m, ...patch } : m)) });
+  }
+
+  const dd = cfg.deep_desert ?? DD_DEFAULTS;
+  function updateDd(patch: Partial<DeepDesertConfig>) {
+    setCfg({ ...cfg, deep_desert: { ...dd, ...patch } });
+  }
+  function ddNum(key: keyof Omit<DeepDesertConfig, "enabled">, label: string, min: number, max: number) {
+    return (
+      <label className="flex flex-col gap-1 text-xs">
+        <span className="text-slate-400">{label}</span>
+        <input
+          type="number" min={min} max={max} step={1} value={dd[key]}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            updateDd({ [key]: Number.isNaN(v) ? min : Math.max(min, Math.min(max, v)) });
+          }}
+          className="input-field w-full font-mono"
+        />
+      </label>
+    );
   }
 
   return (
@@ -209,6 +250,83 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
               {busy === "tick" ? "running…" : "Run one tick now"}
             </button>
             <span className="text-xs text-slate-500">“Run one tick now” scales once immediately, ignoring the enabled flag.</span>
+          </div>
+        </div>
+      </div>
+
+      {/* DeepDesert sandstorm-dimension pool — a SEPARATE mechanism (dimension-up/down,
+          not mock-k8s replicas), OFF by default. Survival sietches are player bases and
+          are NEVER autoscaled here. */}
+      <div className="card">
+        <header className="card-header">
+          <div>
+            <h2 className="font-semibold flex items-center gap-2">
+              DeepDesert dimensions
+              <span className={dd.enabled ? "pill-ok" : "pill-warn"}>{dd.enabled ? "armed" : "off"}</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Load-proportional spawn / reap of the DeepDesert sandstorm dimensions (a
+              different mechanism from the on-demand maps above). Survival sietches are player
+              bases and are never touched. A new dim spawns when the live-dim average reaches
+              the threshold; an empty dim is reaped after it stays empty past the idle window.
+            </p>
+          </div>
+        </header>
+
+        <div className="p-4 space-y-4">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={dd.enabled}
+              onChange={(e) => updateDd({ enabled: e.target.checked })} />
+            <span>Autoscale DeepDesert dimensions</span>
+          </label>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {ddNum("min_dims", "Min dims (0 = cold)", 0, dd.max_dims)}
+            {ddNum("max_dims", "Max dims", 1, 8)}
+            {ddNum("players_per_dim", "Players / dim", 1, 1000)}
+            {ddNum("idle_drain_secs", "Idle reap (s)", 0, 86400)}
+            {ddNum("demand_grace_secs", "Spawn cooldown (s)", DD_GRACE_FLOOR, 86400)}
+          </div>
+          <p className="text-xs text-slate-500">
+            Max dims is capped at the seeded dimension count (DUNE_DD_DIMENSIONS); spawn
+            cooldown floors at {DD_GRACE_FLOOR}s (worst-case spawn time). The DeepDesert config
+            saves with the same buttons above.
+          </p>
+
+          {/* Live per-dim view (polls ~15s with the rest). */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="text-xs uppercase tracking-wider text-slate-500">Live dimensions</div>
+              {info?.deep_desert?.readable && (
+                <span className="text-xs text-slate-500 font-mono">
+                  live {info.deep_desert.live} / {info.deep_desert.declared} · floor {info.deep_desert.min_dims}–{info.deep_desert.max_dims}
+                </span>
+              )}
+            </div>
+            {!info?.deep_desert ? (
+              <p className="text-xs text-slate-500">No DeepDesert data.</p>
+            ) : !info.deep_desert.readable ? (
+              <p className="text-xs text-amber-400">dimension count unreadable — holding (never scales blind).</p>
+            ) : info.deep_desert.dims.length === 0 ? (
+              <p className="text-xs text-slate-500">No DeepDesert dimensions declared.</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="text-slate-500 text-left">
+                  <tr><th className="pb-1">Dim</th><th className="pb-1">Partition</th><th className="pb-1">State</th><th className="pb-1">Players</th><th className="pb-1">Label</th></tr>
+                </thead>
+                <tbody className="font-mono">
+                  {info.deep_desert.dims.map((d) => (
+                    <tr key={d.partition_id} className="border-t border-slate-800/60">
+                      <td className="py-1 pr-3">{d.dimension_index}</td>
+                      <td className="py-1 pr-3 text-slate-400">{d.partition_id}</td>
+                      <td className={"py-1 pr-3 " + (d.online ? "text-emerald-300" : "text-slate-500")}>{d.online ? "● live" : "○ offline"}</td>
+                      <td className={"py-1 pr-3 " + (d.players > 0 ? "text-spice-300" : "text-slate-500")}>{d.players}</td>
+                      <td className="py-1 text-slate-400">{d.label || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>

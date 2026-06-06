@@ -1011,6 +1011,17 @@ export interface AutoscalerMapCfg {
   min_replicas: number;
   max_replicas: number;
 }
+// DeepDesert sandstorm-DIMENSION pool autoscaling (separate from the mock-k8s `maps`:
+// these are world_partition rows spawned/reaped via dimension-up/down). Survival_1
+// sietches are player bases and are NEVER autoscaled — this only addresses DeepDesert_1.
+export interface DeepDesertConfig {
+  enabled: boolean;
+  min_dims: number;
+  max_dims: number;
+  players_per_dim: number;
+  idle_drain_secs: number;
+  demand_grace_secs: number;
+}
 export interface AutoscalerConfig {
   enabled: boolean;
   scan_interval_secs: number;
@@ -1019,6 +1030,7 @@ export interface AutoscalerConfig {
   players_per_instance: number;
   webhook_url?: string;
   maps: AutoscalerMapCfg[];
+  deep_desert?: DeepDesertConfig;
 }
 export interface AutoscalerRun {
   map: string;
@@ -1032,6 +1044,27 @@ export interface AutoscalerLive {
   status: string | null;
   players: number | null;
 }
+// One live DeepDesert dimension (a world_partition row). players is the farm_state
+// connected count, trusted only when online (offline reads 0, never a phantom).
+export interface AutoscalerDimLive {
+  partition_id: number;
+  dimension_index: number;
+  online: boolean;
+  players: number;
+  label: string;
+}
+// The DD-pool live view: per-dim rows + aggregate, with floor/ceiling the scaler
+// enforces. readable=false means the count was unconfirmed (show "—", never act blind).
+export interface DeepDesertLive {
+  readable: boolean;
+  enabled: boolean;
+  dims: AutoscalerDimLive[];
+  live: number;
+  declared: number;
+  players: number;
+  min_dims: number;
+  max_dims: number;
+}
 export interface AutoscalerStatus {
   ok: boolean;
   config?: AutoscalerConfig;
@@ -1039,6 +1072,7 @@ export interface AutoscalerStatus {
   state?: Record<string, { idle_since: string | null; last_demand: string | null }>;
   live?: Record<string, AutoscalerLive>;
   sources?: { mockK8s: boolean; players: boolean };
+  deep_desert?: DeepDesertLive;
   log_offset?: number | null;
   error?: string;
 }
