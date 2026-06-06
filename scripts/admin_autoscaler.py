@@ -46,8 +46,13 @@ from admin_instances import (  # noqa: E402
     resolve_scale_key,
 )
 
-# Loop cadence floor: server-status shells psql, so a sub-30s loop is wasteful.
+# Full-tick cadence floor: the full tick shells psql (read_online_counts), so running it
+# sub-30s is wasteful. This floors scan_interval_secs (the DRAIN/load cadence).
 MIN_SCAN_INTERVAL_SECS = 30
+# Fast demand-wake cadence floor: the wake pass (run_wake) reads only director.log + (on
+# real demand) one mock-k8s call — no psql — so it can run far tighter than the full tick
+# to cut cold->warm NOTICE latency without the psql cost the 30s floor guards against.
+MIN_WAKE_POLL_SECS = 2
 # A dimension-up spawn blocks ~1-3 min (spawn-dimension.sh's farm_state poll deadline
 # is 240s + UE5 cold boot). The DD spawn cooldown is floored to this for anti-flap.
 SPAWN_COOLDOWN_FLOOR = 300
@@ -66,6 +71,10 @@ DEFAULT_CONFIG = {
     # psql load for no benefit — see MIN_SCAN_INTERVAL_SECS). Phase 2 (event-driven wake)
     # cuts the remaining mean ~15s without going below this floor.
     "scan_interval_secs": 30,
+    # Between full ticks, a cheap pass re-checks director.log this often and wakes a cold
+    # map the moment inbound travel appears — so cold->warm starts in ~wake_poll_secs, not
+    # ~scan_interval_secs. No psql, so it's safe to keep tight (floored at MIN_WAKE_POLL_SECS).
+    "wake_poll_secs": 5,
     "idle_drain_secs": 300,    # an empty map must stay empty this long before draining
     "demand_grace_secs": 120,  # after any inbound travel-demand, immune to drain this long
     "players_per_instance": 30,
@@ -188,6 +197,10 @@ def validate_config(raw):
     out: dict = {"enabled": _coerce_bool(raw.get("enabled", False))}
     out["scan_interval_secs"], err = _int_field(
         raw, "scan_interval_secs", DEFAULT_CONFIG["scan_interval_secs"], minimum=MIN_SCAN_INTERVAL_SECS)
+    if err:
+        return None, err
+    out["wake_poll_secs"], err = _int_field(
+        raw, "wake_poll_secs", DEFAULT_CONFIG["wake_poll_secs"], minimum=MIN_WAKE_POLL_SECS)
     if err:
         return None, err
     for key, minimum in (("idle_drain_secs", 0), ("demand_grace_secs", 0), ("players_per_instance", 1)):
@@ -817,6 +830,72 @@ def run_tick(base, cfg, ledger, now=None):
     return actions
 
 
+def run_wake(base, cfg, ledger, now=None):
+    """Fast demand-WAKE pass (Phase 2a) — runs between full ticks at wake_poll_secs.
+
+    Cuts cold->warm NOTICE latency: it reads ONLY new director.log lines (the shared,
+    offset-tracked, edge-triggered tailer) and brings any managed map with fresh inbound
+    travel demand UP immediately — WITHOUT the per-tick psql online-count read, so it is
+    cheap enough to run far tighter than the 30s full-tick floor. When the only new lines
+    are idle/heartbeat travel-queue records (num:0), it short-circuits before even calling
+    mock-k8s.
+
+    Safety by construction:
+    - calls decide_map with online=None: that path wakes on demand but, lacking a
+      trustworthy count, can NEVER scale down (the never-act-blind guard) — so this pass
+      only ever moves a map UP toward its demand target.
+    - persists ONLY the demand-grace timer (so a just-woken map is drain-immune until the
+      player connects); it NEVER writes the idle/drain timer, which the full tick owns —
+      otherwise a 5s wake pass would perpetually reset the drain countdown and a cold map
+      would never drain. The grace is armed before the wake PATCH so a momentarily
+      unreachable mock-k8s still can't let a later full tick drain a map a player is
+      heading to.
+    - DD dimensions are NOT handled here (their per-dim count is psql too); the full tick
+      keeps them on the scan_interval cadence."""
+    now = now or _now()
+    actions = []
+    # Shared edge-triggered tailer: consume only NEW bytes, advance the offset exactly once.
+    lines, new_offset = read_new_log_lines(director_log_path(base), ledger.get_offset())
+    ledger.set_offset(new_offset)
+    demand_by = parse_travel_demand(lines)
+    demanded = {mc.get("map"): demand_for_map(demand_by, mc.get("map")) for mc in cfg.get("maps", [])}
+    demanded = {mp: n for mp, n in demanded.items() if n > 0}
+    if not demanded:
+        return actions  # only idle/heartbeat travel lines (num:0) — cheapest path, no mock-k8s call
+
+    grace_secs = int(cfg.get("demand_grace_secs", DEFAULT_CONFIG["demand_grace_secs"]))
+    ppi = int(cfg.get("players_per_instance", DEFAULT_CONFIG["players_per_instance"]))
+    # Arm the post-demand grace for every demanded map FIRST (idle timer untouched), so even
+    # if the wake PATCH below can't fire (mock-k8s momentarily down) a later full tick won't
+    # drain a map a player is travelling to.
+    for mp in demanded:
+        _persist_timer(ledger, f"demand:{mp}", now)
+
+    mock = fetch_mock_status()
+    if not mock:
+        return actions
+    by_cfg = {mc.get("map"): mc for mc in cfg.get("maps", [])}
+    for mp, demand in demanded.items():
+        key = resolve_scale_key(mock, mp)
+        if key is None:
+            continue  # mock-k8s doesn't track this map this tick — leave it alone
+        ns, name, current = key
+        d = decide_map(by_cfg[mp], current, None, demand, now=now,
+                       idle_since=None, last_demand=now,
+                       players_per_instance=ppi, demand_grace_secs=grace_secs)
+        if d.action == "up":
+            code, _ = mock_k8s_request(
+                "PATCH", f"/apis/igw.funcom.com/v1/namespaces/{ns}/serversetscales/{name}",
+                {"spec": {"replicas": d.target}})
+            ok = code is not None and code < 300
+            ledger.record(mp, "up" if ok else "error",
+                          d.reason if ok else f"wake PATCH http {code}: {d.reason}")
+            actions.append((mp, "up", ok, d.reason))
+    if actions:
+        notify(cfg.get("webhook_url", ""), format_actions(actions))
+    return actions
+
+
 def format_actions(actions):
     """Pure: a Discord-ready message summarizing a tick's scale actions, or '' if none.
     Only up/down are recorded as actions (holds are silent), so this fires only when the
@@ -943,17 +1022,32 @@ def _main(argv):
         print(json.dumps({"ok": True, "config": cfg}))
         return 0
     if cmd == "scan-loop":
-        # Entrypoint launches this. Loops at scan_interval_secs, NO-OPS while
-        # autoscaler.json enabled:false, and survives a malformed config.
+        # Entrypoint launches this. TIERED cadence (Phase 2a): a FULL tick (drain + load +
+        # DD; reads the psql online count) every scan_interval_secs, and a cheap fast WAKE
+        # pass (director.log demand -> bring cold maps up; no psql) every wake_poll_secs in
+        # between. Both share the offset-tracked tailer so each log line is read exactly
+        # once. NO-OPS while autoscaler.json enabled:false; survives a malformed config.
         led = AutoscalerLedger(ledger_path(base))
+        next_full = 0.0  # time.monotonic() deadline for the next full tick; 0 => run now
         while True:
             try:
                 cfg = load_config(base)
-                interval = max(int(cfg.get("scan_interval_secs", DEFAULT_CONFIG["scan_interval_secs"])),
-                               MIN_SCAN_INTERVAL_SECS)
-                if cfg.get("enabled"):
-                    for (m, a, ok, detail) in run_tick(base, cfg, led):
-                        print(f"[autoscaler] {m} {a} ok={ok} {detail}", flush=True)
+                scan = max(int(cfg.get("scan_interval_secs", DEFAULT_CONFIG["scan_interval_secs"])),
+                           MIN_SCAN_INTERVAL_SECS)
+                wake = min(max(int(cfg.get("wake_poll_secs", DEFAULT_CONFIG["wake_poll_secs"])),
+                               MIN_WAKE_POLL_SECS), scan)
+                if not cfg.get("enabled"):
+                    interval = scan  # disarmed: idle at the slow cadence
+                else:
+                    mono = time.monotonic()
+                    if mono >= next_full:
+                        for (m, a, ok, detail) in run_tick(base, cfg, led):
+                            print(f"[autoscaler] {m} {a} ok={ok} {detail}", flush=True)
+                        next_full = mono + scan
+                    else:
+                        for (m, a, ok, detail) in run_wake(base, cfg, led):
+                            print(f"[autoscaler] wake {m} {a} ok={ok} {detail}", flush=True)
+                    interval = wake
             except Exception as e:  # never let the loop die
                 interval = 60
                 print(f"[autoscaler] tick error: {e}", flush=True)

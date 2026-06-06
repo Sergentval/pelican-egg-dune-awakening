@@ -62,7 +62,8 @@ const DD_DEFAULTS: DeepDesertConfig = {
 
 const DEFAULTS: AutoscalerConfig = {
   enabled: false,
-  scan_interval_secs: 60,
+  scan_interval_secs: 30,
+  wake_poll_secs: 5,
   idle_drain_secs: 300,
   demand_grace_secs: 120,
   players_per_instance: 30,
@@ -174,9 +175,11 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
               <span className={armed ? "pill-ok" : "pill-warn"}>{armed ? "armed" : "off"}</span>
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Demand-based scaling of the on-demand maps via mock-k8s. When armed, each tick
-              ({cfg.scan_interval_secs}s) drains idle maps to their floor and wakes / load-scales them up.
-              Never evicts a non-empty map; never scales down on an unreadable player count.
+              Demand-based scaling of the on-demand maps via mock-k8s. A full tick every
+              {" "}{cfg.scan_interval_secs}s drains idle maps to their floor and load-scales them up; between
+              full ticks a cheap wake pass every {cfg.wake_poll_secs}s brings a cold map up the moment a
+              player travels to it (no DB read). Never evicts a non-empty map; never scales down on an
+              unreadable player count.
             </p>
           </div>
           <button className="btn-ghost text-xs" onClick={() => void load()} disabled={anyBusy}>refresh</button>
@@ -189,8 +192,9 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
             <span>Enable the autoscaler loop</span>
           </label>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {num("scan_interval_secs", "Tick interval (s)", 30, 3600)}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {num("scan_interval_secs", "Full tick (s)", 30, 3600)}
+            {num("wake_poll_secs", "Wake poll (s)", 2, 3600)}
             {num("idle_drain_secs", "Idle drain (s)", 0, 86400)}
             {num("demand_grace_secs", "Demand grace (s)", 0, 86400)}
             {num("players_per_instance", "Players / instance", 1, 1000)}
