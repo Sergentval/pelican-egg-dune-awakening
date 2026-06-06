@@ -536,15 +536,21 @@ class TestRunTick(unittest.TestCase):
         self.led.set_offset(0)  # past the tailer's first-run branch (don't touch real logs)
         self.patches = []
 
-    def _fakes(self, *, status, counts, demand_lines=([], 0), patch_ret=(200, {})):
+    def _fakes(self, *, status, counts, demand_lines=([], 0), patch_ret=(200, {}), swept=0):
         self.calls = []
+        self.swept_called = []
 
         def fake_patch(method, path, body=None, **kw):
             self.calls.append((path, body))
             return patch_ret
+
+        def fake_sweep(b):
+            self.swept_called.append(b)
+            return swept
         for name, fn in (("fetch_mock_status", lambda *a, **k: status),
                          ("read_online_counts", lambda b: counts),
                          ("read_new_log_lines", lambda p, o: demand_lines),
+                         ("sweep_orphan_farm_state", fake_sweep),
                          ("mock_k8s_request", fake_patch)):
             p = patch.object(az, name, fn)
             p.start()
@@ -604,6 +610,71 @@ class TestRunTick(unittest.TestCase):
         az.run_tick("/base", cfg, self.led)  # empties now -> idle timer starts, no drain yet
         self.assertEqual(self.calls, [])
         self.assertIsNotNone(self.led.get_state("idle:SH_Arrakeen"))
+
+    def test_every_tick_sweeps_orphan_farm_state(self):
+        # Phase 0 browser hygiene: the full tick always sweeps dead orphan rows
+        self._fakes(status=_snap({"SH_Arrakeen": 1}), counts={"SH_Arrakeen": 0})
+        cfg, _ = az.validate_config({"maps": [{"map": "SH_Arrakeen", "min_replicas": 1, "max_replicas": 2}]})
+        az.run_tick("/base", cfg, self.led)
+        self.assertEqual(len(self.swept_called), 1)  # swept exactly once this tick
+
+    def test_records_sweep_when_rows_removed(self):
+        self._fakes(status=_snap({"SH_Arrakeen": 1}), counts={"SH_Arrakeen": 0}, swept=3)
+        cfg, _ = az.validate_config({"maps": [{"map": "SH_Arrakeen", "min_replicas": 1, "max_replicas": 2}]})
+        az.run_tick("/base", cfg, self.led)
+        runs = self.led.list_runs()
+        self.assertTrue(any(r["action"] == "swept" and "3" in r["detail"] for r in runs))
+
+    def test_no_record_when_nothing_swept(self):
+        self._fakes(status=_snap({"SH_Arrakeen": 1}), counts={"SH_Arrakeen": 0}, swept=0)
+        cfg, _ = az.validate_config({"maps": [{"map": "SH_Arrakeen", "min_replicas": 1, "max_replicas": 2}]})
+        az.run_tick("/base", cfg, self.led)
+        self.assertFalse(any(r["action"] == "swept" for r in self.led.list_runs()))
+
+    def test_sweep_failure_never_breaks_the_tick(self):
+        self._fakes(status=_snap({"SH_Arrakeen": 1}), counts={"SH_Arrakeen": 0})
+        cfg, _ = az.validate_config({"maps": [{"map": "SH_Arrakeen", "min_replicas": 1, "max_replicas": 2}]})
+        with patch.object(az, "sweep_orphan_farm_state", lambda b: (_ for _ in ()).throw(OSError("boom"))):
+            self.assertEqual(az.run_tick("/base", cfg, self.led), [])  # tick still completes
+
+
+class TestSweepOrphanFarmState(unittest.TestCase):
+    """The browser-hygiene sweep wrapper: shells admin-publish sweep-orphans, returns the
+    swept count, fails safe to None (never raises) so the tick is never broken."""
+
+    @staticmethod
+    def _proc(rc=0, out="", err=""):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+
+    def test_parses_swept_count(self):
+        with patch.object(az.subprocess, "run",
+                          lambda *a, **k: self._proc(out="[admin-publish] OK sweep-orphans: swept 4 ...\npublish=ok sweep-orphans swept=4\n")):
+            self.assertEqual(az.sweep_orphan_farm_state("/base"), 4)
+
+    def test_uses_sweep_orphans_verb(self):
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(args)
+            return self._proc(out="publish=ok sweep-orphans swept=0\n")
+        with patch.object(az.subprocess, "run", fake_run):
+            az.sweep_orphan_farm_state("/base")
+        self.assertIn("sweep-orphans", calls[0])
+
+    def test_nonzero_exit_is_none(self):
+        with patch.object(az.subprocess, "run", lambda *a, **k: self._proc(rc=3, err="no tables")):
+            self.assertIsNone(az.sweep_orphan_farm_state("/base"))
+
+    def test_subprocess_error_is_none(self):
+        def boom(*a, **k):
+            raise OSError("nope")
+        with patch.object(az.subprocess, "run", boom):
+            self.assertIsNone(az.sweep_orphan_farm_state("/base"))
+
+    def test_unparseable_output_is_none(self):
+        with patch.object(az.subprocess, "run", lambda *a, **k: self._proc(out="weird")):
+            self.assertIsNone(az.sweep_orphan_farm_state("/base"))
 
 
 class TestRunWake(unittest.TestCase):

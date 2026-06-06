@@ -770,6 +770,25 @@ def _persist_timer(ledger, key, dt):
         ledger.set_state(key, iso(dt))
 
 
+def sweep_orphan_farm_state(base):
+    """Best-effort browser hygiene: delete DEAD orphan farm_state rows (the heartbeat-less
+    ghosts a reap/respawn leaves behind that otherwise show a sietch/map TWICE in the
+    in-game browser) via admin-publish sweep-orphans. Returns the swept count, or None if
+    it could not run. SAFE to call every tick unattended: the verb only deletes rows that
+    are alive=false AND claimed by no live world_partition (so a sietch mid-spawn — which
+    registers alive=true before its server_id writeback — is never touched), and it does
+    NOT restart the Director. Never raises — a sweep failure must not break the tick."""
+    try:
+        r = subprocess.run(["bash", _publish(base), "sweep-orphans"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r"swept=(\d+)", r.stdout)
+    return int(m.group(1)) if m else None
+
+
 def run_tick(base, cfg, ledger, now=None):
     """One autoscaler tick. Reads new travel-demand (edge-triggered), one online-count
     snapshot, and the current replicas per managed map; runs decide_map; persists the
@@ -825,6 +844,15 @@ def run_tick(base, cfg, ledger, now=None):
             actions += run_dd_tick(base, dd_cfg, ledger, now)
         except Exception as e:  # noqa: BLE001 - isolate DD failure from the SSS path + loop
             ledger.record("DeepDesert_1", "error", f"dd-tick error: {e}"[:200])
+    # Browser hygiene: drop the dead orphan farm_state rows a reap leaves behind, so the
+    # Director never shows a sietch/map twice. Best-effort + isolated — never breaks the
+    # tick; only records when it actually removed something (no spam on quiet ticks).
+    try:
+        swept = sweep_orphan_farm_state(base)
+        if swept:
+            ledger.record("farm_state", "swept", f"{swept} dead orphan row(s)")
+    except Exception as e:  # noqa: BLE001 - hygiene must never break the scale loop
+        ledger.record("farm_state", "error", f"orphan-sweep error: {e}"[:200])
     if actions:
         notify(cfg.get("webhook_url", ""), format_actions(actions))
     return actions
