@@ -920,5 +920,87 @@ class TestRunDdTick(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class TestSummarizeDimPool(unittest.TestCase):
+    """The DD-pool live view for the SPA (read-only mirror of what the scaler sees)."""
+
+    def test_none_rows_unreadable(self):
+        s = az.summarize_dim_pool(None, {"enabled": True, "min_dims": 1, "max_dims": 3})
+        self.assertFalse(s["readable"])
+        self.assertEqual(s["dims"], [])
+        self.assertEqual(s["live"], 0)
+        self.assertEqual(s["players"], 0)
+        self.assertTrue(s["enabled"])
+
+    def test_aggregates_live_and_players(self):
+        rows = [_dim(101, True, 5), _dim(102, True, 0), _dim(103, False, 0)]
+        s = az.summarize_dim_pool(rows, {"enabled": True, "min_dims": 1, "max_dims": 3, "players_per_dim": 30})
+        self.assertTrue(s["readable"])
+        self.assertEqual(s["live"], 2)
+        self.assertEqual(s["declared"], 3)
+        self.assertEqual(s["players"], 5)
+        self.assertEqual([d["partition_id"] for d in s["dims"]], [101, 102, 103])  # sorted by pid
+
+    def test_max_dims_clamped_to_declared(self):
+        rows = [_dim(101, True, 0), _dim(102, False, 0)]  # only 2 declared rows
+        s = az.summarize_dim_pool(rows, {"min_dims": 1, "max_dims": 5})
+        self.assertEqual(s["max_dims"], 2)   # ceiling clamped to declared, like decide_dimension_pool
+        self.assertEqual(s["min_dims"], 1)
+
+    def test_min_dims_clamped_to_effective_max(self):
+        rows = [_dim(101, True, 0)]           # declared=1
+        s = az.summarize_dim_pool(rows, {"min_dims": 5, "max_dims": 3})
+        self.assertEqual(s["max_dims"], 1)
+        self.assertEqual(s["min_dims"], 1)   # floor clamped down to the effective ceiling
+
+    def test_offline_dim_players_never_trusted(self):
+        # an offline row reporting players must contribute 0 (matches parse_dim_rows + the scaler)
+        rows = [_dim(101, True, 4), _dim(102, False, 99)]
+        s = az.summarize_dim_pool(rows, {"min_dims": 0, "max_dims": 3})
+        self.assertEqual(s["players"], 4)
+        off = next(d for d in s["dims"] if d["partition_id"] == 102)
+        self.assertEqual(off["players"], 0)
+        self.assertFalse(off["online"])
+
+    def test_dd_live_status_reads_rows(self):
+        with patch.object(az, "read_dim_rows", lambda b: [_dim(101, True, 2)]):
+            s = az.dd_live_status("/base", {"enabled": True, "min_dims": 1, "max_dims": 3})
+        self.assertTrue(s["readable"])
+        self.assertEqual(s["live"], 1)
+        self.assertEqual(s["players"], 2)
+
+    def test_dd_live_status_unreadable(self):
+        with patch.object(az, "read_dim_rows", lambda b: None):
+            s = az.dd_live_status("/base", {"min_dims": 1, "max_dims": 3})
+        self.assertFalse(s["readable"])
+
+
+class TestStatusDeepDesertBlock(unittest.TestCase):
+    """_status() surfaces a deep_desert block whenever the config carries one."""
+
+    def setUp(self):
+        self.base = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.base, "server", "state", "admin"), exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_status_includes_dd_when_configured(self):
+        cfg_obj = {"enabled": False, "maps": [],
+                   "deep_desert": {"enabled": True, "min_dims": 1, "max_dims": 3}}
+        with patch.object(az, "load_config", lambda b: cfg_obj), \
+             patch.object(az, "live_status", lambda b, c: ({}, {"mockK8s": True, "players": True})), \
+             patch.object(az, "read_dim_rows", lambda b: [_dim(101, True, 3), _dim(102, False, 0)]):
+            out = az._status(self.base)
+        self.assertIn("deep_desert", out)
+        self.assertEqual(out["deep_desert"]["live"], 1)
+        self.assertEqual(out["deep_desert"]["players"], 3)
+
+    def test_status_omits_dd_when_absent(self):
+        with patch.object(az, "load_config", lambda b: {"enabled": False, "maps": []}), \
+             patch.object(az, "live_status", lambda b, c: ({}, {"mockK8s": True, "players": True})):
+            out = az._status(self.base)
+        self.assertNotIn("deep_desert", out)
+
+
 if __name__ == "__main__":
     unittest.main()

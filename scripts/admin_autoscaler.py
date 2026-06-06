@@ -856,6 +856,42 @@ def live_status(base, cfg):
     return live, {"mockK8s": mock is not None, "players": counts is not None}
 
 
+def summarize_dim_pool(rows, dd_cfg):
+    """Pure: fold parse_dim_rows output into a SPA-friendly DD-pool summary. rows is
+    None (count unconfirmed) -> readable False, so the panel shows '—' instead of a
+    phantom-empty pool. min_dims/max_dims are clamped to the declared row count exactly
+    as decide_dimension_pool clamps them, so the UI shows the floor/ceiling the scaler
+    actually enforces. Offline dims contribute 0 players (never trusted), mirroring the
+    scaler's `total` and parse_dim_rows' own zeroing."""
+    dd_cfg = dd_cfg or {}
+    enabled = _coerce_bool(dd_cfg.get("enabled"))
+    if rows is None:
+        return {"readable": False, "enabled": enabled, "dims": [], "live": 0,
+                "declared": 0, "players": 0,
+                "min_dims": int(dd_cfg.get("min_dims", DEFAULT_DEEP_DESERT["min_dims"])),
+                "max_dims": int(dd_cfg.get("max_dims", DEFAULT_DEEP_DESERT["max_dims"]))}
+    declared = len(rows)
+    max_eff = min(int(dd_cfg.get("max_dims", DEFAULT_DEEP_DESERT["max_dims"])), declared)
+    min_eff = max(0, min(int(dd_cfg.get("min_dims", DEFAULT_DEEP_DESERT["min_dims"])), max_eff))
+    dims = [{"partition_id": d["partition_id"],
+             "dimension_index": int(d.get("dimension_index") or 0),
+             "online": bool(d.get("online")),
+             "players": int(d.get("players") or 0) if d.get("online") else 0,
+             "label": d.get("label", "")}
+            for d in sorted(rows, key=lambda r: r["partition_id"])]
+    live = [d for d in dims if d["online"]]
+    return {"readable": True, "enabled": enabled, "dims": dims, "live": len(live),
+            "declared": declared, "players": sum(d["players"] for d in live),
+            "min_dims": min_eff, "max_dims": max_eff}
+
+
+def dd_live_status(base, dd_cfg):
+    """Thin I/O wrapper: read the live DD-dim rows (one dd-dim-player-count subprocess)
+    and summarize them for the SPA. None rows (unreadable) -> readable False. DD-dims
+    only — Survival_1 sietches can never appear (read_dim_rows filters them out)."""
+    return summarize_dim_pool(read_dim_rows(base), dd_cfg)
+
+
 def _status(base):
     led = AutoscalerLedger(ledger_path(base))
     cfg = load_config(base)
@@ -866,6 +902,9 @@ def _status(base):
     out = {"ok": True, "config": {k: v for k, v in cfg.items() if k != "_comment"},
            "runs": led.list_runs(20), "state": state, "log_offset": led.get_offset(),
            "live": live, "sources": sources}
+    dd_cfg = cfg.get("deep_desert")
+    if isinstance(dd_cfg, dict):
+        out["deep_desert"] = dd_live_status(base, dd_cfg)
     led.close()
     return out
 
