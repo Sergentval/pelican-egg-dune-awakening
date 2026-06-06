@@ -56,6 +56,7 @@ import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
+import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -1118,6 +1119,9 @@ class Handler(BaseHTTPRequestHandler):
             def _b(v: str) -> bool:
                 return v.strip().lower() in ("t", "true")
 
+            # Parked sietches: an offline (server_id NULL) Survival_1 dim>0 row that is in
+            # the parked set is intentionally PAUSED (data kept) vs a plain offline/cold row.
+            parked = admin_park.parked_ids(BASE_DIR)
             parts = []
             for line in (entry.get("stdout") or "").splitlines():
                 line = line.strip()
@@ -1135,6 +1139,7 @@ class Handler(BaseHTTPRequestHandler):
                     "game_port": int(gport) if gport.isdigit() else None,
                     "ready": _b(ready), "alive": _b(alive),
                     "players": int(players) if players.isdigit() else 0,
+                    "parked": int(pid) in parked,
                 })
             self._write(200, {"ok": True, "partitions": parts})
             return
@@ -2334,6 +2339,55 @@ class Handler(BaseHTTPRequestHandler):
                                   "partition": int(pid_str), "message": f"{players} player(s) in sietch {pid_str}"})
                 return
             self._write(200, run_publish(["sietch-remove", pid_str], timeout=60))
+            return
+
+        # POST /api/sietches/<pid>/park   {force?} -> pause + KEEP data (player-guarded)
+        # POST /api/sietches/<pid>/unpark          -> respawn a parked sietch (no guard)
+        if path.startswith("/api/sietches/") and path.endswith("/park"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            pid_str = path[len("/api/sietches/"):-len("/park")]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "sietch partition id must be numeric"})
+                return
+            # Parking takes the sietch down — player-online guard (same as remove).
+            force = bool(body.get("force")) if isinstance(body, dict) else False
+            pe = run_publish(["world-partition-list"], timeout=15)
+            players, found = 0, False
+            if pe["ok"]:
+                for line in (pe.get("stdout") or "").splitlines():
+                    f = line.strip().split("|")
+                    if len(f) >= 10 and f[0] == pid_str:
+                        found = True
+                        players = int(f[9]) if f[9].isdigit() else 0
+                        break
+            if not found:
+                self._write(200, {"ok": False, "error": f"sietch {pid_str} not found"})
+                return
+            if players > 0 and not force:
+                self._write(200, {"ok": False, "requiresConfirmation": True, "players": players,
+                                  "partition": int(pid_str),
+                                  "message": f"{players} player(s) in sietch {pid_str} — parking disconnects them (data kept)"})
+                return
+            self._write(200, run_publish(["sietch-park", pid_str], timeout=60))
+            return
+        if path.startswith("/api/sietches/") and path.endswith("/unpark"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            pid_str = path[len("/api/sietches/"):-len("/unpark")]
+            if not pid_str.isdigit():
+                self._write(200, {"ok": False, "error": "sietch partition id must be numeric"})
+                return
+            # Unpark only respawns — it never disconnects anyone, so no player guard.
+            self._write(200, run_publish(["sietch-unpark", pid_str], timeout=60))
             return
 
         # Per-sietch config: set this sietch's name + gameplay overrides, then
