@@ -19,6 +19,7 @@ import { InstancesTab } from "./InstancesTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
+import { LiveProvider, LiveToggle } from "./live";
 
 type TabId =
   | "overview"
@@ -128,6 +129,7 @@ export default function App() {
   }
 
   return (
+    <LiveProvider>
     <TargetProvider>
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between bg-slate-950/80 backdrop-blur sticky top-0 z-30 gap-3">
@@ -149,6 +151,7 @@ export default function App() {
           <TargetPill />
         </div>
         <div className="flex items-center gap-3">
+          <LiveToggle />
           <span className={mode === "ui" ? "pill-ok" : "pill-warn"}>mode: {mode}</span>
           <button onClick={logout} className="btn-ghost text-xs">
             Log out
@@ -242,5 +245,6 @@ export default function App() {
       </footer>
     </div>
     </TargetProvider>
+    </LiveProvider>
   );
 }

@@ -14,6 +14,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { mapDisplayName } from "./mapNames";
+import { useAutoRefresh } from "./live";
 import {
   type AutoscalerConfig,
   type AutoscalerMapCfg,
@@ -104,11 +105,8 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     if (r && r.ok && typeof r.body === "object" && r.body) setInfo(r.body as AutoscalerStatus);
   }
 
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => void refresh(), 15000);
-    return () => clearInterval(t);
-  }, []);
+  useEffect(() => { void load(); }, []);
+  useAutoRefresh(() => void refresh(), 15000);
 
   async function saveConfig() {
     setBusy("config");
