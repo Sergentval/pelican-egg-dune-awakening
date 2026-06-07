@@ -25,6 +25,7 @@ import {
 } from "./api";
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
+import { useAutoRefresh } from "./live";
 
 interface MapCfg {
   key: string;
@@ -100,11 +101,8 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
     if (res.ok) setLocations((res.body as { locations: MapLocation[] }).locations || []);
   }, []);
 
-  useEffect(() => {
-    loadMarkers();
-    const id = setInterval(loadMarkers, POLL_MS);
-    return () => clearInterval(id);
-  }, [loadMarkers]);
+  useEffect(() => { loadMarkers(); }, [loadMarkers]);
+  useAutoRefresh(loadMarkers, POLL_MS);
   useEffect(() => { loadLocations(); }, [loadLocations]);
   // reset view + picker when changing map
   useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }); setPending(null); }, [mapKey]);

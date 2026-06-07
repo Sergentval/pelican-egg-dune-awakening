@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { MAP_ROLE_META, mapDisplayName, mapRole, mapStatusPill } from "./mapNames";
+import { useAutoRefresh } from "./live";
 import {
   armorSetClass,
   armorSetLabel,
@@ -155,9 +156,9 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 30000);
-    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useAutoRefresh(refresh, 30000);
 
   const online = players.filter((p) => p.online === "Online").length;
 
@@ -2819,9 +2820,9 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 15000);
-    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useAutoRefresh(refresh, 15000);
 
   return (
     <div className="card">
@@ -2942,6 +2943,9 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
     setConfirm(null);
     if (ok) load();
   }
+
+  // Keep a loaded inventory fresh while Live is on (no-op until one is loaded).
+  useAutoRefresh(() => { if (table) void load(); }, 15000);
 
   const headers = table?.headers ?? [];
   const rows = table?.rows ?? [];
