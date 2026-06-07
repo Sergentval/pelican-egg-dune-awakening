@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react";
 import {
   BroadcastTab,
-  Dashboard,
   InventoryTab,
   MaintenanceTab,
   MovementTab,
   PlayersTab,
   SettingsTab,
   SkillsTab,
-  StatusTab,
   VehiclesTab,
 } from "./tabs";
+import { OverviewTab } from "./OverviewTab";
 import { GiveItemsTab } from "./GiveItemsTab";
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
@@ -26,7 +25,7 @@ import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 
 type TabId =
-  | "dashboard"
+  | "overview"
   | "map"
   | "broadcast"
   | "players"
@@ -38,7 +37,6 @@ type TabId =
   | "skills"
   | "vehicles"
   | "movement"
-  | "status"
   | "settings"
   | "spice"
   | "maintenance"
@@ -68,8 +66,7 @@ const GROUP_ORDER: TabGroup[] = ["fleet", "players", "economy", "server"];
 
 const TABS: TabDef[] = [
   // 🌍 Fleet — the live world: who/what is running and where.
-  { id: "dashboard", label: "Dashboard", icon: "◆", group: "fleet" },
-  { id: "status", label: "Status", icon: "📊", group: "fleet" },
+  { id: "overview", label: "Overview", icon: "◆", group: "fleet" },
   { id: "map", label: "Live Map", icon: "🗺", group: "fleet" },
   { id: "instances", label: "Instances", icon: "🧩", group: "fleet" },
   { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "fleet" },
@@ -95,7 +92,7 @@ const TABS: TabDef[] = [
 
 export default function App() {
   const [authState, setAuthState] = useState<"loading" | "out" | "in">("loading");
-  const [tab, setTab] = useState<TabId>("dashboard");
+  const [tab, setTab] = useState<TabId>("overview");
   const [mode, setMode] = useState<"ui" | "internal" | "?">("?");
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -217,7 +214,7 @@ export default function App() {
         )}
 
         <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
-          {tab === "dashboard" && <Dashboard setConsoleEntries={setEntries} />}
+          {tab === "overview" && <OverviewTab setConsoleEntries={setEntries} />}
           {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
@@ -230,7 +227,6 @@ export default function App() {
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
           {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}
-          {tab === "status" && <StatusTab setConsoleEntries={setEntries} />}
           {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
