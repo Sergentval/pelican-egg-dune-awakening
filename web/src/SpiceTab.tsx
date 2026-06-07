@@ -6,6 +6,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
+import { mapDisplayName } from "./mapNames";
 import {
   fetchSpice,
   setSpiceCaps,
@@ -59,11 +60,11 @@ function SpiceRow({ f, busy, onToggle, onCaps }: {
         {f.spawning ? "spawning ON" : "OFF"}
       </button>
       <div className="flex items-center gap-1 ml-auto">
-        <label className="text-xs text-slate-500">cap a</label>
+        <label className="text-xs text-slate-500">Active cap</label>
         <input type="number" min={0} value={a}
           onChange={(e) => setA(Math.max(0, parseInt(e.target.value || "0", 10)))}
           className="input-field w-16 text-xs font-mono" />
-        <label className="text-xs text-slate-500">p</label>
+        <label className="text-xs text-slate-500">Primed cap</label>
         <input type="number" min={0} value={p}
           onChange={(e) => setP(Math.max(0, parseInt(e.target.value || "0", 10)))}
           className="input-field w-16 text-xs font-mono" />
@@ -131,7 +132,7 @@ export function SpiceTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
           )}
           {maps.map((map) => (
             <div key={map}>
-              <h3 className="text-sm font-semibold text-spice-300 mb-1">{map}</h3>
+              <h3 className="text-sm font-semibold text-spice-300 mb-1">{mapDisplayName(map)}</h3>
               <div>
                 {fields
                   .filter((f) => f.map === map)

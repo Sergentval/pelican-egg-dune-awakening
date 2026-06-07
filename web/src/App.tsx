@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   BroadcastTab,
   Dashboard,
-  HistoryTab,
   InventoryTab,
   MaintenanceTab,
   MovementTab,
@@ -19,7 +18,8 @@ import { AutoscalerTab } from "./AutoscalerTab";
 import { PlayerEditorTab } from "./PlayerEditorTab";
 import { LootTab } from "./LootTab";
 import { MarketTab } from "./MarketTab";
-import { LogsTab } from "./LogsTab";
+import { EventsTab } from "./EventsTab";
+import { SpiceTab } from "./SpiceTab";
 import { InstancesTab } from "./InstancesTab";
 import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
@@ -40,13 +40,12 @@ type TabId =
   | "movement"
   | "status"
   | "settings"
-  | "welcome"
+  | "spice"
   | "maintenance"
   | "scheduler"
   | "autoscaler"
-  | "logs"
   | "instances"
-  | "history";
+  | "events";
 
 type TabGroup = "fleet" | "players" | "economy" | "server";
 
@@ -84,14 +83,14 @@ const TABS: TabDef[] = [
   // 🎁 Items & Economy — giving items + the in-game economy.
   { id: "give-items", label: "Give Items", icon: "🎁", group: "economy" },
   { id: "market", label: "Market", icon: "🪙", group: "economy" },
-  { id: "loot", label: "Loot & Spice", icon: "🎲", group: "economy" },
+  { id: "loot", label: "Loot & Difficulty", icon: "🎲", group: "economy" },
+  { id: "spice", label: "Spice Economy", icon: "🧂", group: "economy" },
   // 🛠 Server — global settings, comms, and operations.
   { id: "settings", label: "Settings", icon: "⚙", group: "server" },
   { id: "broadcast", label: "Send Message", icon: "📣", group: "server" },
   { id: "maintenance", label: "Shutdown & Restart", icon: "🛠", group: "server" },
   { id: "scheduler", label: "Scheduler", icon: "⏰", group: "server" },
-  { id: "logs", label: "Logs", icon: "📜", group: "server" },
-  { id: "history", label: "History", icon: "🗒", group: "server" },
+  { id: "events", label: "Events & Diagnostics", icon: "📜", group: "server" },
 ];
 
 export default function App() {
@@ -226,6 +225,7 @@ export default function App() {
           {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
           {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
           {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
+          {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
           {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
@@ -235,9 +235,8 @@ export default function App() {
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
           {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
-          {tab === "logs" && <LogsTab setConsoleEntries={setEntries} />}
+          {tab === "events" && <EventsTab setConsoleEntries={setEntries} />}
           {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
-          {tab === "history" && <HistoryTab />}
 
           <OutputConsole entries={entries} onClear={() => setEntries([])} />
         </main>

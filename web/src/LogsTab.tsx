@@ -28,6 +28,20 @@ const RESTARTABLE = [
 ];
 const TAIL_OPTIONS = [100, 200, 500, 1000, 2000];
 
+// Plain-language description of each restartable service (button tooltips +
+// glossary) so a non-technical operator knows what they'd be bouncing.
+const SERVICE_INFO: Record<string, string> = {
+  "admin-http": "this admin web panel",
+  "scheduler": "auto-restart + auto-backup jobs",
+  "welcome-scanner": "grants the new-player kit on join",
+  "market-bot": "NPC marketplace seeding + buy loop",
+  "mock-k8s": "instance scaler (spawns / reaps maps)",
+  "director": "routes players to the right instance",
+  "gateway": "player connection gateway",
+  "text-router": "in-game chat routing",
+  "fls-stub": "Funcom Live Service auth shim",
+};
+
 export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
   const [sources, setSources] = useState<LogSource[]>([]);
   const [source, setSource] = useState("admin-http");
@@ -147,9 +161,14 @@ export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
         <div className="p-4 flex flex-wrap gap-2">
           {RESTARTABLE.map((svc) => (
             <button key={svc} className="btn-ghost text-xs border border-slate-700"
-              onClick={() => setConfirmSvc(svc)}>
+              onClick={() => setConfirmSvc(svc)} title={SERVICE_INFO[svc] || svc}>
               ↻ {svc}
             </button>
+          ))}
+        </div>
+        <div className="px-4 pb-2 text-[11px] text-slate-500 grid sm:grid-cols-2 gap-x-4 gap-y-0.5">
+          {RESTARTABLE.map((svc) => (
+            <div key={svc}><span className="font-mono text-slate-400">{svc}</span> — {SERVICE_INFO[svc] || "service"}</div>
           ))}
         </div>
         <p className="px-4 pb-4 text-xs text-slate-500">
