@@ -4,8 +4,6 @@ import {
   Dashboard,
   HistoryTab,
   InventoryTab,
-  ItemsTab,
-  KitsTab,
   MaintenanceTab,
   MovementTab,
   PlayersTab,
@@ -13,8 +11,8 @@ import {
   SkillsTab,
   StatusTab,
   VehiclesTab,
-  WelcomeTab,
 } from "./tabs";
+import { GiveItemsTab } from "./GiveItemsTab";
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { AutoscalerTab } from "./AutoscalerTab";
@@ -34,8 +32,7 @@ type TabId =
   | "players"
   | "player-editor"
   | "inventory"
-  | "kits"
-  | "items"
+  | "give-items"
   | "loot"
   | "market"
   | "skills"
@@ -85,9 +82,7 @@ const TABS: TabDef[] = [
   { id: "movement", label: "Movement", icon: "🧭", group: "players" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "players" },
   // 🎁 Items & Economy — giving items + the in-game economy.
-  { id: "items", label: "Items", icon: "📦", group: "economy" },
-  { id: "kits", label: "Kits", icon: "🎁", group: "economy" },
-  { id: "welcome", label: "Welcome Kits", icon: "🎉", group: "economy" },
+  { id: "give-items", label: "Give Items", icon: "🎁", group: "economy" },
   { id: "market", label: "Market", icon: "🪙", group: "economy" },
   { id: "loot", label: "Loot & Spice", icon: "🎲", group: "economy" },
   // 🛠 Server — global settings, comms, and operations.
@@ -225,19 +220,17 @@ export default function App() {
         <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
           {tab === "dashboard" && <Dashboard setConsoleEntries={setEntries} />}
           {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
-          {tab === "kits" && <KitsTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
           {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
           {tab === "player-editor" && <PlayerEditorTab setConsoleEntries={setEntries} />}
           {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
-          {tab === "items" && <ItemsTab setConsoleEntries={setEntries} />}
+          {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
           {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
           {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
           {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
           {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}
           {tab === "status" && <StatusTab setConsoleEntries={setEntries} />}
-          {tab === "welcome" && <WelcomeTab setConsoleEntries={setEntries} />}
           {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}

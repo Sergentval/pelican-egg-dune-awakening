@@ -537,7 +537,7 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
 
       <div className="card flex flex-col min-h-0">
         <header className="card-header">
-          <h2 className="font-semibold">Browse</h2>
+          <h2 className="font-semibold">Item catalog</h2>
           <span className="text-xs text-slate-500">
             {searching ? "searching…" : `${visible.length} of ${matches.length}`}
           </span>
