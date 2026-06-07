@@ -13,6 +13,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
+import { mapDisplayName } from "./mapNames";
 import {
   type AutoscalerConfig,
   type AutoscalerMapCfg,
@@ -217,7 +218,10 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
                   <label className="flex items-center gap-2 text-sm min-w-[12rem]">
                     <input type="checkbox" checked={m.enabled}
                       onChange={(e) => updateMap(i, { enabled: e.target.checked })} />
-                    <span className="font-mono">{m.map}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-slate-200">{mapDisplayName(m.map)}</span>
+                      <span className="font-mono text-[10px] text-slate-600" title="raw engine map id">{m.map}</span>
+                    </span>
                   </label>
                   <label className="flex flex-col gap-1 text-xs">
                     <span className="text-slate-400">min (0 = cold)</span>
@@ -352,7 +356,7 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
               <tbody className="font-mono">
                 {Object.entries(info.live).map(([mp, lv]) => (
                   <tr key={mp} className="border-t border-slate-800/60">
-                    <td className="py-1 pr-3">{mp}</td>
+                    <td className="py-1 pr-3"><span className="font-sans text-slate-200">{mapDisplayName(mp)}</span> <span className="text-[10px] text-slate-600">{mp}</span></td>
                     <td className={"py-1 pr-3 " + ((lv.players ?? 0) > 0 ? "text-spice-300" : "text-slate-500")}>{lv.players ?? "—"}</td>
                     <td className="py-1 pr-3">{lv.desired ?? "—"}</td>
                     <td className="py-1 pr-3">{lv.current ?? "—"}</td>
@@ -388,7 +392,7 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
                 {info.runs.map((r, i) => (
                   <tr key={i} className="border-t border-slate-800/60">
                     <td className="py-1 pr-3 whitespace-nowrap text-slate-400">{r.at}</td>
-                    <td className="py-1 pr-3">{r.map}</td>
+                    <td className="py-1 pr-3" title={r.map}><span className="font-sans text-slate-200">{mapDisplayName(r.map)}</span></td>
                     <td className={"py-1 pr-3 " + (r.action === "error" ? "text-red-400" : "text-spice-300")}>{r.action}</td>
                     <td className="py-1 text-slate-400">{r.detail}</td>
                   </tr>
