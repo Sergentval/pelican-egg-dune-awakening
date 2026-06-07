@@ -3073,11 +3073,27 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
 
 // ---- Settings (Phase 5: server config) --------------------------------
 
+// "Core Rules" — the handful of settings most servers actually tune. Everything
+// else lives under the Advanced sub-tab, which shows ALL settings, so nothing is
+// ever hidden. Ids not present in the live schema are simply skipped.
+const CORE_SETTING_IDS = new Set<string>([
+  "server_display_name", "server_password", "server_player_hard_cap",
+  "force_pvp_everywhere", "security_zones_enabled", "disable_pvp_damage", "damage_enabled",
+  "mining_output", "vehicle_mining_output", "pvp_zone_resource_mult",
+  "sandworms_enabled", "sandworm_danger_zones",
+  "player_death_loot", "loot_double_difficulty",
+  "timeofdaysettings_m_btimeofdayenabled", "timeofdaysettings_m_daylengthminutes",
+  "item_deterioration_rate", "vehicle_abandoned_decay", "shelter_system",
+  "spiceharvestingsystem_m_bspawningactive", "landsraad_reward_house_credit",
+  "buildingsettings_m_buildingheightlimitinm",
+]);
+
 export function SettingsTab({ setConsoleEntries }: TabProps) {
   const [resp, setResp] = useState<SettingsResponse | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<"core" | "advanced">("core");
 
   async function refresh() {
     setLoading(true);
@@ -3173,9 +3189,25 @@ export function SettingsTab({ setConsoleEntries }: TabProps) {
           player also edits their <span className="font-mono text-slate-300">Game.ini</span>;{" "}
           <span className="text-amber-400/80">advanced</span> values are written verbatim.
         </p>
+        <div className="px-4 pb-3 flex flex-wrap items-center gap-1">
+          {(["core", "advanced"] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)}
+              className={"text-sm px-3 py-1.5 rounded-t border-b-2 transition " +
+                (view === v ? "border-spice-500 text-spice-200" : "border-transparent text-slate-400 hover:bg-slate-800")}>
+              {v === "core" ? "Core Rules" : `Advanced (all${resp ? ` · ${resp.count}` : ""})`}
+            </button>
+          ))}
+          <span className="ml-2 text-xs text-slate-500">
+            {view === "core" ? "the settings most servers tune — switch to Advanced for everything" : "every setting, grouped by category"}
+          </span>
+        </div>
       </div>
       {!resp && <p className="text-sm text-slate-500 italic">loading…</p>}
-      {resp && Object.entries(resp.categories).sort(([a], [b]) => a.localeCompare(b)).map(([cat, items]) => (
+      {resp && Object.entries(resp.categories)
+        .map(([cat, items]) => [cat, view === "core" ? items.filter((s) => CORE_SETTING_IDS.has(s.id)) : items] as const)
+        .filter(([, items]) => items.length > 0)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([cat, items]) => (
         <div key={cat} className="card">
           <header className="card-header">
             <h3 className="font-semibold text-sm">{cat}</h3>
@@ -3213,6 +3245,9 @@ export function SettingsTab({ setConsoleEntries }: TabProps) {
           </div>
         </div>
       ))}
+      {resp && view === "core" && Object.values(resp.categories).flat().every((s) => !CORE_SETTING_IDS.has(s.id)) && (
+        <p className="text-sm text-slate-500 italic px-1">No core settings in this schema — switch to <span className="text-slate-300">Advanced</span> for the full list.</p>
+      )}
     </div>
   );
 }
