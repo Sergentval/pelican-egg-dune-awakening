@@ -1,4 +1,4 @@
-// Loot & Spice tab: a curated control panel for everything loot-related.
+// Loot & Difficulty tab: a curated control panel for everything loot-related.
 //
 //   • "General loot" — the loot-authoritative server settings (NPC drop
 //     behaviour, player-death loot, double-difficulty loot, the loot
@@ -6,8 +6,7 @@
 //     items). These are schema-backed settings: they write to the server
 //     INI and take effect on the next RESTART (same flow as the Settings
 //     tab). Most are mapped-but-not-yet-game-verified — flagged "candidate".
-//   • "Spicefield economy" — the live spice levers, folded in from SpiceTab
-//     (these apply immediately, no restart).
+//   (Spice economy moved to its own "Spice Economy" tab in IA phase 4.)
 //
 // There is intentionally NO loot-quantity multiplier here: the engine
 // exposes loot as toggles + difficulty/quality caps, not a global "× loot"
@@ -19,7 +18,6 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
-import { SpiceTab } from "./SpiceTab";
 import {
   fetchSettings,
   saveSettings,
@@ -116,7 +114,7 @@ export function LootTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
       <div className="card">
         <header className="card-header">
           <div className="flex items-center gap-2">
-            <h2 className="font-semibold">General loot</h2>
+            <h2 className="font-semibold">Loot &amp; Difficulty</h2>
             <span className="text-xs text-slate-500">{items.length} settings</span>
           </div>
           <div className="flex gap-2">
@@ -171,9 +169,6 @@ export function LootTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
           </div>
         )}
       </div>
-
-      {/* Spice economy folded in — live levers (no restart). */}
-      <SpiceTab setConsoleEntries={setConsoleEntries} />
     </div>
   );
 }
