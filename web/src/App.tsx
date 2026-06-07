@@ -1,20 +1,16 @@
 import { useEffect, useState } from "react";
 import {
   BroadcastTab,
-  InventoryTab,
   MaintenanceTab,
-  MovementTab,
-  PlayersTab,
   SettingsTab,
-  SkillsTab,
   VehiclesTab,
 } from "./tabs";
 import { OverviewTab } from "./OverviewTab";
+import { PlayersWorkspace } from "./PlayersWorkspace";
 import { GiveItemsTab } from "./GiveItemsTab";
 import { MapTab } from "./MapTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { AutoscalerTab } from "./AutoscalerTab";
-import { PlayerEditorTab } from "./PlayerEditorTab";
 import { LootTab } from "./LootTab";
 import { MarketTab } from "./MarketTab";
 import { EventsTab } from "./EventsTab";
@@ -29,14 +25,10 @@ type TabId =
   | "map"
   | "broadcast"
   | "players"
-  | "player-editor"
-  | "inventory"
   | "give-items"
   | "loot"
   | "market"
-  | "skills"
   | "vehicles"
-  | "movement"
   | "settings"
   | "spice"
   | "maintenance"
@@ -72,10 +64,6 @@ const TABS: TabDef[] = [
   { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "fleet" },
   // 👥 Players — everything that acts on a player (or player-spawned content).
   { id: "players", label: "Players", icon: "👥", group: "players" },
-  { id: "player-editor", label: "Player Editor", icon: "🪪", group: "players" },
-  { id: "skills", label: "Skills", icon: "✨", group: "players" },
-  { id: "inventory", label: "Inventory", icon: "🎒", group: "players" },
-  { id: "movement", label: "Movement", icon: "🧭", group: "players" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "players" },
   // 🎁 Items & Economy — giving items + the in-game economy.
   { id: "give-items", label: "Give Items", icon: "🎁", group: "economy" },
@@ -217,16 +205,12 @@ export default function App() {
           {tab === "overview" && <OverviewTab setConsoleEntries={setEntries} />}
           {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
           {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
-          {tab === "players" && <PlayersTab setConsoleEntries={setEntries} />}
-          {tab === "player-editor" && <PlayerEditorTab setConsoleEntries={setEntries} />}
-          {tab === "inventory" && <InventoryTab setConsoleEntries={setEntries} />}
+          {tab === "players" && <PlayersWorkspace setConsoleEntries={setEntries} />}
           {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
           {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
           {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
           {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
-          {tab === "skills" && <SkillsTab setConsoleEntries={setEntries} />}
           {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
-          {tab === "movement" && <MovementTab setConsoleEntries={setEntries} />}
           {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
           {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
           {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
