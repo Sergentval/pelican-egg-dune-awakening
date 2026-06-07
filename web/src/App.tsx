@@ -51,36 +51,52 @@ type TabId =
   | "instances"
   | "history";
 
+type TabGroup = "fleet" | "players" | "economy" | "server";
+
 interface TabDef {
   id: TabId;
   label: string;
   icon: string;
-  group: "overview" | "commands" | "system";
+  group: TabGroup;
 }
 
+// Sidebar section headers. Grouped by what the operator is acting on, so
+// everyday tasks (a player, an item, a message) are easy to find.
+const GROUP_LABELS: Record<TabGroup, string> = {
+  fleet: "🌍 Fleet",
+  players: "👥 Players",
+  economy: "🎁 Items & Economy",
+  server: "🛠 Server",
+};
+const GROUP_ORDER: TabGroup[] = ["fleet", "players", "economy", "server"];
+
 const TABS: TabDef[] = [
-  { id: "dashboard", label: "Dashboard", icon: "◆", group: "overview" },
-  { id: "status", label: "Status", icon: "📊", group: "overview" },
-  { id: "map", label: "Live Map", icon: "🗺", group: "overview" },
-  { id: "instances", label: "Instances", icon: "🧩", group: "overview" },
-  { id: "kits", label: "Kits", icon: "🎁", group: "commands" },
-  { id: "broadcast", label: "Broadcast", icon: "📣", group: "commands" },
-  { id: "players", label: "Players", icon: "👥", group: "commands" },
-  { id: "player-editor", label: "Player Editor", icon: "🪪", group: "commands" },
-  { id: "inventory", label: "Inventory", icon: "🎒", group: "commands" },
-  { id: "items", label: "Items", icon: "📦", group: "commands" },
-  { id: "loot", label: "Loot & Spice", icon: "🎲", group: "commands" },
-  { id: "market", label: "Market", icon: "🪙", group: "commands" },
-  { id: "skills", label: "Skills", icon: "✨", group: "commands" },
-  { id: "vehicles", label: "Vehicles", icon: "🚗", group: "commands" },
-  { id: "movement", label: "Movement", icon: "🧭", group: "commands" },
-  { id: "welcome", label: "Welcome Kits", icon: "🎉", group: "commands" },
-  { id: "settings", label: "Settings", icon: "⚙", group: "system" },
-  { id: "maintenance", label: "Maintenance", icon: "🛠", group: "system" },
-  { id: "scheduler", label: "Scheduler", icon: "⏰", group: "system" },
-  { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "system" },
-  { id: "logs", label: "Logs", icon: "📜", group: "system" },
-  { id: "history", label: "History", icon: "🗒", group: "system" },
+  // 🌍 Fleet — the live world: who/what is running and where.
+  { id: "dashboard", label: "Dashboard", icon: "◆", group: "fleet" },
+  { id: "status", label: "Status", icon: "📊", group: "fleet" },
+  { id: "map", label: "Live Map", icon: "🗺", group: "fleet" },
+  { id: "instances", label: "Instances", icon: "🧩", group: "fleet" },
+  { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "fleet" },
+  // 👥 Players — everything that acts on a player (or player-spawned content).
+  { id: "players", label: "Players", icon: "👥", group: "players" },
+  { id: "player-editor", label: "Player Editor", icon: "🪪", group: "players" },
+  { id: "skills", label: "Skills", icon: "✨", group: "players" },
+  { id: "inventory", label: "Inventory", icon: "🎒", group: "players" },
+  { id: "movement", label: "Movement", icon: "🧭", group: "players" },
+  { id: "vehicles", label: "Vehicles", icon: "🚗", group: "players" },
+  // 🎁 Items & Economy — giving items + the in-game economy.
+  { id: "items", label: "Items", icon: "📦", group: "economy" },
+  { id: "kits", label: "Kits", icon: "🎁", group: "economy" },
+  { id: "welcome", label: "Welcome Kits", icon: "🎉", group: "economy" },
+  { id: "market", label: "Market", icon: "🪙", group: "economy" },
+  { id: "loot", label: "Loot & Spice", icon: "🎲", group: "economy" },
+  // 🛠 Server — global settings, comms, and operations.
+  { id: "settings", label: "Settings", icon: "⚙", group: "server" },
+  { id: "broadcast", label: "Send Message", icon: "📣", group: "server" },
+  { id: "maintenance", label: "Shutdown & Restart", icon: "🛠", group: "server" },
+  { id: "scheduler", label: "Scheduler", icon: "⏰", group: "server" },
+  { id: "logs", label: "Logs", icon: "📜", group: "server" },
+  { id: "history", label: "History", icon: "🗒", group: "server" },
 ];
 
 export default function App() {
@@ -174,10 +190,10 @@ export default function App() {
           }
         >
           <nav className="py-4 px-2 space-y-6">
-            {(["overview", "commands", "system"] as const).map((group) => (
+            {GROUP_ORDER.map((group) => (
               <div key={group}>
                 <div className="text-[10px] uppercase tracking-wider text-slate-500 px-3 mb-2">
-                  {group}
+                  {GROUP_LABELS[group]}
                 </div>
                 <div className="space-y-0.5">
                   {TABS.filter((t) => t.group === group).map((t) => (

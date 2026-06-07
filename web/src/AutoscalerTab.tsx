@@ -76,6 +76,7 @@ const DEFAULTS: AutoscalerConfig = {
 export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
   const [info, setInfo] = useState<AutoscalerStatus | null>(null);
   const [cfg, setCfg] = useState<AutoscalerConfig>(DEFAULTS);
+  const [savedCfg, setSavedCfg] = useState<AutoscalerConfig>(DEFAULTS);
   const [busy, setBusy] = useState("");
 
   async function load() {
@@ -83,13 +84,16 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     if (r && r.ok && typeof r.body === "object" && r.body) {
       const s = r.body as AutoscalerStatus;
       setInfo(s);
-      if (s.config)
-        setCfg({
+      if (s.config) {
+        const norm = {
           ...DEFAULTS,
           ...s.config,
           maps: s.config.maps ?? [],
           deep_desert: { ...DD_DEFAULTS, ...s.config.deep_desert },
-        });
+        };
+        setCfg(norm);
+        setSavedCfg(norm);
+      }
     }
   }
 
@@ -122,6 +126,7 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
 
   const anyBusy = busy !== "";
   const armed = info?.config?.enabled === true;
+  const dirty = JSON.stringify(cfg) !== JSON.stringify(savedCfg);
 
   function num(
     key: keyof Omit<AutoscalerConfig, "maps" | "enabled" | "webhook_url" | "deep_desert">,
@@ -174,6 +179,7 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
             <h2 className="font-semibold flex items-center gap-2">
               Autoscaler
               <span className={armed ? "pill-ok" : "pill-warn"}>{armed ? "armed" : "off"}</span>
+              {dirty && <span className="pill-warn" title="unsaved edits — click Save / Arm to apply">unsaved changes</span>}
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Demand-based scaling of the on-demand maps via mock-k8s. A full tick every
