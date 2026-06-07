@@ -110,6 +110,20 @@ async function runAndLog(
 
 // ---- Dashboard --------------------------------------------------------
 
+// Human-friendly relative time ("2h ago") with the absolute time on hover.
+function relTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 0) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export function Dashboard({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [players, setPlayers] = useState<PlayerRow[]>([]);
@@ -148,10 +162,10 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
   const online = players.filter((p) => p.online === "Online").length;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      <div className="card lg:col-span-2">
+    <div className="space-y-6">
+      <div className="card">
         <header className="card-header">
-          <h2 className="font-semibold">Players</h2>
+          <h2 className="font-semibold">Online players</h2>
           <div className="flex items-center gap-3">
             <span className="pill-ok">{online} online</span>
             <span className="text-xs text-slate-500">{players.length} total</span>
@@ -185,7 +199,7 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
                   <tr key={p.fls_id} className="border-t border-slate-800/50">
                     <td className="px-4 py-2">
                       <div className="text-slate-100">{p.character || <span className="font-mono text-slate-400">{p.fls_id.slice(0, 8)}…</span>}</div>
-                      <div className="text-[10px] text-slate-500 font-mono">FLS {p.fls_id} · {p.life}</div>
+                      <div className="text-[10px] text-slate-500 font-mono" title="Funcom Live Service player ID">ID {p.fls_id} · {p.life}</div>
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-2">
@@ -215,7 +229,9 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
                       <span className={p.online === "Online" ? "pill-ok" : "pill"}>{p.online}</span>
                     </td>
                     <td className="px-4 py-2 text-slate-400">
-                      {p.last_avatar_activity ? new Date(p.last_avatar_activity).toLocaleString() : "-"}
+                      {p.last_avatar_activity
+                        ? <span title={new Date(p.last_avatar_activity).toLocaleString()}>{relTime(p.last_avatar_activity)}</span>
+                        : "-"}
                     </td>
                     <td className="px-4 py-2">
                       <button
@@ -248,29 +264,6 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
               💡 Set <span className="font-mono text-slate-400">STEAM_API_KEY</span> in the Pelican egg variables to show Steam persona names and avatars here.
             </div>
           )}
-        </div>
-      </div>
-
-      <div className="card">
-        <header className="card-header">
-          <h2 className="font-semibold">Quick actions</h2>
-        </header>
-        <div className="p-4 space-y-2 text-sm">
-          <button
-            className="btn-ghost border border-slate-700 w-full text-left"
-            onClick={() =>
-              runAndLog(setConsoleEntries, "broadcast", {
-                title: "Hello",
-                body: "Server-side admin pipeline is live",
-                duration: 12,
-              }, 'broadcast "Hello" "..."')
-            }
-          >
-            Send a hello broadcast
-          </button>
-          <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-            Pick a tab on the left for the full command. Every action lands in the Output console below the page.
-          </p>
         </div>
       </div>
     </div>
