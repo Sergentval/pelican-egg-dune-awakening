@@ -7,6 +7,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { mapDisplayName } from "./mapNames";
+import { useAutoRefresh } from "./live";
 import {
   fetchSpice,
   setSpiceCaps,
@@ -95,6 +96,7 @@ export function SpiceTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   useEffect(() => {
     void load();
   }, []);
+  useAutoRefresh(() => void load(), 15000);
 
   async function onToggle(id: number, active: boolean) {
     setBusy(true);
