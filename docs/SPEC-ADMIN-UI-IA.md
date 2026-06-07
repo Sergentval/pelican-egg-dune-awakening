@@ -1,6 +1,6 @@
 # SPEC — Admin UI Information Architecture redesign
 
-Status: **proposed** · Scope: full redesign (22 → 14 tabs) · Owner-approved direction
+Status: **proposed** · Scope: full redesign (22 → 15 tabs) · Owner-approved direction
 (2026-06-07). Builds on the readability pass (`web/src/mapNames.ts`, PR #61).
 
 ## Context / problem
@@ -24,7 +24,7 @@ The admin SPA (`web/src`) has grown to **22 flat tabs in 3 groups** —
 separately with Claude Design). Every consolidation uses **sub-tabs / accordions**
 — no control or data is removed, only the number of top-level entry points.
 
-## Target IA — 22 → 14 tabs, 4 groups
+## Target IA — 22 → 15 tabs, 4 groups
 
 | Group | Tab | Origin |
 |---|---|---|
@@ -33,6 +33,7 @@ separately with Claude Design). Every consolidation uses **sub-tabs / accordions
 | | Autoscaler | keep |
 | | Live Map | keep |
 | **👥 Players** | **Players** (one workspace) | merge **Players + Player Editor + Skills + Inventory + Movement** → sub-tabs **Roster · Character · Skills · Inventory · Teleport**, shared target picker pinned on top |
+| | Vehicles | keep standalone (spawn + manage spawned actors — two distinct workflows); grouped here as player/world content |
 | **🎁 Items & Economy** | **Give Items** | merge **Items + Kits + Welcome** → sub-tabs **Single item · Bundles · New-player kit** |
 | | Market | keep (relabel "Catalog seeding") |
 | | Loot & Difficulty | **Loot** with Spice removed |
