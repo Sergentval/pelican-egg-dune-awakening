@@ -2,6 +2,7 @@
 // the corresponding admin-publish.sh subcommand via /admin/<sub>.
 
 import { useEffect, useMemo, useState } from "react";
+import { MAP_ROLE_META, mapDisplayName, mapRole, mapStatusPill } from "./mapNames";
 import {
   armorSetClass,
   armorSetLabel,
@@ -228,7 +229,7 @@ export function Dashboard({ setConsoleEntries }: TabProps) {
                             setConsoleEntries,
                             `pos ${pid}`,
                             looked
-                              ? `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`
+                              ? `${mapDisplayName(looked.map)} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`
                               : "pos lookup failed",
                             !!looked,
                           );
@@ -1249,7 +1250,7 @@ export function VehiclesTab({ setConsoleEntries }: TabProps) {
       pushToConsole(
         setConsoleEntries,
         `pos ${target.playerId}`,
-        `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
+        `${mapDisplayName(looked.map)} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
         true,
       );
     } else {
@@ -1686,7 +1687,7 @@ function SpawnedVehiclesPanel({ setConsoleEntries }: TabProps) {
                     {cls || v.classShort} <span className="text-xs text-slate-500 font-mono">#{v.id}</span>
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono">
-                    {v.map} · p{v.partition} · X={Math.round(v.x)} Y={Math.round(v.y)} Z={Math.round(v.z)}
+                    {mapDisplayName(v.map)} · p{v.partition} · X={Math.round(v.x)} Y={Math.round(v.y)} Z={Math.round(v.z)}
                     {dist !== null && (
                       <span className="ml-2 text-spice-300/70">{Math.round(dist).toLocaleString()} from {target.playerId}</span>
                     )}
@@ -1711,7 +1712,7 @@ function SpawnedVehiclesPanel({ setConsoleEntries }: TabProps) {
         title="Delete vehicle?"
         message={
           confirmEntry
-            ? `Permanently remove ${vehicleActorToClass(confirmEntry.classShort) || confirmEntry.classShort} #${confirmEntry.id} from ${confirmEntry.map}. Removes the postgres row + cascades the vehicle's inventory and state. UE5 keeps it visible in-game until the Sietch resyncs — relog or server-restart to see the despawn. Unrecoverable.`
+            ? `Permanently remove ${vehicleActorToClass(confirmEntry.classShort) || confirmEntry.classShort} #${confirmEntry.id} from ${mapDisplayName(confirmEntry.map)}. Removes the postgres row + cascades the vehicle's inventory and state. UE5 keeps it visible in-game until the Sietch resyncs — relog or server-restart to see the despawn. Unrecoverable.`
             : ""
         }
         confirmLabel="Delete row"
@@ -1750,7 +1751,7 @@ export function MovementTab({ setConsoleEntries }: TabProps) {
       pushToConsole(
         setConsoleEntries,
         `pos ${target.playerId}`,
-        `${looked.map} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
+        `${mapDisplayName(looked.map)} (${Math.round(looked.x)}, ${Math.round(looked.y)}, ${Math.round(looked.z)})`,
         true,
       );
     } else {
@@ -2825,9 +2826,6 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
     return () => clearInterval(t);
   }, []);
 
-  const statusPill = (s?: string) =>
-    s === "healthy" ? "pill-ok" : s === "failing" ? "pill-err" : "pill-warn";
-
   return (
     <div className="card">
       <header className="card-header">
@@ -2860,18 +2858,32 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
                 </tr>
               </thead>
               <tbody>
-                {grid.maps.map((m) => (
-                  <tr key={m.map} className="border-b border-slate-900">
-                    <td className="py-1.5 pr-4 font-mono">{m.map}</td>
-                    <td className="pr-4"><span className={statusPill(m.status)}>{m.status || "?"}</span></td>
-                    <td className="pr-4 text-slate-400">{m.current ?? 0}/{m.desired ?? 0}</td>
-                    <td className="pr-4">
-                      {m.players > 0
-                        ? <span className="text-emerald-300 font-semibold">{m.players}</span>
-                        : <span className="text-slate-500">0</span>}
-                    </td>
-                  </tr>
-                ))}
+                {[...grid.maps]
+                  .sort((a, b) =>
+                    MAP_ROLE_META[mapRole(a.map)].order - MAP_ROLE_META[mapRole(b.map)].order ||
+                    mapDisplayName(a.map).localeCompare(mapDisplayName(b.map)))
+                  .map((m) => {
+                    const meta = MAP_ROLE_META[mapRole(m.map)];
+                    return (
+                      <tr key={m.map} className="border-b border-slate-900">
+                        <td className="py-1.5 pr-4">
+                          <span className="flex items-center gap-2 flex-wrap">
+                            <span aria-hidden>{meta.icon}</span>
+                            <span className="text-slate-200">{mapDisplayName(m.map)}</span>
+                            <span className={"px-1.5 rounded text-[10px] " + meta.chip} title={meta.blurb}>{meta.title}</span>
+                            <span className="font-mono text-[10px] text-slate-600" title="raw engine map id">{m.map}</span>
+                          </span>
+                        </td>
+                        <td className="pr-4"><span className={mapStatusPill(m.status)}>{m.status || "?"}</span></td>
+                        <td className="pr-4 text-slate-400">{m.current ?? 0}/{m.desired ?? 0}</td>
+                        <td className="pr-4">
+                          {m.players > 0
+                            ? <span className="text-emerald-300 font-semibold">{m.players}</span>
+                            : <span className="text-slate-500">0</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>

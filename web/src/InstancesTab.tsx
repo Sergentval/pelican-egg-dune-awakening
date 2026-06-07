@@ -1,18 +1,31 @@
-// Instances tab (Phase 0 — read-only topology view).
+// Instances tab — operator topology + lifecycle control.
 //
 // Combines /api/status (mock-k8s per-map desired/current scale + live player
 // counts) with /api/partitions (the world_partition topology joined to
-// farm_state liveness) so an operator can see every map instance and every
-// partition — warm (dimension 0) vs dimensional sandstorm-tunnel partitions
-// (DeepDesert 101/102/103 etc.) — and which are actually live.
+// farm_state liveness). Maps are grouped by role: the operational maps
+// (Overland hub, Hagga Basin sietches, the on-demand cities) get prominent
+// cards; the ~20 rarely-touched story / dungeon / ecolab / overland maps fold
+// into one collapsible section so the page stays readable.
 //
-// Phase 1 (this file): map spin-up/down/scale via mock-k8s ServerSetScale
-// replicas, with a player-online confirm guard. Phase 2 adds per-dimension
-// control; Phase 3 adds Survival_1 shards.
+// Controls: on-demand maps spin up/down/scale via mock-k8s ServerSetScale;
+// sietches (Survival_1 dimensions) add / park / unpark / configure / remove;
+// DeepDesert tunnels start / stop. Every state-changing action kicks a short
+// "settle burst" of fast polling so the operator watches cold→starting→live.
+//
+// Friendly names, role chips, and the cold/starting/live/parked badge all come
+// from ./mapNames — the single source of truth shared with the other tabs.
 
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import { SietchConfigEditor } from "./SietchConfigEditor";
+import {
+  MAP_ROLE_META,
+  dimensionBadge,
+  instanceState,
+  mapDisplayName,
+  mapRole,
+  mapStatusPill,
+} from "./mapNames";
 import {
   addSietch,
   dimensionDown,
@@ -39,14 +52,10 @@ type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 const SCALABLE = new Set(["DeepDesert_1", "SH_Arrakeen", "SH_HarkoVillage"]);
 const SCALE_MAX = 4;
 
-function statusPill(status?: string): string {
-  switch (status) {
-    case "healthy": return "pill-ok";
-    case "starting": return "pill-warn";
-    case "failing": return "pill-err";
-    default: return "pill-warn"; // idle / unknown
-  }
-}
+// Settle-burst tuning: after an action, poll this often until nothing is
+// transitional (or the window elapses) so state transitions are visible.
+const BURST_INTERVAL_MS = 3000;
+const BURST_WINDOW_MS = 90000;
 
 // Per-map replicas input + Apply (its own state so each card is independent).
 function ScaleControl({ current, busy, onApply }: { current: number; busy: boolean; onApply: (n: number) => void }) {
@@ -66,12 +75,28 @@ function ScaleControl({ current, busy, onApply }: { current: number; busy: boole
   );
 }
 
+// Small friendly-name + role-chip heading reused by every map card.
+function MapTitle({ map }: { map: string }) {
+  const meta = MAP_ROLE_META[mapRole(map)];
+  return (
+    <span className="flex items-center gap-2 flex-wrap">
+      <span aria-hidden>{meta.icon}</span>
+      <h3 className="font-semibold text-spice-300">{mapDisplayName(map)}</h3>
+      <span className={"px-1.5 rounded text-[10px] " + meta.chip} title={meta.blurb}>{meta.title}</span>
+      <span className="font-mono text-[10px] text-slate-600" title="raw engine map id">{map}</span>
+    </span>
+  );
+}
+
 export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
   const [grid, setGrid] = useState<StatusGrid | null>(null);
   const [parts, setParts] = useState<Partition[]>([]);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState<number | null>(null);
+  const [showSecondary, setShowSecondary] = useState(false);
   // Pending force-confirm after the player-online guard returns requiresConfirmation.
   const [confirm, setConfirm] = useState<null | { map: string; replicas: number; players: number }>(null);
   const [dimBusy, setDimBusy] = useState(0);
@@ -82,15 +107,41 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [editSietch, setEditSietch] = useState<null | { pid: number; label: string; players: number }>(null);
   const [repairing, setRepairing] = useState(false);
 
-  // Sweep orphan farm_state + resync the Director — fixes removed sietches/dimensions
-  // that linger in the in-game browser (the Director never self-prunes them).
+  const burst = useRef<{ timer: ReturnType<typeof setInterval> | null; until: number }>({ timer: null, until: 0 });
+
+  function stopBurst() {
+    if (burst.current.timer) clearInterval(burst.current.timer);
+    burst.current.timer = null;
+    setSyncing(false);
+  }
+
+  // Fast-poll until nothing is mid-transition (e.g. a cold map booting to live)
+  // or the window elapses — so the operator sees the state actually change.
+  function startBurst() {
+    burst.current.until = Date.now() + BURST_WINDOW_MS;
+    setSyncing(true);
+    if (burst.current.timer) return; // already bursting — window just extended
+    burst.current.timer = setInterval(async () => {
+      const fetched = await load();
+      if (Date.now() > burst.current.until) { stopBurst(); return; }
+      if (fetched === null) return; // transient fetch failure — keep watching, don't stop early
+      if (!fetched.some((p) => instanceState(p).transitional)) stopBurst();
+    }, BURST_INTERVAL_MS);
+  }
+
+  // Refresh now, then watch the transition settle.
+  function refreshAndWatch() {
+    void load();
+    startBurst();
+  }
+
   async function doRepair() {
     setRepairing(true);
     const res = await repairBrowser().catch(() => null);
     setRepairing(false);
     const ok = !!res && res.ok && (res.body as PublishResult)?.ok !== false;
     pushToConsole(setConsoleEntries, "repair browser", res ? (res.body as PublishResult) : "request failed", ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
   async function doAddSietch() {
@@ -99,8 +150,8 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     setAddingSietch(false);
     const ok = !!res && res.ok && (res.body as DimResult)?.ok === true;
     pushToConsole(setConsoleEntries, "add sietch",
-      ok ? "new Survival_1 sietch added (spawning…)" : ((res?.body as DimResult)?.error || "failed"), ok);
-    if (ok) void load();
+      ok ? "new Hagga Basin sietch added (spawning…)" : ((res?.body as DimResult)?.error || "failed"), ok);
+    if (ok) refreshAndWatch();
   }
 
   async function doRemoveSietch(partition: number, force = false) {
@@ -118,7 +169,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     }
     const ok = res.ok && b.ok === true;
     pushToConsole(setConsoleEntries, `remove sietch ${partition}`, ok ? "removed" : (b.error || "failed"), ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
   async function doPark(partition: number, force = false) {
@@ -136,7 +187,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     }
     const ok = res.ok && b.ok === true;
     pushToConsole(setConsoleEntries, `park sietch ${partition}`, ok ? "parked (data kept)" : (b.error || "failed"), ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
   async function doUnpark(partition: number) {
@@ -147,7 +198,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     const ok = !!res && res.ok && b?.ok === true;
     pushToConsole(setConsoleEntries, `unpark sietch ${partition}`,
       ok ? "unparking (respawning…)" : (b?.error || "request failed"), ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
   async function dimAct(partition: number, action: "up" | "down", force = false) {
@@ -166,7 +217,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     const ok = res.ok && b.ok === true;
     pushToConsole(setConsoleEntries, `dimension ${action} ${partition}`,
       ok ? (action === "up" ? "spawning… (poll for live)" : "offline") : (b.error || "failed"), ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
   async function scale(map: string, replicas: number, force = false) {
@@ -183,25 +234,36 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
       return;
     }
     const ok = res.ok && b.ok === true;
-    pushToConsole(setConsoleEntries, `scale ${map} → ${replicas}`,
+    pushToConsole(setConsoleEntries, `scale ${mapDisplayName(map)} → ${replicas}`,
       ok ? `replicas ${b.previous}→${b.replicas}` : (b.error || "failed"), ok);
-    if (ok) void load();
+    if (ok) refreshAndWatch();
   }
 
-  async function load() {
+  // Returns the fetched partitions, or null on a failed fetch so the settle-burst
+  // can tell "nothing transitional" apart from "couldn't read" and keep watching.
+  async function load(): Promise<Partition[] | null> {
     setLoading(true);
     const [s, p] = await Promise.all([fetchStatus().catch(() => null), fetchPartitions().catch(() => null)]);
     setLoading(false);
     if (s && s.ok) setGrid(s.body as StatusGrid);
+    let fetched: Partition[] | null = null;
     if (p && p.ok && typeof p.body === "object" && p.body) {
       const body = p.body as { ok: boolean; partitions?: Partition[]; error?: string };
-      if (body.ok) setParts(body.partitions || []);
-      else pushToConsole(setConsoleEntries, "GET /api/partitions", body.error || "failed", false);
+      if (body.ok) {
+        fetched = body.partitions || [];
+        setParts(fetched);
+      } else {
+        pushToConsole(setConsoleEntries, "GET /api/partitions", body.error || "failed", false);
+      }
     }
+    if (fetched !== null) setLastSync(Date.now());
+    return fetched;
   }
 
   useEffect(() => {
     void load();
+    return () => stopBurst();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -220,33 +282,30 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     arr.push(p);
     partsByMap.set(p.map, arr);
   }
-  const maps = Array.from(new Set([...statusByMap.keys(), ...partsByMap.keys()])).sort();
+  const allMaps = Array.from(new Set([...statusByMap.keys(), ...partsByMap.keys()]));
+  const byRole = (a: string, b: string) =>
+    MAP_ROLE_META[mapRole(a)].order - MAP_ROLE_META[mapRole(b)].order ||
+    mapDisplayName(a).localeCompare(mapDisplayName(b));
+  const operational = allMaps.filter((m) => !MAP_ROLE_META[mapRole(m)].secondary).sort(byRole);
+  const secondary = allMaps.filter((m) => MAP_ROLE_META[mapRole(m)].secondary).sort(byRole);
 
   function partRow(p: Partition) {
-    const live = !!p.server_id && p.ready;
+    const sv = instanceState(p);
+    const db = dimensionBadge(p.map, p.dimension);
     const isSietch = p.map === "Survival_1" && p.dimension > 0;
     const parked = !!p.parked;
-    // Explicit state badge so cold vs parked vs live is obvious at a glance.
-    const state = parked
-      ? { t: "parked · data kept", c: "bg-violet-900/50 text-violet-300" }
-      : live
-        ? { t: "live", c: "bg-emerald-900/50 text-emerald-300" }
-        : p.server_id
-          ? { t: "starting", c: "bg-amber-900/50 text-amber-300" }
-          : { t: "cold", c: "bg-slate-700 text-slate-300" };
     return (
       <div key={p.partition_id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1 border-b border-slate-800 last:border-0 text-xs">
-        <span className={"w-2 h-2 rounded-full shrink-0 " + (live ? "bg-emerald-400" : parked ? "bg-violet-400" : p.server_id ? "bg-amber-400" : "bg-slate-600")} title={live ? "live" : parked ? "parked (paused, data kept)" : p.server_id ? "registering" : "declared (no instance)"} />
+        <span className={"w-2 h-2 rounded-full shrink-0 " + sv.dot} title={sv.tip} />
         <span className="font-mono text-slate-400 w-14">#{p.partition_id}</span>
-        <span className={"px-1.5 rounded text-[10px] " + (p.dimension === 0 ? "bg-sky-900/50 text-sky-300" : "bg-orange-900/50 text-orange-300")}>
-          {p.dimension === 0 ? "warm" : `dim ${p.dimension}`}
+        <span className={"px-1.5 rounded text-[10px] " + (p.dimension === 0 ? "bg-sky-900/50 text-sky-300" : "bg-orange-900/50 text-orange-300")} title={db.tip}>
+          {db.label}
         </span>
-        {p.label && <span className="text-slate-400">{p.label}</span>}
-        <span className={"px-1.5 rounded text-[10px] " + state.c}>{state.t}</span>
-        {p.game_port != null && <span className="font-mono text-slate-500">:{p.game_port}</span>}
-        {p.players > 0 && <span className="text-spice-300">{p.players}p</span>}
+        {p.label && <span className="text-slate-300">{p.label}</span>}
+        <span className={"px-1.5 rounded text-[10px] " + sv.badge} title={sv.tip}>{sv.label}</span>
+        {p.game_port != null && <span className="font-mono text-slate-500" title="game port">:{p.game_port}</span>}
+        {p.players > 0 && <span className="text-spice-300">{p.players} online</span>}
         {p.blocked && <span className="text-red-400 text-[10px]">blocked</span>}
-        {p.alive && !p.ready && <span className="text-amber-400 text-[10px]">not ready</span>}
         {p.dimension > 0 && (
           <span className="ml-auto flex items-center gap-1">
             {isSietch ? (
@@ -268,10 +327,10 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
                 )}
                 {!parked && (
                   <button className="btn-ghost text-[10px] border border-slate-700 px-1.5 py-0"
-                    onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙</button>
+                    onClick={() => setEditSietch({ pid: p.partition_id, label: p.label, players: p.players })} title="configure this sietch (name, PvP, …)">⚙ configure</button>
                 )}
                 <button className="btn-ghost text-[10px] border border-red-900/60 text-red-400 px-1.5 py-0"
-                  disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch (DELETES its data)">✕</button>
+                  disabled={dimBusy === p.partition_id} onClick={() => void doRemoveSietch(p.partition_id)} title="remove this sietch (DELETES its data)">✕ remove</button>
               </>
             ) : (
               p.server_id
@@ -283,6 +342,65 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
             {dimBusy === p.partition_id && <span className="text-slate-500">…</span>}
           </span>
         )}
+      </div>
+    );
+  }
+
+  function mapCard(map: string) {
+    const st = statusByMap.get(map);
+    const mps = (partsByMap.get(map) || []).sort((a, b) => a.dimension - b.dimension || a.partition_id - b.partition_id);
+    const dims = mps.filter((p) => p.dimension > 0);
+    return (
+      <div key={map} className="card">
+        <header className="card-header flex-wrap gap-2">
+          <MapTitle map={map} />
+          <span className="flex items-center gap-2 flex-wrap">
+            {st && <span className={mapStatusPill(st.status)}>{st.status || "unknown"}</span>}
+            {st && (st.desired != null || st.current != null) && (
+              <span className="text-xs text-slate-400 font-mono" title="current / desired instances">{st.current ?? 0}/{st.desired ?? 0} live</span>
+            )}
+            {dims.length > 0 && <span className="text-xs text-orange-300">{dims.length} {map === "Survival_1" ? "sietch" : "tunnel"}{dims.length > 1 ? "es" : ""}</span>}
+            <span className="text-xs text-slate-400">{st?.players ?? 0} online</span>
+          </span>
+        </header>
+        <div className="px-4 py-2">
+          {mps.length === 0
+            ? <div className="text-xs text-slate-500 italic py-1">no declared partitions</div>
+            : mps.map(partRow)}
+        </div>
+        {SCALABLE.has(map) && (
+          <div className="px-4 pb-3 pt-2 flex flex-wrap items-center gap-2 border-t border-slate-800">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500 mr-1">scale</span>
+            <button className="btn-ghost text-xs border border-slate-700"
+              disabled={busy === map || (st?.desired ?? 0) >= 1}
+              onClick={() => void scale(map, 1)}>▶ start</button>
+            <button className="btn-ghost text-xs border border-red-900/60 text-red-300"
+              disabled={busy === map || (st?.desired ?? 0) === 0}
+              onClick={() => void scale(map, 0)}>■ stop</button>
+            <ScaleControl current={st?.desired ?? 0} busy={busy === map} onApply={(n) => void scale(map, n)} />
+            {busy === map && <span className="text-xs text-slate-500">working…</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Compact one-line summary for the collapsed story/dungeon maps.
+  function secondaryRow(map: string) {
+    const mps = partsByMap.get(map) || [];
+    const st = statusByMap.get(map);
+    const primary = mps.find((p) => p.dimension === 0) || mps[0];
+    const sv = primary ? instanceState(primary) : instanceState({ server_id: null, ready: false });
+    const players = mps.reduce((n, p) => n + (p.players || 0), 0) || st?.players || 0;
+    const meta = MAP_ROLE_META[mapRole(map)];
+    return (
+      <div key={map} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 px-1 border-b border-slate-800/60 last:border-0 text-xs">
+        <span className={"w-2 h-2 rounded-full shrink-0 " + sv.dot} title={sv.tip} />
+        <span className="text-slate-300 min-w-[10rem]">{mapDisplayName(map)}</span>
+        <span className={"px-1.5 rounded text-[10px] " + meta.chip} title={meta.blurb}>{meta.title}</span>
+        <span className={"px-1.5 rounded text-[10px] " + sv.badge} title={sv.tip}>{sv.label}</span>
+        {players > 0 && <span className="text-spice-300">{players} online</span>}
+        <span className="font-mono text-[10px] text-slate-600 ml-auto" title="raw engine map id">{map}</span>
       </div>
     );
   }
@@ -299,6 +417,9 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {syncing
+              ? <span className="text-xs text-amber-300 flex items-center gap-1" title="watching the state change settle"><span className="animate-pulse">●</span> syncing…</span>
+              : lastSync && <span className="text-xs text-slate-500" title="last refreshed">synced {new Date(lastSync).toLocaleTimeString()}</span>}
             <label className="text-xs text-slate-400 flex items-center gap-1.5">
               <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto 15s
             </label>
@@ -313,64 +434,47 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           </div>
         </header>
         <div className="p-4 text-xs text-slate-500">
-          Read-only topology. <span className="text-sky-300">warm</span> = always-on landing zone (dimension 0);{" "}
-          <span className="text-orange-300">dim N</span> = per-player sandstorm-tunnel partitions. Dot:{" "}
-          <span className="text-emerald-400">live</span> / <span className="text-amber-400">registering</span> /{" "}
-          <span className="text-slate-500">declared</span>. On-demand maps (Deep Desert, Arrakeen, Harko) have spin-up / shutdown / scale controls; scaling down with players online asks to confirm.
+          Maps are grouped by role. <span className="text-sky-300">Warm</span> partitions are always-on landing zones;{" "}
+          <span className="text-orange-300">tunnels / sietches</span> are per-player dimension partitions. State:{" "}
+          <span className="text-emerald-400">live</span> · <span className="text-amber-400">starting</span> ·{" "}
+          <span className="text-slate-400">cold</span> · <span className="text-violet-300">parked (paused, data kept)</span>.
+          On-demand cities (Deep Desert, Arrakeen, Harko Village) have spin-up / shutdown / scale controls; acting with players online asks to confirm. After any action the view auto-syncs until the change settles.
         </div>
         <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
           <button className="btn-primary text-xs" disabled={addingSietch} onClick={() => void doAddSietch()}>
             {addingSietch ? "adding…" : "➕ Add Sietch"}
           </button>
           <span className="text-xs text-slate-500">
-            spawns a new player-choosable Survival_1 sietch (a dimension partition). All sietches share the one Deep Desert / Arrakeen / Harko. Players pick a sietch from the game browser. Per sietch: ⏸ park (pause but keep all data, survives reboot) / ▶ unpark (restore) · ⚙ configure · ✕ remove (deletes its data).
+            Spawns a new player-choosable Hagga Basin sietch. All sietches share the one Deep Desert / Arrakeen / Harko Village. Per sietch: ⏸ park (pause but keep all data, survives reboot) / ▶ unpark · ⚙ configure (name, PvP, …) · ✕ remove (deletes its data).
           </span>
         </div>
       </div>
 
-      {maps.map((map) => {
-        const st = statusByMap.get(map);
-        const mps = (partsByMap.get(map) || []).sort((a, b) => a.dimension - b.dimension || a.partition_id - b.partition_id);
-        const dims = mps.filter((p) => p.dimension > 0);
-        return (
-          <div key={map} className="card">
-            <header className="card-header flex-wrap gap-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-spice-300">{map}</h3>
-                {st && <span className={statusPill(st.status)}>{st.status || "unknown"}</span>}
-                {st && (st.desired != null || st.current != null) && (
-                  <span className="text-xs text-slate-400 font-mono">{st.current ?? 0}/{st.desired ?? 0} replicas</span>
-                )}
-                {dims.length > 0 && <span className="text-xs text-orange-300">{dims.length} dim{dims.length > 1 ? "s" : ""}</span>}
-              </div>
-              <span className="text-xs text-slate-400">{st?.players ?? 0} online</span>
-            </header>
-            <div className="px-4 py-2">
-              {mps.length === 0
-                ? <div className="text-xs text-slate-500 italic py-1">no declared partitions</div>
-                : mps.map(partRow)}
+      {operational.map(mapCard)}
+
+      {secondary.length > 0 && (
+        <div className="card">
+          <header className="card-header cursor-pointer select-none" onClick={() => setShowSecondary((v) => !v)}>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400">{showSecondary ? "▾" : "▸"}</span>
+              <h3 className="font-semibold">Story &amp; Dungeons</h3>
+              <span className="text-xs text-slate-500">{secondary.length} maps · {secondary.reduce((n, m) => n + ((partsByMap.get(m) || []).reduce((a, p) => a + (p.players || 0), 0) || statusByMap.get(m)?.players || 0), 0)} online</span>
             </div>
-            {SCALABLE.has(map) && (
-              <div className="px-4 pb-3 pt-2 flex flex-wrap items-center gap-2 border-t border-slate-800">
-                <span className="text-[10px] uppercase tracking-wide text-slate-500 mr-1">scale</span>
-                <button className="btn-ghost text-xs border border-slate-700"
-                  disabled={busy === map || (st?.desired ?? 0) >= 1}
-                  onClick={() => void scale(map, 1)}>▶ start</button>
-                <button className="btn-ghost text-xs border border-red-900/60 text-red-300"
-                  disabled={busy === map || (st?.desired ?? 0) === 0}
-                  onClick={() => void scale(map, 0)}>■ stop</button>
-                <ScaleControl current={st?.desired ?? 0} busy={busy === map} onApply={(n) => void scale(map, n)} />
-                {busy === map && <span className="text-xs text-slate-500">working…</span>}
-              </div>
-            )}
-          </div>
-        );
-      })}
+            <span className="text-xs text-slate-500">{showSecondary ? "hide" : "show"}</span>
+          </header>
+          {showSecondary && (
+            <div className="px-4 py-2">
+              <p className="text-xs text-slate-500 mb-2">Story-mission, dungeon, ecolab and overland sub-instances. These are seeded on-demand by the game and aren't manually scaled here — listed for visibility.</p>
+              {secondary.map(secondaryRow)}
+            </div>
+          )}
+        </div>
+      )}
 
       <Confirm
         open={confirm !== null}
-        title={`${confirm?.players ?? 0} player(s) online on ${confirm?.map ?? ""}`}
-        message={`Scaling ${confirm?.map ?? "this map"} to ${confirm?.replicas ?? 0} replica(s) will disconnect ${confirm?.players ?? 0} connected player(s). Proceed?`}
+        title={`${confirm?.players ?? 0} player(s) online on ${mapDisplayName(confirm?.map ?? "")}`}
+        message={`Scaling ${mapDisplayName(confirm?.map ?? "this map")} to ${confirm?.replicas ?? 0} replica(s) will disconnect ${confirm?.players ?? 0} connected player(s). Proceed?`}
         confirmLabel="Scale anyway"
         onConfirm={() => {
           const c = confirm;
@@ -426,7 +530,7 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
           players={editSietch.players}
           setConsoleEntries={setConsoleEntries}
           onClose={() => setEditSietch(null)}
-          onApplied={() => void load()}
+          onApplied={() => refreshAndWatch()}
         />
       )}
     </div>
