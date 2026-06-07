@@ -306,7 +306,7 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
   return (
     <div className="card max-w-2xl">
       <header className="card-header">
-        <h2 className="font-semibold">Server-wide broadcast</h2>
+        <h2 className="font-semibold">Send server message</h2>
       </header>
       <form onSubmit={submit} className="p-4 space-y-4">
         <div>
@@ -320,6 +320,7 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
             className="input-field"
             placeholder="Maintenance"
           />
+          <p className="text-xs text-slate-500 mt-1">{title.length}/{BROADCAST_TITLE_MAX}</p>
         </div>
         <div>
           <label className="label" htmlFor="bcast-body">Body</label>
@@ -337,7 +338,7 @@ export function BroadcastTab({ setConsoleEntries }: TabProps) {
           </p>
         </div>
         <div>
-          <label className="label" htmlFor="bcast-dur">Display duration</label>
+          <label className="label" htmlFor="bcast-dur">How long to show</label>
           <div className="flex items-center gap-2">
             <input
               id="bcast-dur"
@@ -1860,6 +1861,9 @@ export function MaintenanceTab({ setConsoleEntries }: TabProps) {
             <option>Maintenance</option>
             <option>Update</option>
           </select>
+          <p className="text-xs text-slate-500 mt-1">
+            <span className="text-slate-300">Restart</span> bounces the server (fastest). <span className="text-slate-300">Maintenance</span> announces planned downtime. <span className="text-slate-300">Update</span> signals a version update. All broadcast a countdown to players first.
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>

@@ -137,7 +137,7 @@ export function MarketTab({ setConsoleEntries }: { setConsoleEntries: SetEntries
       <div className="card">
         <header className="card-header">
           <div>
-            <h2 className="font-semibold">Market bot</h2>
+            <h2 className="font-semibold">Catalog seeding</h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Seeds the in-game exchange with NPC sell orders from the catalog, priced by the engine and mapped to the right category. Applies live (server-wide).
             </p>
