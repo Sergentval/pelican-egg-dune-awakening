@@ -10,6 +10,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
+import { useAutoRefresh } from "./live";
 import {
   fetchLogSources,
   fetchLogs,
@@ -48,7 +49,6 @@ export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
   const [tailN, setTailN] = useState(200);
   const [data, setData] = useState<LogTailResp | null>(null);
   const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(false);
   const [confirmSvc, setConfirmSvc] = useState<string | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
 
@@ -87,13 +87,8 @@ export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, tailN]);
 
-  // Auto-refresh poll.
-  useEffect(() => {
-    if (!auto) return;
-    const t = setInterval(() => void load(), 5000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, source, tailN]);
+  // Auto-refresh while global Live is on (reads the current source/tailN).
+  useAutoRefresh(() => void load(), 5000);
 
   async function doRestart() {
     const svc = confirmSvc;
@@ -130,9 +125,6 @@ export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
             </select>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-xs text-slate-400 flex items-center gap-1.5">
-              <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto 5s
-            </label>
             <button className="btn-ghost text-xs" onClick={() => void load()} disabled={loading}>
               {loading ? "…" : "refresh"}
             </button>
@@ -148,7 +140,7 @@ export function LogsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }
         </div>
         {data && (
           <div className="px-3 pb-2 text-[10px] text-slate-500">
-            {data.count} lines · {data.source}{auto ? " · auto 5s" : ""} · secrets redacted server-side
+            {data.count} lines · {data.source} · secrets redacted server-side
           </div>
         )}
       </div>

@@ -12,6 +12,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
+import { useAutoRefresh } from "./live";
 import {
   fetchMarket,
   fetchMarketBot,
@@ -79,9 +80,18 @@ export function MarketTab({ setConsoleEntries }: { setConsoleEntries: SetEntries
     }
   }
 
+  // Live refresh updates the read-only views only — never cfg, so it can't
+  // clobber edits to the autonomous-loop config the operator is typing.
+  async function refreshLive() {
+    const [b, m] = await Promise.all([fetchMarketBot().catch(() => null), fetchMarket().catch(() => null)]);
+    if (b && b.ok && typeof b.body === "object" && b.body) setBot(b.body as MarketBotStatus);
+    if (m && m.ok && typeof m.body === "object" && m.body) setInfo(m.body as MarketInfo);
+  }
+
   useEffect(() => {
     void load();
   }, []);
+  useAutoRefresh(() => void refreshLive(), 15000);
 
   async function post() {
     setBusy("post");

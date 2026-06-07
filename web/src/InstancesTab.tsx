@@ -26,6 +26,7 @@ import {
   mapRole,
   mapStatusPill,
 } from "./mapNames";
+import { useAutoRefresh } from "./live";
 import {
   addSietch,
   dimensionDown,
@@ -92,7 +93,6 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
   const [grid, setGrid] = useState<StatusGrid | null>(null);
   const [parts, setParts] = useState<Partition[]>([]);
   const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<number | null>(null);
@@ -266,12 +266,8 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (!auto) return;
-    const t = setInterval(() => void load(), 15000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto]);
+  // Steady refresh while global Live is on (plus the action settle-burst above).
+  useAutoRefresh(() => void load(), 15000);
 
   // Union of maps seen in either source, so nothing is hidden.
   const statusByMap = new Map<string, StatusMapRow>();
@@ -420,9 +416,6 @@ export function InstancesTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
             {syncing
               ? <span className="text-xs text-amber-300 flex items-center gap-1" title="watching the state change settle"><span className="animate-pulse">●</span> syncing…</span>
               : lastSync && <span className="text-xs text-slate-500" title="last refreshed">synced {new Date(lastSync).toLocaleTimeString()}</span>}
-            <label className="text-xs text-slate-400 flex items-center gap-1.5">
-              <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> auto 15s
-            </label>
             <button className="btn-ghost text-xs" onClick={() => void load()} disabled={loading}>
               {loading ? "…" : "refresh"}
             </button>
