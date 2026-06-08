@@ -20,6 +20,7 @@ import { Login, OutputConsole, type ConsoleEntry } from "./components";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 import { LiveProvider, LiveToggle } from "./live";
+import { CommandPalette, SearchIcon } from "./CommandPalette";
 
 type TabId =
   | "overview"
@@ -87,6 +88,10 @@ export default function App() {
   const [selGroup, setSelGroup] = useState<TabGroup>("fleet");
   const [mode, setMode] = useState<"ui" | "internal" | "?">("?");
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [recent, setRecent] = useState<TabId[]>(() => {
+    try { return (JSON.parse(localStorage.getItem("dune.nav.recent") || "[]") as TabId[]).slice(0, 5); } catch { return []; }
+  });
 
   useEffect(() => {
     onUnauthorized(() => {
@@ -99,6 +104,18 @@ export default function App() {
       }
     });
     me().then((res) => setAuthState(res.ok ? "in" : "out"));
+  }, []);
+
+  // ⌘K / Ctrl+K toggles the command palette.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   async function logout() {
@@ -117,6 +134,12 @@ export default function App() {
     setTab(id);
     const g = TABS.find((t) => t.id === id)?.group;
     if (g) setSelGroup(g);
+    setRecent((prev) => {
+      const next = [id, ...prev.filter((x) => x !== id)].slice(0, 5);
+      try { localStorage.setItem("dune.nav.recent", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+    setPaletteOpen(false);
   }
 
   if (authState === "loading") {
@@ -162,6 +185,11 @@ export default function App() {
               ))}
             </nav>
             <div className="appbar-tools">
+              <button className="topbar-search" onClick={() => setPaletteOpen(true)} title="Search / jump to a section (⌘K)">
+                <SearchIcon />
+                <span className="hidden sm:inline">Search</span>
+                <span className="topbar-search-kbd">⌘K</span>
+              </button>
               <TargetPill />
               <LiveToggle />
               <button onClick={logout} className="btn-ghost text-xs">Log out</button>
@@ -223,6 +251,15 @@ export default function App() {
         </footer>
       </div>
     </div>
+    <CommandPalette
+      open={paletteOpen}
+      onClose={() => setPaletteOpen(false)}
+      items={TABS}
+      groupLabels={GROUP_LABELS}
+      recent={recent}
+      currentTab={tab}
+      onGo={(id) => go(id as TabId)}
+    />
     </TargetProvider>
     </LiveProvider>
   );
