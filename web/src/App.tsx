@@ -22,6 +22,8 @@ import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 import { LiveProvider, LiveToggle } from "./live";
 import { CommandPalette, SearchIcon } from "./CommandPalette";
+import { TweaksPanel, GearIcon } from "./TweaksPanel";
+import { applyTweaks, loadTweaks, saveTweaks, type Tweaks } from "./tweaks";
 
 type TabId =
   | "overview"
@@ -93,6 +95,8 @@ export default function App() {
   const [recent, setRecent] = useState<TabId[]>(() => {
     try { return (JSON.parse(localStorage.getItem("dune.nav.recent") || "[]") as TabId[]).slice(0, 5); } catch { return []; }
   });
+  const [tweaks, setTweaks] = useState<Tweaks>(() => loadTweaks());
+  const [tweaksOpen, setTweaksOpen] = useState(false);
 
   useEffect(() => {
     onUnauthorized(() => {
@@ -118,6 +122,12 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Apply + persist appearance tweaks (theme / accent / font / density / motion).
+  useEffect(() => {
+    applyTweaks(tweaks);
+    saveTweaks(tweaks);
+  }, [tweaks]);
 
   async function logout() {
     try {
@@ -193,6 +203,9 @@ export default function App() {
               </button>
               <TargetPill />
               <LiveToggle />
+              <button className="btn-ghost text-xs" onClick={() => setTweaksOpen((o) => !o)} title="Appearance" aria-label="Appearance">
+                <GearIcon />
+              </button>
               <button onClick={logout} className="btn-ghost text-xs">Log out</button>
             </div>
           </div>
@@ -260,6 +273,7 @@ export default function App() {
       onGo={(id) => go(id as TabId)}
     />
     <ToastStack entries={entries} />
+    <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} tweaks={tweaks} onChange={setTweaks} />
     </TargetProvider>
     </LiveProvider>
   );
