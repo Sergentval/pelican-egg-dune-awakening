@@ -15,6 +15,7 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { mapDisplayName } from "./mapNames";
 import { useAutoRefresh } from "./live";
+import { StepperInput } from "./ui";
 import {
   type AutoscalerConfig,
   type AutoscalerMapCfg,
@@ -133,13 +134,10 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     return (
       <label className="flex flex-col gap-1 text-xs">
         <span className="text-slate-400">{label}</span>
-        <input
-          type="number" min={min} max={max} step={1} value={cfg[key]}
-          onChange={(e) => {
-            const v = parseInt(e.target.value, 10);
-            setCfg({ ...cfg, [key]: Number.isNaN(v) ? min : Math.max(min, Math.min(max, v)) });
-          }}
-          className="input-field w-full font-mono"
+        <StepperInput
+          value={cfg[key]} min={min} max={max}
+          onChange={(v) => setCfg({ ...cfg, [key]: Math.max(min, Math.min(max, v)) })}
+          className="w-full font-mono"
         />
       </label>
     );
@@ -157,13 +155,10 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
     return (
       <label className="flex flex-col gap-1 text-xs">
         <span className="text-slate-400">{label}</span>
-        <input
-          type="number" min={min} max={max} step={1} value={dd[key]}
-          onChange={(e) => {
-            const v = parseInt(e.target.value, 10);
-            updateDd({ [key]: Number.isNaN(v) ? min : Math.max(min, Math.min(max, v)) });
-          }}
-          className="input-field w-full font-mono"
+        <StepperInput
+          value={dd[key]} min={min} max={max}
+          onChange={(v) => updateDd({ [key]: Math.max(min, Math.min(max, v)) })}
+          className="w-full font-mono"
         />
       </label>
     );
@@ -229,22 +224,18 @@ export function AutoscalerTab({ setConsoleEntries }: { setConsoleEntries: SetEnt
                   </label>
                   <label className="flex flex-col gap-1 text-xs">
                     <span className="text-slate-400">min (0 = cold)</span>
-                    <input type="number" min={0} max={m.max_replicas} step={1} value={m.min_replicas}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        updateMap(i, { min_replicas: Number.isNaN(v) ? 0 : Math.max(0, Math.min(m.max_replicas, v)) });
-                      }}
-                      className="input-field w-24 font-mono" />
+                    <StepperInput value={m.min_replicas} min={0} max={m.max_replicas}
+                      onChange={(v) => updateMap(i, { min_replicas: Math.max(0, Math.min(m.max_replicas, v)) })}
+                      className="w-24 font-mono" />
                   </label>
                   <label className="flex flex-col gap-1 text-xs">
                     <span className="text-slate-400">max</span>
-                    <input type="number" min={1} max={SCALE_MAX} step={1} value={m.max_replicas}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10);
-                        const max = Number.isNaN(v) ? 1 : Math.max(1, Math.min(SCALE_MAX, v));
+                    <StepperInput value={m.max_replicas} min={1} max={SCALE_MAX}
+                      onChange={(v) => {
+                        const max = Math.max(1, Math.min(SCALE_MAX, v));
                         updateMap(i, { max_replicas: max, min_replicas: Math.min(m.min_replicas, max) });
                       }}
-                      className="input-field w-24 font-mono" />
+                      className="w-24 font-mono" />
                   </label>
                   <span className="text-xs text-slate-500 self-center">
                     {m.min_replicas === 0 ? "cold wake/sleep" : `warm floor ${m.min_replicas}`}

@@ -18,6 +18,7 @@
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import { SietchConfigEditor } from "./SietchConfigEditor";
+import { StepperInput } from "./ui";
 import {
   MAP_ROLE_META,
   dimensionBadge,
@@ -64,10 +65,10 @@ function ScaleControl({ current, busy, onApply }: { current: number; busy: boole
   useEffect(() => { setN(current); }, [current]);
   return (
     <span className="flex items-center gap-1">
-      <input
-        type="number" min={0} max={SCALE_MAX} value={n}
-        onChange={(e) => setN(Math.max(0, Math.min(SCALE_MAX, parseInt(e.target.value || "0", 10))))}
-        className="input-field w-14 text-xs font-mono"
+      <StepperInput
+        value={n} min={0} max={SCALE_MAX}
+        onChange={(v) => setN(Math.max(0, Math.min(SCALE_MAX, v)))}
+        className="w-20 text-xs font-mono"
       />
       <button className="btn-ghost text-xs border border-slate-700" disabled={busy || n === current} onClick={() => onApply(n)}>
         apply

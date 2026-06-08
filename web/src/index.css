@@ -187,6 +187,8 @@ body {
     --b-bg: var(--surface-2);
     --b-fg: var(--text);
     position: relative;
+    overflow: hidden;
+    isolation: isolate;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -517,3 +519,47 @@ body {
 }
 @keyframes toast-in { from { transform: translateX(18px) scale(0.96); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes toast-bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* ============================================================
+   INTERACTIONS (phase 6) — ripple, steppers, button sizes
+   ============================================================ */
+/* hide native number spinners app-wide (StepperInput / clean fields instead) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
+@layer components {
+  .btn-sm { padding: 7px 11px; font-size: 12.5px; gap: 6px; }
+  .btn-icon { padding: 9px; }
+
+  .ripple {
+    position: absolute;
+    border-radius: 50%;
+    transform: scale(0);
+    background: currentColor;
+    opacity: 0.3;
+    pointer-events: none;
+    z-index: 0;
+    animation: ripple-go calc(0.6s * var(--dur)) var(--ease-out) forwards;
+  }
+  .btn-primary .ripple, .btn-danger .ripple, .btn-warn .ripple { background: #fff; opacity: 0.38; }
+
+  /* custom number stepper */
+  .stepper { position: relative; display: inline-flex; width: 100%; min-width: 0; }
+  .stepper-input { padding-right: 30px; }
+  .stepper-btns { position: absolute; top: 4px; bottom: 4px; right: 4px; display: flex; flex-direction: column; gap: 2px; }
+  .stepper-btn {
+    flex: 1 1 0; width: 22px; min-height: 0;
+    display: grid; place-items: center; padding: 0;
+    border: 1px solid var(--border); border-radius: 5px;
+    background: var(--surface-2); color: var(--text-faint); cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, transform 0.1s var(--ease-spring);
+  }
+  .stepper-btn:hover { color: var(--accent); background: var(--surface-3); border-color: var(--accent-line); }
+  .stepper-btn:active { transform: scale(0.9); }
+  .stepper-btn:disabled { opacity: 0.35; cursor: default; }
+  .stepper-btn svg { display: block; }
+  .stepper-btn.up svg { transform: rotate(-90deg); }
+  .stepper-btn.down svg { transform: rotate(90deg); }
+}
+@keyframes ripple-go { to { transform: scale(1); opacity: 0; } }
