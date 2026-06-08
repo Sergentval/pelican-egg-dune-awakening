@@ -2,62 +2,335 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  html,
-  body,
-  #root {
-    height: 100%;
-  }
-  body {
-    @apply bg-slate-950 text-slate-100 font-sans antialiased;
-  }
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  ::-webkit-scrollbar-track {
-    @apply bg-slate-900;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-slate-700 rounded;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-slate-600;
-  }
+/* ============================================================
+   DUNE ADMIN — design system (Claude Design "Dune Admin V2")
+   Warm desert dark UI · 3 themes · all color via CSS variables.
+   Phase 1 of the visual overhaul: tokens + base + restyled shared
+   component classes. App-shell / palette / toasts land in later phases.
+   ============================================================ */
+
+:root {
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  --pad: 20px;
+  --gap: 22px;
+  --row-y: 11px;
+
+  --press: 0.955;
+  --dur: 1;
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font-display: "Saira Condensed", "Oswald", system-ui, sans-serif;
+  --font-body: "Hanken Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.02) inset, 0 8px 24px -12px rgba(0,0,0,0.55);
+  --shadow-pop: 0 24px 60px -20px rgba(0,0,0,0.7);
+}
+
+/* THEME · Deep Desert (default) */
+.theme-desert {
+  --bg:          oklch(0.165 0.018 64);
+  --bg-grad-a:   oklch(0.195 0.026 58);
+  --bg-grad-b:   oklch(0.145 0.016 70);
+  --surface:     oklch(0.214 0.024 60);
+  --surface-2:   oklch(0.255 0.028 58);
+  --surface-3:   oklch(0.300 0.030 56);
+  --border:      oklch(0.340 0.028 60 / 0.85);
+  --border-soft: oklch(0.300 0.024 60 / 0.7);
+  --text:        oklch(0.945 0.018 82);
+  --text-dim:    oklch(0.730 0.022 74);
+  --text-faint:  oklch(0.560 0.022 68);
+  --accent:      oklch(0.745 0.165 58);
+  --accent-2:    oklch(0.660 0.190 42);
+  --accent-ink:  oklch(0.200 0.040 58);
+  --accent-soft: oklch(0.745 0.165 58 / 0.16);
+  --accent-line: oklch(0.745 0.165 58 / 0.45);
+  --ok:   oklch(0.790 0.150 156);
+  --warn: oklch(0.825 0.140 85);
+  --err:  oklch(0.680 0.205 28);
+  --glow: oklch(0.745 0.165 58 / 0.55);
+}
+
+/* THEME · Night Spice */
+.theme-night {
+  --bg:          oklch(0.125 0.012 52);
+  --bg-grad-a:   oklch(0.165 0.024 44);
+  --bg-grad-b:   oklch(0.105 0.010 58);
+  --surface:     oklch(0.165 0.016 50);
+  --surface-2:   oklch(0.205 0.020 48);
+  --surface-3:   oklch(0.250 0.024 46);
+  --border:      oklch(0.285 0.022 50 / 0.85);
+  --border-soft: oklch(0.245 0.018 50 / 0.7);
+  --text:        oklch(0.955 0.015 76);
+  --text-dim:    oklch(0.720 0.020 66);
+  --text-faint:  oklch(0.540 0.020 60);
+  --accent:      oklch(0.780 0.190 56);
+  --accent-2:    oklch(0.620 0.220 30);
+  --accent-ink:  oklch(0.150 0.030 50);
+  --accent-soft: oklch(0.780 0.190 56 / 0.18);
+  --accent-line: oklch(0.780 0.190 56 / 0.5);
+  --ok:   oklch(0.800 0.160 158);
+  --warn: oklch(0.840 0.150 88);
+  --err:  oklch(0.650 0.225 28);
+  --glow: oklch(0.780 0.190 56 / 0.75);
+}
+
+/* THEME · Sietch Stone */
+.theme-sietch {
+  --bg:          oklch(0.178 0.012 240);
+  --bg-grad-a:   oklch(0.205 0.018 232);
+  --bg-grad-b:   oklch(0.158 0.010 246);
+  --surface:     oklch(0.223 0.014 236);
+  --surface-2:   oklch(0.263 0.016 233);
+  --surface-3:   oklch(0.305 0.018 230);
+  --border:      oklch(0.330 0.016 235 / 0.85);
+  --border-soft: oklch(0.290 0.014 235 / 0.7);
+  --text:        oklch(0.935 0.010 232);
+  --text-dim:    oklch(0.715 0.014 230);
+  --text-faint:  oklch(0.545 0.014 228);
+  --accent:      oklch(0.760 0.110 198);
+  --accent-2:    oklch(0.700 0.150 58);
+  --accent-ink:  oklch(0.180 0.030 230);
+  --accent-soft: oklch(0.760 0.110 198 / 0.16);
+  --accent-line: oklch(0.760 0.110 198 / 0.45);
+  --ok:   oklch(0.790 0.140 168);
+  --warn: oklch(0.825 0.140 85);
+  --err:  oklch(0.680 0.200 28);
+  --glow: oklch(0.760 0.110 198 / 0.55);
+}
+
+/* ---- base ---- */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+#root { position: relative; z-index: 1; }
+button { color: inherit; }
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* ambient desert wash + grain */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 78% -10%, var(--bg-grad-a) 0%, transparent 55%),
+    radial-gradient(90% 70% at 8% 110%, var(--bg-grad-b) 0%, transparent 60%),
+    var(--bg);
+  transition: background 0.6s var(--ease-out);
+}
+.app-bg::after {
+  content: "";
+  position: absolute;
+  inset: -50%;
+  opacity: var(--grain-opacity, 0.05);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  animation: grain-drift calc(8s * var(--dur)) steps(6) infinite;
+}
+@keyframes grain-drift { 0% { transform: translate(0,0); } 100% { transform: translate(-12px, 9px); } }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: var(--radius-pill); border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-line); background-clip: padding-box; }
+::selection { background: var(--accent-soft); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 
 @layer components {
-  .btn-primary {
-    @apply bg-spice-600 hover:bg-spice-500 text-slate-950 font-semibold px-4 py-2 rounded transition disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-  .btn-ghost {
-    @apply text-slate-300 hover:text-slate-100 hover:bg-slate-800 px-3 py-1.5 rounded transition;
-  }
-  .btn-danger {
-    @apply bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded transition disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-  .input-field {
-    @apply w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-spice-500/50 focus:border-spice-500/50 placeholder:text-slate-500;
-  }
+  /* ---- typography helpers ---- */
+  .t-display { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.01em; line-height: 1.05; }
+  .t-eyebrow { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.22em; font-weight: 600; font-size: 11px; color: var(--text-faint); }
+  .t-mono { font-family: var(--font-mono); }
+
+  /* ---- cards / surfaces ---- */
   .card {
-    @apply bg-slate-900 border border-slate-800 rounded-xl;
+    background: linear-gradient(180deg, color-mix(in oklch, var(--surface) 100%, white 1.5%), var(--surface));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-card);
+    position: relative;
   }
   .card-header {
-    @apply px-4 py-3 border-b border-slate-800 flex items-center justify-between;
+    padding: calc(var(--pad) * 0.72) var(--pad);
+    border-bottom: 1px solid var(--border-soft);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
+  .card-title { font-family: var(--font-display); font-weight: 600; font-size: 17px; letter-spacing: 0.01em; }
+  .card-body { padding: var(--pad); }
+  .muted-box { background: color-mix(in oklch, var(--bg) 45%, transparent); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); }
+  .divider { height: 1px; background: var(--border-soft); border: 0; margin: 0; }
+
+  /* ---- buttons (the lively bits). Repo uses bare variant classes, so the
+     base applies to .btn AND every variant. ---- */
+  .btn, .btn-primary, .btn-ghost, .btn-danger, .btn-outline, .btn-warn,
+  .btn-danger-outline, .btn-warn-outline {
+    --b-bg: var(--surface-2);
+    --b-fg: var(--text);
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1;
+    padding: 10px 15px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--b-bg);
+    color: var(--b-fg);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition:
+      transform calc(0.14s * var(--dur)) var(--ease-spring),
+      box-shadow calc(0.25s * var(--dur)) var(--ease-out),
+      background calc(0.2s * var(--dur)) ease,
+      border-color calc(0.2s * var(--dur)) ease,
+      filter calc(0.2s * var(--dur)) ease;
+  }
+  .btn:hover, .btn-primary:hover, .btn-ghost:hover, .btn-danger:hover,
+  .btn-outline:hover, .btn-warn:hover { transform: translateY(-1.5px); }
+  .btn:active, .btn-primary:active, .btn-ghost:active, .btn-danger:active,
+  .btn-outline:active, .btn-warn:active { transform: translateY(0) scale(var(--press)); }
+  .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled,
+  .btn-outline:disabled, .btn-warn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .btn:focus-visible, .btn-primary:focus-visible, .btn-ghost:focus-visible,
+  .btn-danger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .btn-primary {
+    --b-bg: linear-gradient(180deg, var(--accent), var(--accent-2));
+    --b-fg: var(--accent-ink);
+    border-color: transparent;
+    font-weight: 700;
+    box-shadow: 0 6px 18px -10px var(--glow), 0 1px 0 rgba(255,255,255,0.18) inset;
+  }
+  .btn-primary:hover { filter: brightness(1.06) saturate(1.05); box-shadow: 0 12px 30px -10px var(--glow), 0 0 0 1px var(--accent-line), 0 1px 0 rgba(255,255,255,0.2) inset; }
+  .btn-ghost { --b-bg: transparent; border-color: transparent; color: var(--text-dim); padding: 9px 12px; }
+  .btn-ghost:hover { --b-bg: var(--surface-2); color: var(--text); }
+  .btn-outline { --b-bg: transparent; border-color: var(--border); color: var(--text-dim); }
+  .btn-outline:hover { color: var(--text); border-color: var(--accent-line); --b-bg: var(--accent-soft); }
+  .btn-danger {
+    --b-bg: linear-gradient(180deg, var(--err), color-mix(in oklch, var(--err) 78%, black));
+    --b-fg: oklch(0.98 0.02 28);
+    border-color: transparent;
+    font-weight: 700;
+    box-shadow: 0 6px 18px -10px oklch(0.68 0.205 28 / 0.6);
+  }
+  .btn-danger:hover { filter: brightness(1.06); }
+  .btn-warn {
+    --b-bg: linear-gradient(180deg, var(--warn), color-mix(in oklch, var(--warn) 80%, black));
+    --b-fg: oklch(0.24 0.05 80);
+    border-color: transparent;
+    font-weight: 700;
+  }
+  .btn-warn:hover { filter: brightness(1.06); }
+  .btn-danger-outline { --b-bg: transparent; border-color: color-mix(in oklch, var(--err) 55%, transparent); color: var(--err); font-weight: 700; }
+  .btn-danger-outline:hover { --b-bg: color-mix(in oklch, var(--err) 14%, transparent); border-color: var(--err); }
+  .btn-warn-outline { --b-bg: transparent; border-color: color-mix(in oklch, var(--warn) 60%, transparent); color: var(--warn); font-weight: 700; }
+  .btn-warn-outline:hover { --b-bg: color-mix(in oklch, var(--warn) 14%, transparent); border-color: var(--warn); }
+
+  /* ---- pills / badges / dots. Repo uses bare pill-ok/warn/err. ---- */
+  .pill, .pill-ok, .pill-warn, .pill-err, .pill-mute, .pill-accent {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--radius-pill);
+    border: 1px solid transparent;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+  }
+  .pill-ok   { background: color-mix(in oklch, var(--ok) 18%, transparent);   color: var(--ok);   border-color: color-mix(in oklch, var(--ok) 35%, transparent); }
+  .pill-warn { background: color-mix(in oklch, var(--warn) 18%, transparent); color: var(--warn); border-color: color-mix(in oklch, var(--warn) 35%, transparent); }
+  .pill-err  { background: color-mix(in oklch, var(--err) 20%, transparent);  color: var(--err);  border-color: color-mix(in oklch, var(--err) 38%, transparent); }
+  .pill-mute { background: var(--surface-2); color: var(--text-dim); border-color: var(--border); }
+  .pill-accent { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; position: relative; }
+  .dot-online { background: var(--ok); animation: pulse-ring calc(2.2s * var(--dur)) ease-out infinite; }
+  .dot-off { background: var(--text-faint); }
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklch, var(--ok) 60%, transparent); }
+    70%  { box-shadow: 0 0 0 7px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  /* ---- forms. Repo uses input-field. ---- */
   .label {
-    @apply block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide;
+    display: block;
+    font-family: var(--font-display);
+    font-size: 11.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-faint);
+    margin-bottom: 8px;
   }
-  .pill {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full font-medium;
+  .input, .input-field {
+    width: 100%;
+    background: color-mix(in oklch, var(--bg) 55%, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 14px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
   }
-  .pill-ok {
-    @apply pill bg-emerald-900/40 text-emerald-300 border border-emerald-800/50;
+  .input::placeholder, .input-field::placeholder { color: var(--text-faint); }
+  .input:focus, .input-field:focus {
+    outline: none;
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+    background: var(--bg);
   }
-  .pill-warn {
-    @apply pill bg-amber-900/40 text-amber-300 border border-amber-800/50;
+  textarea.input, textarea.input-field { resize: vertical; line-height: 1.5; }
+  .input-mono { font-family: var(--font-mono); font-size: 13px; }
+
+  /* ---- segmented chips ---- */
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 13px;
+    font-size: 13px; font-weight: 600;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer; white-space: nowrap;
+    transition: transform 0.14s var(--ease-spring), background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
   }
-  .pill-err {
-    @apply pill bg-red-900/40 text-red-300 border border-red-800/50;
-  }
+  .chip:hover { color: var(--text); background: var(--surface-2); transform: translateY(-1px); }
+  .chip.is-active { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 }
+
+/* entrance animations — transform-only so resting state is always visible */
+.page { animation: page-in calc(0.34s * var(--dur)) var(--ease-out); }
+@keyframes page-in { from { transform: translateY(12px); } to { transform: none; } }
+.animate-fade-in, .fade-in { animation: fade-in calc(0.26s * var(--dur)) var(--ease-out); }
+@keyframes fade-in { from { transform: translateY(7px); } to { transform: none; } }
+.pop-in { animation: pop-in calc(0.32s * var(--dur)) var(--ease-spring); }
+@keyframes pop-in { from { transform: scale(0.965) translateY(7px); } to { transform: none; } }
