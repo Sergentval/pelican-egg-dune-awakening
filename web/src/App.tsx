@@ -47,31 +47,31 @@ interface TabDef {
   group: TabGroup;
 }
 
-// Sidebar section headers. Grouped by what the operator is acting on, so
-// everyday tasks (a player, an item, a message) are easy to find.
+// Group names for the top-bar's first tier. Plain names (SVG icons land in
+// phase 8); the per-tab emoji below are the second-tier section markers.
 const GROUP_LABELS: Record<TabGroup, string> = {
-  fleet: "🌍 Fleet",
-  players: "👥 Players",
-  economy: "🎁 Items & Economy",
-  server: "🛠 Server",
+  fleet: "Fleet",
+  players: "Players",
+  economy: "Items & Economy",
+  server: "Server",
 };
 const GROUP_ORDER: TabGroup[] = ["fleet", "players", "economy", "server"];
 
 const TABS: TabDef[] = [
-  // 🌍 Fleet — the live world: who/what is running and where.
+  // Fleet — the live world: who/what is running and where.
   { id: "overview", label: "Overview", icon: "◆", group: "fleet" },
   { id: "map", label: "Live Map", icon: "🗺", group: "fleet" },
   { id: "instances", label: "Instances", icon: "🧩", group: "fleet" },
   { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "fleet" },
-  // 👥 Players — everything that acts on a player (or player-spawned content).
+  // Players — everything that acts on a player (or player-spawned content).
   { id: "players", label: "Players", icon: "👥", group: "players" },
   { id: "vehicles", label: "Vehicles", icon: "🚗", group: "players" },
-  // 🎁 Items & Economy — giving items + the in-game economy.
+  // Items & Economy — giving items + the in-game economy.
   { id: "give-items", label: "Give Items", icon: "🎁", group: "economy" },
   { id: "market", label: "Market", icon: "🪙", group: "economy" },
   { id: "loot", label: "Loot & Difficulty", icon: "🎲", group: "economy" },
   { id: "spice", label: "Spice Economy", icon: "🧂", group: "economy" },
-  // 🛠 Server — global settings, comms, and operations.
+  // Server — global settings, comms, and operations.
   { id: "settings", label: "Settings", icon: "⚙", group: "server" },
   { id: "broadcast", label: "Send Message", icon: "📣", group: "server" },
   { id: "maintenance", label: "Shutdown & Restart", icon: "🛠", group: "server" },
@@ -82,9 +82,11 @@ const TABS: TabDef[] = [
 export default function App() {
   const [authState, setAuthState] = useState<"loading" | "out" | "in">("loading");
   const [tab, setTab] = useState<TabId>("overview");
+  // Which group's sub-sections the top bar is showing. Lets you browse a group's
+  // tabs without navigating (the design's "browse without committing").
+  const [selGroup, setSelGroup] = useState<TabGroup>("fleet");
   const [mode, setMode] = useState<"ui" | "internal" | "?">("?");
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     onUnauthorized(() => {
@@ -96,16 +98,10 @@ export default function App() {
         setMode((res.body as { mode: "ui" | "internal" }).mode);
       }
     });
-    // No localStorage check anymore — auth is determined entirely by
-    // whether the HttpOnly session cookie is present and valid. /api/me
-    // returns 200 + session info when the cookie is good; 401 otherwise.
     me().then((res) => setAuthState(res.ok ? "in" : "out"));
   }, []);
 
   async function logout() {
-    // Tell the backend to revoke this session's jti and clear cookies.
-    // Even if the request fails (e.g. the cookie is already dead) we
-    // still flip the UI to the login screen.
     try {
       await apiLogout();
     } catch {
@@ -114,6 +110,13 @@ export default function App() {
     setToken(""); // legacy localStorage cleanup
     setAuthState("out");
     setEntries([]);
+  }
+
+  // Navigate to a section and sync the browsed group to where we landed.
+  function go(id: TabId) {
+    setTab(id);
+    const g = TABS.find((t) => t.id === id)?.group;
+    if (g) setSelGroup(g);
   }
 
   if (authState === "loading") {
@@ -128,121 +131,97 @@ export default function App() {
     return <Login onAuthed={() => setAuthState("in")} />;
   }
 
+  const curGroup: TabGroup = TABS.find((t) => t.id === tab)?.group ?? "fleet";
+  const sectionTabs = TABS.filter((t) => t.group === selGroup);
+
   return (
     <LiveProvider>
     <TargetProvider>
-    <div className="min-h-screen flex flex-col">
-      <header className="border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between bg-slate-950/80 backdrop-blur sticky top-0 z-30 gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <button
-            className="lg:hidden text-slate-400 hover:text-slate-100"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            aria-label="Toggle menu"
-          >
-            ☰
-          </button>
-          <span className="text-xl">🌀</span>
-          <div className="hidden sm:block">
-            <div className="text-spice-300 font-semibold leading-tight">Dune Admin</div>
-            <div className="text-xs text-slate-500">Pelican egg</div>
-          </div>
-        </div>
-        <div className="hidden md:block min-w-0 truncate">
-          <TargetPill />
-        </div>
-        <div className="flex items-center gap-3">
-          <LiveToggle />
-          <span className={mode === "ui" ? "pill-ok" : "pill-warn"}>mode: {mode}</span>
-          <button onClick={logout} className="btn-ghost text-xs">
-            Log out
-          </button>
-        </div>
-      </header>
-      <div className="md:hidden border-b border-slate-800 px-4 py-2 bg-slate-950/60">
-        <TargetPill />
-      </div>
-
-      <div className="flex-1 flex">
-        {/* Sidebar */}
-        <aside
-          className={
-            "w-60 border-r border-slate-800 bg-slate-950 shrink-0 " +
-            "fixed inset-y-0 left-0 top-[57px] z-20 transform transition-transform lg:static lg:translate-x-0 " +
-            (sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0")
-          }
-        >
-          <nav className="py-4 px-2 space-y-6">
-            {GROUP_ORDER.map((group) => (
-              <div key={group}>
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 px-3 mb-2">
-                  {GROUP_LABELS[group]}
-                </div>
-                <div className="space-y-0.5">
-                  {TABS.filter((t) => t.group === group).map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => {
-                        setTab(t.id);
-                        setSidebarOpen(false);
-                      }}
-                      className={
-                        "w-full text-left px-3 py-2 rounded text-sm flex items-center gap-3 transition " +
-                        (tab === t.id ? "bg-spice-900/40 text-spice-200" : "text-slate-300 hover:bg-slate-800")
-                      }
-                    >
-                      <span className="w-5 text-center">{t.icon}</span>
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
+    <div className="shell">
+      <div className="app-wrap">
+        {/* floating two-tier top bar */}
+        <header className="appbar">
+          <div className="appbar-top">
+            <div className="brand">
+              <div className="brand-mark">◈</div>
+              <div className="col">
+                <div className="brand-name">Dune Admin</div>
+                <div className="brand-sub">Pelican egg · mode {mode}</div>
               </div>
-            ))}
-          </nav>
-        </aside>
+            </div>
+            <nav className="grp-tabs" aria-label="Groups">
+              {GROUP_ORDER.map((g) => (
+                <button
+                  key={g}
+                  className={"grp-tab" + (g === selGroup ? " is-selected" : "")}
+                  onClick={() => setSelGroup(g)}
+                >
+                  {GROUP_LABELS[g]}
+                  {g === curGroup && <span className="grp-dot" title="your current page is in this group" />}
+                </button>
+              ))}
+            </nav>
+            <div className="appbar-tools">
+              <TargetPill />
+              <LiveToggle />
+              <button onClick={logout} className="btn-ghost text-xs">Log out</button>
+            </div>
+          </div>
+          <div className="appbar-sub">
+            <div className="sub-tabs" key={selGroup}>
+              {sectionTabs.map((t) => (
+                <button
+                  key={t.id}
+                  className={"sub-tab" + (t.id === tab ? " is-active" : "")}
+                  onClick={() => go(t.id)}
+                >
+                  <span aria-hidden>{t.icon}</span>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </header>
 
-        {sidebarOpen && (
-          <div className="fixed inset-0 bg-slate-950/50 z-10 lg:hidden" onClick={() => setSidebarOpen(false)} />
-        )}
-
-        <main className="flex-1 min-w-0 p-4 sm:p-6 space-y-6 overflow-x-auto">
-          {tab === "overview" && <OverviewTab setConsoleEntries={setEntries} />}
-          {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
-          {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
-          {tab === "players" && <PlayersWorkspace setConsoleEntries={setEntries} />}
-          {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
-          {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
-          {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
-          {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
-          {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
-          {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
-          {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
-          {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
-          {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
-          {tab === "events" && <EventsTab setConsoleEntries={setEntries} />}
-          {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
+        <main className="content">
+          <div key={tab} className="page flex flex-col gap-[var(--gap)]">
+            {tab === "overview" && <OverviewTab setConsoleEntries={setEntries} />}
+            {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
+            {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
+            {tab === "players" && <PlayersWorkspace setConsoleEntries={setEntries} />}
+            {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
+            {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
+            {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
+            {tab === "market" && <MarketTab setConsoleEntries={setEntries} />}
+            {tab === "vehicles" && <VehiclesTab setConsoleEntries={setEntries} />}
+            {tab === "settings" && <SettingsTab setConsoleEntries={setEntries} />}
+            {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
+            {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
+            {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
+            {tab === "events" && <EventsTab setConsoleEntries={setEntries} />}
+            {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
+          </div>
 
           <OutputConsole entries={entries} onClear={() => setEntries([])} />
         </main>
-      </div>
 
-      <footer className="border-t border-slate-800 px-4 sm:px-6 py-3 text-xs text-slate-500 flex flex-wrap items-center gap-3 justify-between">
-        <span>
-          Pelican egg admin · protocol via{" "}
-          <a href="https://github.com/adainrivers/dune-dedicated-server-manager" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
-            adainrivers
-          </a>{" "}
-          (MIT) · item images + info from{" "}
-          <a href="https://awakening.wiki" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
-            awakening.wiki
-          </a>{" "}
-          (community wiki, fair-use)
-        </span>
-        <span>
+        <footer className="mt-8 pt-4 border-t border-slate-800 text-xs text-slate-500 flex flex-wrap items-center gap-3 justify-between">
+          <span>
+            Pelican egg admin · protocol via{" "}
+            <a href="https://github.com/adainrivers/dune-dedicated-server-manager" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
+              adainrivers
+            </a>{" "}
+            (MIT) · item images + info from{" "}
+            <a href="https://awakening.wiki" className="text-spice-400 hover:underline" target="_blank" rel="noreferrer">
+              awakening.wiki
+            </a>{" "}
+            (community wiki, fair-use)
+          </span>
           <a href="https://github.com/Sergentval/pelican-egg-dune-awakening" className="text-slate-400 hover:text-slate-200" target="_blank" rel="noreferrer">
             source
           </a>
-        </span>
-      </footer>
+        </footer>
+      </div>
     </div>
     </TargetProvider>
     </LiveProvider>
