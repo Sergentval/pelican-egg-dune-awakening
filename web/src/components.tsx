@@ -144,7 +144,34 @@ interface PlayerPickerProps {
   /** Change handler. If omitted, the picker writes via useTarget(). */
   onChange?: (next: string) => void;
   allowStar?: boolean;
+  /** Called after a player is picked (row/quick chip) — used to close the modal. */
+  onPicked?: () => void;
 }
+
+// Procedural avatar — deterministic hue from the name, initials inside.
+function avatarHue(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function initials(s: string): string {
+  const parts = s.replace(/[^a-zA-Z0-9]/g, " ").trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? "")).toUpperCase();
+}
+export function Avatar({ name, size = 30 }: { name: string; size?: number }) {
+  const hue = avatarHue(name || "?");
+  return (
+    <span
+      className="avatar"
+      style={{ width: size, height: size, background: `linear-gradient(150deg, oklch(0.62 0.13 ${hue}), oklch(0.5 0.13 ${(hue + 40) % 360}))` }}
+      aria-hidden
+    >
+      {initials(name || "?")}
+    </span>
+  );
+}
+
+type PlayerFilter = "all" | "online" | "offline";
 
 interface KnownPlayer {
   fls_id: string;
@@ -155,7 +182,7 @@ interface KnownPlayer {
 
 let cachedPlayers: KnownPlayer[] | null = null;
 
-export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPickerProps) {
+export function PlayerPicker({ value, onChange, allowStar = false, onPicked }: PlayerPickerProps) {
   const target = useTarget();
   // Default: drive the shared target. Tabs can still pass explicit
   // value/onChange to keep their own picker isolated if they want.
@@ -164,6 +191,8 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
 
   const [players, setPlayers] = useState<KnownPlayer[]>(cachedPlayers || []);
   const [refreshing, setRefreshing] = useState(false);
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<PlayerFilter>("all");
 
   async function refresh() {
     setRefreshing(true);
@@ -185,40 +214,63 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
     if (!cachedPlayers) refresh();
   }, []);
 
+  function pick(v: string) {
+    effectiveChange(v);
+    onPicked?.();
+  }
+
+  const onlineCount = players.filter((p) => p.online).length;
+  const query = q.trim().toLowerCase();
+  const filtered = players.filter((p) => {
+    if (filter === "online" && !p.online) return false;
+    if (filter === "offline" && p.online) return false;
+    if (!query) return true;
+    return (p.character || "").toLowerCase().includes(query)
+      || p.fls_id.toLowerCase().includes(query)
+      || (p.steam_id || "").toLowerCase().includes(query);
+  });
+
   return (
     <div className="space-y-2">
-      <label className="label">Player</label>
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => effectiveChange("me")}>
-          me
-        </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={"chip text-xs" + (effectiveValue === "me" ? " is-active" : "")} onClick={() => pick("me")}>me</button>
         {allowStar && (
-          <button type="button" className="btn-ghost text-xs border border-slate-700" onClick={() => effectiveChange("*")}>
-            all online
-          </button>
+          <button type="button" className={"chip text-xs" + (effectiveValue === "*" ? " is-active" : "")} onClick={() => pick("*")}>all online</button>
         )}
-        {players.map((p) => {
-          const label = p.character || `${p.fls_id.slice(0, 8)}…`;
+        <input
+          type="text" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="search name / Steam / id…"
+          className="input-field text-xs flex-1 min-w-[150px]"
+        />
+        <button type="button" className="btn-ghost text-xs" onClick={refresh} disabled={refreshing} title="refresh players">{refreshing ? "…" : "↻"}</button>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(["all", "online", "offline"] as const).map((f) => (
+          <button key={f} type="button" className={"chip text-xs" + (filter === f ? " is-active" : "")} onClick={() => setFilter(f)}>
+            {f[0].toUpperCase() + f.slice(1)}
+            <span className="chip-count">{f === "all" ? players.length : f === "online" ? onlineCount : players.length - onlineCount}</span>
+          </button>
+        ))}
+      </div>
+      <div className="player-list max-h-64 overflow-y-auto">
+        {filtered.length === 0 && (
+          <div className="px-2 py-4 text-center text-xs text-slate-500">{players.length === 0 ? (refreshing ? "loading…" : "no players seen yet") : "no match"}</div>
+        )}
+        {filtered.map((p) => {
+          const name = p.character || `${p.fls_id.slice(0, 8)}…`;
           const buttonValue = p.character ? `name:${p.character}` : p.fls_id;
+          const active = effectiveValue === buttonValue;
           return (
-            <button
-              type="button"
-              key={p.fls_id}
-              className="btn-ghost text-xs border border-slate-700 flex items-center gap-1.5"
-              onClick={() => effectiveChange(buttonValue)}
-              title={`FLS ${p.fls_id} · Steam ${p.steam_id || "?"}`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${p.online ? "bg-emerald-400" : "bg-slate-500"}`}
-                aria-label={p.online ? "online" : "offline"}
-              />
-              {p.character ? label : <span className="font-mono">{label}</span>}
+            <button type="button" key={p.fls_id} className={"player-row" + (active ? " is-active" : "")} onClick={() => pick(buttonValue)} title={`FLS ${p.fls_id} · Steam ${p.steam_id || "?"}`}>
+              <Avatar name={name} />
+              <span className="flex-1 min-w-0 text-left">
+                <span className="block truncate text-sm">{p.character ? name : <span className="font-mono">{name}</span>}</span>
+                <span className="block truncate text-[10px] text-slate-500 font-mono">{p.steam_id || p.fls_id}</span>
+              </span>
+              <span className={p.online ? "pill-ok" : "pill-mute"}>{p.online ? "online" : "offline"}</span>
             </button>
           );
         })}
-        <button type="button" className="btn-ghost text-xs" onClick={refresh} disabled={refreshing}>
-          {refreshing ? "…" : "refresh"}
-        </button>
       </div>
       <input
         type="text"
@@ -226,15 +278,31 @@ export function PlayerPicker({ value, onChange, allowStar = false }: PlayerPicke
         maxLength={64}
         onChange={(e) => effectiveChange(e.target.value)}
         onBlur={(e) => {
-          // Validate on blur — don't fight the operator mid-keystroke,
-          // but clamp once focus leaves so any garbage that doesn't
-          // match one of the four accepted forms gets reset.
           const cleaned = sanitizePlayerId(e.target.value);
           if (cleaned !== e.target.value) effectiveChange(cleaned);
         }}
         placeholder="me, *, name:Sergentval, steam:76561198..., or 16-hex FLS id"
         className="input-field font-mono text-xs"
       />
+    </div>
+  );
+}
+
+// Modal player selector — opened by the top-bar target pill; reuses PlayerPicker.
+export function PlayerPickerModal() {
+  const t = useTarget();
+  if (!t.pickerOpen) return null;
+  return (
+    <div className="modal-scrim" onClick={() => t.setPickerOpen(false)}>
+      <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3 className="card-title">Select target player</h3>
+          <button className="btn-ghost text-xs" onClick={() => t.setPickerOpen(false)}>close</button>
+        </div>
+        <div className="modal-body">
+          <PlayerPicker allowStar onPicked={() => t.setPickerOpen(false)} />
+        </div>
+      </div>
     </div>
   );
 }

@@ -25,6 +25,9 @@ interface TargetCtx extends Target {
   setPos: (next: PosInfo | null) => void;
   /** Drop everything back to defaults. */
   reset: () => void;
+  /** Whether the shared player-picker modal is open. */
+  pickerOpen: boolean;
+  setPickerOpen: (b: boolean) => void;
 }
 
 const Ctx = createContext<TargetCtx | null>(null);
@@ -34,6 +37,7 @@ export function TargetProvider({ children }: { children: ReactNode }) {
   const [pos, setPos] = useState<PosInfo | null>(null);
   const [posLoading, setPosLoading] = useState(false);
   const [posError, setPosError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const lookupPos = useCallback(
     async (override?: string) => {
@@ -79,8 +83,10 @@ export function TargetProvider({ children }: { children: ReactNode }) {
         setPos(null);
         setPosError(null);
       },
+      pickerOpen,
+      setPickerOpen,
     }),
-    [playerId, pos, posLoading, posError, lookupPos],
+    [playerId, pos, posLoading, posError, lookupPos, pickerOpen],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -98,22 +104,24 @@ export function TargetPill() {
   const t = useTarget();
   const hasPos = t.pos !== null;
   return (
-    <div className="flex items-center gap-2 px-2 py-1 rounded bg-slate-900 border border-slate-800 text-xs">
-      <span className="text-slate-500">target:</span>
-      <span className="text-spice-300 font-mono">{t.playerId}</span>
+    <div
+      className="target-pill target-pill-btn"
+      role="button"
+      tabIndex={0}
+      title="Change target player"
+      onClick={() => t.setPickerOpen(true)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); t.setPickerOpen(true); } }}
+    >
+      <span className="faint text-xs">target</span>
+      <span className="t-mono text-spice-300 text-xs">{t.playerId}</span>
       {hasPos && (
-        <>
-          <span className="text-slate-600">·</span>
-          <span className="text-slate-400 font-mono">
-            {t.pos!.map} ({Math.round(t.pos!.x)}, {Math.round(t.pos!.y)}, {Math.round(t.pos!.z)})
-          </span>
-        </>
+        <span className="faint t-mono text-[11px]">· {t.pos!.map} ({Math.round(t.pos!.x)},{Math.round(t.pos!.y)})</span>
       )}
-      {t.posLoading && <span className="text-slate-500 italic">…</span>}
+      {t.posLoading && <span className="faint italic text-xs">…</span>}
       <button
         type="button"
-        onClick={() => void t.lookupPos()}
-        className="ml-1 text-slate-400 hover:text-slate-100"
+        onClick={(e) => { e.stopPropagation(); void t.lookupPos(); }}
+        className="text-slate-400 hover:text-slate-100"
         title="refresh position"
         disabled={t.posLoading}
       >

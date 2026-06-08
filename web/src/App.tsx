@@ -16,7 +16,7 @@ import { MarketTab } from "./MarketTab";
 import { EventsTab } from "./EventsTab";
 import { SpiceTab } from "./SpiceTab";
 import { InstancesTab } from "./InstancesTab";
-import { Login, type ConsoleEntry } from "./components";
+import { Login, PlayerPickerModal, type ConsoleEntry } from "./components";
 import { ToastStack } from "./ToastStack";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
@@ -276,6 +276,7 @@ export default function App() {
     <ToastStack entries={entries} />
     <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} tweaks={tweaks} onChange={setTweaks} />
     <GlobalRipple />
+    <PlayerPickerModal />
     </TargetProvider>
     </LiveProvider>
   );

@@ -563,3 +563,64 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   .stepper-btn.down svg { transform: rotate(90deg); }
 }
 @keyframes ripple-go { to { transform: scale(1); opacity: 0; } }
+
+/* ============================================================
+   PLAYER PICKER + MODAL + TARGET PILL (phase 7)
+   ============================================================ */
+@layer components {
+  .avatar {
+    flex: none; border-radius: 50%;
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-weight: 700; font-size: 11px;
+    color: oklch(0.18 0.03 60); letter-spacing: 0.02em;
+  }
+  .chip-count { color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); }
+
+  .player-list {
+    display: flex; flex-direction: column; gap: 4px;
+    border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+    padding: 5px; background: color-mix(in oklch, var(--bg) 40%, transparent);
+    overflow-x: hidden;
+  }
+  .player-row {
+    display: flex; align-items: center; gap: 11px; width: 100%;
+    padding: 8px 10px;
+    border: 1px solid transparent; border-radius: var(--radius-sm);
+    background: transparent; color: var(--text); cursor: pointer; text-align: left;
+    transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s var(--ease-spring);
+  }
+  .player-row:hover { background: var(--surface-2); }
+  .player-row:active { transform: scale(0.99); }
+  .player-row.is-active { background: var(--accent-soft); border-color: var(--accent-line); }
+
+  .target-pill {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 7px 12px; border-radius: var(--radius-pill);
+    background: var(--surface); border: 1px solid var(--border);
+    font-size: 13px; max-width: clamp(170px, 24vw, 340px); min-width: 0;
+  }
+  .target-pill > span { flex: 0 0 auto; }
+  .target-pill > span.t-mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .target-pill-btn { cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s var(--ease-spring); }
+  .target-pill-btn:hover { border-color: var(--accent-line); background: color-mix(in oklch, var(--surface) 88%, var(--accent)); }
+  .target-pill-btn:active { transform: scale(0.98); }
+
+  .modal-scrim {
+    position: fixed; inset: 0; z-index: 60;
+    display: grid; place-items: center;
+    padding: clamp(16px, 4vw, 48px);
+    background: color-mix(in oklch, var(--bg) 68%, transparent);
+    backdrop-filter: blur(6px) saturate(1.1);
+  }
+  .modal {
+    width: 100%; max-width: 720px; max-height: min(86vh, 760px);
+    display: flex; flex-direction: column;
+    background: linear-gradient(180deg, color-mix(in oklch, var(--surface) 100%, white 1.5%), var(--surface));
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-pop); overflow: hidden;
+    animation: pop-in calc(0.3s * var(--dur)) var(--ease-spring);
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px var(--pad); border-bottom: 1px solid var(--border-soft); }
+  .modal-body { padding: var(--pad); overflow-y: auto; overflow-x: hidden; flex: 1 1 auto; min-height: 0; }
+  .modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 15px var(--pad); border-top: 1px solid var(--border-soft); background: color-mix(in oklch, var(--bg) 35%, transparent); }
+}
