@@ -24,6 +24,7 @@ import { LiveProvider, LiveToggle } from "./live";
 import { CommandPalette, SearchIcon } from "./CommandPalette";
 import { TweaksPanel, GearIcon } from "./TweaksPanel";
 import { applyTweaks, loadTweaks, saveTweaks, type Tweaks } from "./tweaks";
+import { GlobalRipple } from "./ui";
 
 type TabId =
   | "overview"
@@ -274,6 +275,7 @@ export default function App() {
     />
     <ToastStack entries={entries} />
     <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} tweaks={tweaks} onChange={setTweaks} />
+    <GlobalRipple />
     </TargetProvider>
     </LiveProvider>
   );
