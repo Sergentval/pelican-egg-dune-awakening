@@ -16,7 +16,8 @@ import { MarketTab } from "./MarketTab";
 import { EventsTab } from "./EventsTab";
 import { SpiceTab } from "./SpiceTab";
 import { InstancesTab } from "./InstancesTab";
-import { Login, OutputConsole, type ConsoleEntry } from "./components";
+import { Login, type ConsoleEntry } from "./components";
+import { ToastStack } from "./ToastStack";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
 import { TargetPill, TargetProvider } from "./target";
 import { LiveProvider, LiveToggle } from "./live";
@@ -226,11 +227,9 @@ export default function App() {
             {tab === "maintenance" && <MaintenanceTab setConsoleEntries={setEntries} />}
             {tab === "scheduler" && <SchedulerTab setConsoleEntries={setEntries} />}
             {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
-            {tab === "events" && <EventsTab setConsoleEntries={setEntries} />}
+            {tab === "events" && <EventsTab setConsoleEntries={setEntries} entries={entries} onClearSession={() => setEntries([])} />}
             {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
           </div>
-
-          <OutputConsole entries={entries} onClear={() => setEntries([])} />
         </main>
 
         <footer className="mt-8 pt-4 border-t border-slate-800 text-xs text-slate-500 flex flex-wrap items-center gap-3 justify-between">
@@ -260,6 +259,7 @@ export default function App() {
       currentTab={tab}
       onGo={(id) => go(id as TabId)}
     />
+    <ToastStack entries={entries} />
     </TargetProvider>
     </LiveProvider>
   );

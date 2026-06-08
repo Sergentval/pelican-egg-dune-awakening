@@ -18,7 +18,7 @@ const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
   { id: "audit", label: "Command audit", icon: "🗒", hint: "Every admin action run from this panel (who ran what)" },
 ];
 
-export function EventsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
+export function EventsTab({ setConsoleEntries, entries, onClearSession }: { setConsoleEntries: SetEntries; entries?: ConsoleEntry[]; onClearSession?: () => void }) {
   const [sub, setSub] = useState<Sub>("logs");
   const active = SUBS.find((s) => s.id === sub) ?? SUBS[0];
   return (
@@ -46,7 +46,7 @@ export function EventsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries
       </div>
 
       {sub === "logs" && <LogsTab setConsoleEntries={setConsoleEntries} />}
-      {sub === "audit" && <HistoryTab />}
+      {sub === "audit" && <HistoryTab sessionEntries={entries} onClearSession={onClearSession} />}
     </div>
   );
 }

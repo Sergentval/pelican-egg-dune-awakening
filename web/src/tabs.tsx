@@ -2753,7 +2753,7 @@ export function KitsTab({ setConsoleEntries }: TabProps) {
 
 // ---- History ----------------------------------------------------------
 
-export function HistoryTab() {
+export function HistoryTab({ sessionEntries, onClearSession }: { sessionEntries?: ConsoleEntry[]; onClearSession?: () => void } = {}) {
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -2769,9 +2769,37 @@ export function HistoryTab() {
   }, []);
 
   return (
-    <div className="card">
-      <header className="card-header">
-        <h2 className="font-semibold">Server-side history</h2>
+    <div className="space-y-4">
+      {sessionEntries && (
+        <div className="card">
+          <header className="card-header">
+            <div className="flex items-center gap-2">
+              <span className="dot dot-online" />
+              <h2 className="font-semibold">This session · you (admin)</h2>
+              <span className="text-xs text-slate-500">{sessionEntries.length} command{sessionEntries.length === 1 ? "" : "s"}</span>
+            </div>
+            {onClearSession && (
+              <button className="btn-ghost text-xs" onClick={onClearSession} disabled={sessionEntries.length === 0}>clear session</button>
+            )}
+          </header>
+          <div className="max-h-[360px] overflow-y-auto font-mono text-xs">
+            {sessionEntries.length === 0 && <div className="p-6 text-center text-slate-500 not-italic">No commands run this session yet.</div>}
+            {sessionEntries.map((e, idx) => (
+              <div key={`${e.ts}-${idx}`} className="border-b border-slate-800 px-4 py-2">
+                <div className="flex items-center gap-2 text-slate-400 text-[10px]">
+                  <span>{new Date(e.ts).toLocaleTimeString()}</span>
+                  <span className={e.ok ? "pill-ok" : "pill-err"}>{e.ok ? "ok" : "fail"}</span>
+                  <span className="text-slate-300">{e.label}</span>
+                </div>
+                {e.body && <pre className="whitespace-pre-wrap text-slate-300 mt-1 text-xs">{e.body}</pre>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Server-side history</h2>
         <div className="flex items-center gap-3">
           <span className="text-xs text-slate-500">
             {history ? `${history.entries.length} of ${history.total}` : "-"}
@@ -2800,6 +2828,7 @@ export function HistoryTab() {
           <div className="p-8 text-center text-slate-500">No history yet</div>
         )}
       </div>
+    </div>
     </div>
   );
 }
