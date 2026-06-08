@@ -3,6 +3,7 @@
 // label+group when typing; ↑/↓ to move, Enter to go, Esc to close.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "./icons";
 
 export function SearchIcon({ size = 16 }: { size?: number }) {
   return (
@@ -108,7 +109,7 @@ export function CommandPalette({
               onMouseEnter={() => setSel(idx)}
               onClick={() => onGo(r.id)}
             >
-              <span className="cmdk-ico" aria-hidden>{r.icon}</span>
+              <span className="cmdk-ico">{r.icon ? <Icon name={r.icon} size={18} /> : null}</span>
               <span className="cmdk-label">{r.label}</span>
               {r.id === currentTab && <span className="cmdk-current-tag">current</span>}
               <span className="cmdk-group">{groupLabels[r.group] ?? r.group}</span>

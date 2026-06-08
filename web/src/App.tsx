@@ -25,6 +25,7 @@ import { CommandPalette, SearchIcon } from "./CommandPalette";
 import { TweaksPanel, GearIcon } from "./TweaksPanel";
 import { applyTweaks, loadTweaks, saveTweaks, type Tweaks } from "./tweaks";
 import { GlobalRipple } from "./ui";
+import { Icon } from "./icons";
 
 type TabId =
   | "overview"
@@ -64,24 +65,24 @@ const GROUP_ORDER: TabGroup[] = ["fleet", "players", "economy", "server"];
 
 const TABS: TabDef[] = [
   // Fleet — the live world: who/what is running and where.
-  { id: "overview", label: "Overview", icon: "◆", group: "fleet" },
-  { id: "map", label: "Live Map", icon: "🗺", group: "fleet" },
-  { id: "instances", label: "Instances", icon: "🧩", group: "fleet" },
-  { id: "autoscaler", label: "Autoscaler", icon: "📈", group: "fleet" },
+  { id: "overview", label: "Overview", icon: "dashboard", group: "fleet" },
+  { id: "map", label: "Live Map", icon: "map", group: "fleet" },
+  { id: "instances", label: "Instances", icon: "layers", group: "fleet" },
+  { id: "autoscaler", label: "Autoscaler", icon: "trend", group: "fleet" },
   // Players — everything that acts on a player (or player-spawned content).
-  { id: "players", label: "Players", icon: "👥", group: "players" },
-  { id: "vehicles", label: "Vehicles", icon: "🚗", group: "players" },
+  { id: "players", label: "Players", icon: "players", group: "players" },
+  { id: "vehicles", label: "Vehicles", icon: "vehicles", group: "players" },
   // Items & Economy — giving items + the in-game economy.
-  { id: "give-items", label: "Give Items", icon: "🎁", group: "economy" },
-  { id: "market", label: "Market", icon: "🪙", group: "economy" },
-  { id: "loot", label: "Loot & Difficulty", icon: "🎲", group: "economy" },
-  { id: "spice", label: "Spice Economy", icon: "🧂", group: "economy" },
+  { id: "give-items", label: "Give Items", icon: "items", group: "economy" },
+  { id: "market", label: "Market", icon: "coin", group: "economy" },
+  { id: "loot", label: "Loot & Difficulty", icon: "dice", group: "economy" },
+  { id: "spice", label: "Spice Economy", icon: "spice", group: "economy" },
   // Server — global settings, comms, and operations.
-  { id: "settings", label: "Settings", icon: "⚙", group: "server" },
-  { id: "broadcast", label: "Send Message", icon: "📣", group: "server" },
-  { id: "maintenance", label: "Shutdown & Restart", icon: "🛠", group: "server" },
-  { id: "scheduler", label: "Scheduler", icon: "⏰", group: "server" },
-  { id: "events", label: "Events & Diagnostics", icon: "📜", group: "server" },
+  { id: "settings", label: "Settings", icon: "settings", group: "server" },
+  { id: "broadcast", label: "Send Message", icon: "broadcast", group: "server" },
+  { id: "maintenance", label: "Shutdown & Restart", icon: "power", group: "server" },
+  { id: "scheduler", label: "Scheduler", icon: "clock", group: "server" },
+  { id: "events", label: "Events & Diagnostics", icon: "terminal", group: "server" },
 ];
 
 export default function App() {
@@ -218,7 +219,7 @@ export default function App() {
                   className={"sub-tab" + (t.id === tab ? " is-active" : "")}
                   onClick={() => go(t.id)}
                 >
-                  <span aria-hidden>{t.icon}</span>
+                  <Icon name={t.icon} size={18} />
                   {t.label}
                 </button>
               ))}

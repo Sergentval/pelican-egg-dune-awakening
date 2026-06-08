@@ -8,15 +8,16 @@
 import { type Dispatch, type SetStateAction, useState } from "react";
 import type { ConsoleEntry } from "./components";
 import { ItemsTab, KitsTab, WelcomeTab } from "./tabs";
+import { Icon } from "./icons";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
 type Sub = "single" | "bundles" | "welcome";
 
 const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
-  { id: "single", label: "Single item", icon: "📦", hint: "Give one item to a player on demand" },
-  { id: "bundles", label: "Bundles", icon: "🎁", hint: "Give a pre-built kit (a bundle of items)" },
-  { id: "welcome", label: "New-player kit", icon: "🎉", hint: "Auto-grant a kit to players on first join" },
+  { id: "single", label: "Single item", icon: "items", hint: "Give one item to a player on demand" },
+  { id: "bundles", label: "Bundles", icon: "kits", hint: "Give a pre-built kit (a bundle of items)" },
+  { id: "welcome", label: "New-player kit", icon: "flag", hint: "Auto-grant a kit to players on first join" },
 ];
 
 export function GiveItemsTab({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
@@ -38,7 +39,7 @@ export function GiveItemsTab({ setConsoleEntries }: { setConsoleEntries: SetEntr
                   : "border-transparent text-slate-400 hover:bg-slate-800")
               }
             >
-              <span aria-hidden>{s.icon}</span>
+              <Icon name={s.icon} size={18} />
               {s.label}
             </button>
           ))}

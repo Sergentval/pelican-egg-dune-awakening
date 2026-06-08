@@ -8,14 +8,15 @@ import { type Dispatch, type SetStateAction, useState } from "react";
 import type { ConsoleEntry } from "./components";
 import { LogsTab } from "./LogsTab";
 import { HistoryTab } from "./tabs";
+import { Icon } from "./icons";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
 type Sub = "logs" | "audit";
 
 const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
-  { id: "logs", label: "Service logs", icon: "📜", hint: "Live per-service log tail + restart a single service" },
-  { id: "audit", label: "Command audit", icon: "🗒", hint: "Every admin action run from this panel (who ran what)" },
+  { id: "logs", label: "Service logs", icon: "terminal", hint: "Live per-service log tail + restart a single service" },
+  { id: "audit", label: "Command audit", icon: "history", hint: "Every admin action run from this panel (who ran what)" },
 ];
 
 export function EventsTab({ setConsoleEntries, entries, onClearSession }: { setConsoleEntries: SetEntries; entries?: ConsoleEntry[]; onClearSession?: () => void }) {
@@ -37,7 +38,7 @@ export function EventsTab({ setConsoleEntries, entries, onClearSession }: { setC
                   : "border-transparent text-slate-400 hover:bg-slate-800")
               }
             >
-              <span aria-hidden>{s.icon}</span>
+              <Icon name={s.icon} size={18} />
               {s.label}
             </button>
           ))}

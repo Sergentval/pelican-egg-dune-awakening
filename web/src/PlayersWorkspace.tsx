@@ -14,17 +14,18 @@ import { type Dispatch, type SetStateAction, useState } from "react";
 import type { ConsoleEntry } from "./components";
 import { InventoryTab, MovementTab, PlayersTab, SkillsTab } from "./tabs";
 import { PlayerEditorTab } from "./PlayerEditorTab";
+import { Icon } from "./icons";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
 type Sub = "roster" | "character" | "skills" | "inventory" | "teleport";
 
 const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
-  { id: "roster", label: "Roster", icon: "👥", hint: "Who's online; kick, clean inventory, reset progression" },
-  { id: "character", label: "Character", icon: "🪪", hint: "Currency, XP, faction, identity, keystones, danger ops" },
-  { id: "skills", label: "Skills", icon: "✨", hint: "Grant skills, spend skill points, award XP" },
-  { id: "inventory", label: "Inventory", icon: "🎒", hint: "View and delete a player's items" },
-  { id: "teleport", label: "Teleport", icon: "🧭", hint: "Move a player to a saved location or coordinates" },
+  { id: "roster", label: "Roster", icon: "players", hint: "Who's online; kick, clean inventory, reset progression" },
+  { id: "character", label: "Character", icon: "user", hint: "Currency, XP, faction, identity, keystones, danger ops" },
+  { id: "skills", label: "Skills", icon: "skills", hint: "Grant skills, spend skill points, award XP" },
+  { id: "inventory", label: "Inventory", icon: "inventory", hint: "View and delete a player's items" },
+  { id: "teleport", label: "Teleport", icon: "movement", hint: "Move a player to a saved location or coordinates" },
 ];
 
 export function PlayersWorkspace({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
@@ -46,7 +47,7 @@ export function PlayersWorkspace({ setConsoleEntries }: { setConsoleEntries: Set
                   : "border-transparent text-slate-400 hover:bg-slate-800")
               }
             >
-              <span aria-hidden>{s.icon}</span>
+              <Icon name={s.icon} size={18} />
               {s.label}
             </button>
           ))}
