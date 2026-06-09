@@ -38,6 +38,9 @@ const ICON_PATHS: Record<string, ReactNode> = {
   terminal: <><rect x="3" y="4.5" width="18" height="15" rx="1.5" /><path d="m7 9 3 3-3 3M13 15h4" /></>,
   dice: <><rect x="3.5" y="3.5" width="17" height="17" rx="3" /><circle cx="8.5" cy="8.5" r="1.1" fill="currentColor" /><circle cx="15.5" cy="8.5" r="1.1" fill="currentColor" /><circle cx="12" cy="12" r="1.1" fill="currentColor" /><circle cx="8.5" cy="15.5" r="1.1" fill="currentColor" /><circle cx="15.5" cy="15.5" r="1.1" fill="currentColor" /></>,
   trend: <><path d="M3 17l5-5 3.5 3.5L20 7" /><path d="M15 7h5v5" /></>,
+  shield: <><path d="M12 3 5 6v5c0 4.5 3 8 7 9.5 4-1.5 7-5 7-9.5V6Z" /></>,
+  bolt: <><path d="M13 2 4 14h7l-1 8 9-12h-7Z" /></>,
+  gauge: <><path d="M5 18a8 8 0 1 1 14 0" /><path d="M12 14l3.5-3.5" /><circle cx="12" cy="14" r="1.2" fill="currentColor" /></>,
 };
 
 export function Icon({ name, size = 20, stroke = 1.75, className = "", style }: {
