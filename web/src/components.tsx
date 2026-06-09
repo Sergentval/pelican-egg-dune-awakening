@@ -182,6 +182,24 @@ interface KnownPlayer {
 
 let cachedPlayers: KnownPlayer[] | null = null;
 
+// Best-effort online status for a target playerId, from the last-fetched roster.
+// null = unknown (no roster yet, or "me"/"*"); true/false when resolvable.
+export function isPlayerOnline(playerId: string): boolean | null {
+  if (!cachedPlayers) return null;
+  const id = playerId.trim();
+  let p: KnownPlayer | undefined;
+  if (id.startsWith("name:")) {
+    const n = id.slice(5).toLowerCase();
+    p = cachedPlayers.find((x) => (x.character || "").toLowerCase() === n);
+  } else if (id.startsWith("steam:")) {
+    const s = id.slice(6);
+    p = cachedPlayers.find((x) => x.steam_id === s);
+  } else if (/^[0-9a-fA-F]{16}$/.test(id)) {
+    p = cachedPlayers.find((x) => x.fls_id.toLowerCase() === id.toLowerCase());
+  }
+  return p ? p.online : null;
+}
+
 export function PlayerPicker({ value, onChange, allowStar = false, onPicked }: PlayerPickerProps) {
   const target = useTarget();
   // Default: drive the shared target. Tabs can still pass explicit

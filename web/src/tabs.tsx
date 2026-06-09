@@ -73,6 +73,7 @@ import {
 import {
   Confirm,
   PlayerPicker,
+  isPlayerOnline,
   pushToConsole,
   type ConsoleEntry,
 } from "./components";
@@ -369,6 +370,19 @@ const ITEM_CATEGORY_ORDER = [
   "contracts",
 ];
 
+// Item tier → color (T1 common … T6 legendary), matching game rarity tiers.
+const TIER_COLOR: Record<string, string> = {
+  T1: "oklch(0.72 0.02 80)",
+  T2: "oklch(0.75 0.15 150)",
+  T3: "oklch(0.70 0.13 245)",
+  T4: "oklch(0.66 0.17 300)",
+  T5: "oklch(0.76 0.16 60)",
+  T6: "oklch(0.68 0.19 25)",
+};
+function tierColor(t: string): string {
+  return TIER_COLOR[t] ?? "var(--text-faint)";
+}
+
 export function ItemsTab({ setConsoleEntries }: TabProps) {
   const target = useTarget();
   const [query, setQuery] = useState("");
@@ -522,8 +536,17 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               <input id="give-qty" type="number" min={1} value={qty} onChange={(e) => setQty(parseInt(e.target.value) || 1)} className="input-field" />
             </div>
             <div>
-              <label className="label" htmlFor="give-dura">Durability</label>
-              <input id="give-dura" type="number" min={0} max={1} step={0.05} value={durability} onChange={(e) => setDurability(parseFloat(e.target.value) || 1)} className="input-field" />
+              <label className="label" htmlFor="give-dura">Durability <span className="text-slate-400">· {Math.round(durability * 100)}%</span></label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="give-dura" type="range" min={0} max={1} step={0.05} value={durability}
+                  onChange={(e) => setDurability(parseFloat(e.target.value))}
+                  className="dura-range flex-1"
+                  style={{ "--p": durability } as React.CSSProperties}
+                />
+                <button type="button" className={"chip text-xs" + (durability === 0.5 ? " is-active" : "")} onClick={() => setDurability(0.5)}>50%</button>
+                <button type="button" className={"chip text-xs" + (durability === 1 ? " is-active" : "")} onClick={() => setDurability(1)}>100%</button>
+              </div>
             </div>
           </div>
           <button type="submit" className="btn-primary" disabled={!picked}>Give</button>
@@ -591,21 +614,25 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
               >
                 all
               </button>
-              {tiers.map((t) => (
-                <button
-                  type="button"
-                  key={t}
-                  onClick={() => setTierFilter(t === tierFilter ? "" : t)}
-                  className={
-                    "px-2 py-0.5 rounded text-xs border font-mono transition " +
-                    (tierFilter === t
-                      ? "border-spice-500 bg-spice-900/40 text-spice-300"
-                      : "border-slate-800 text-slate-400 hover:bg-slate-800")
-                  }
-                >
-                  {t}
-                </button>
-              ))}
+              {tiers.map((t) => {
+                const c = tierColor(t);
+                const on = tierFilter === t;
+                return (
+                  <button
+                    type="button"
+                    key={t}
+                    onClick={() => setTierFilter(t === tierFilter ? "" : t)}
+                    className="px-2 py-0.5 rounded text-xs border font-mono transition"
+                    style={{
+                      color: c,
+                      borderColor: on ? c : "var(--border-soft)",
+                      background: on ? `color-mix(in oklch, ${c} 18%, transparent)` : "transparent",
+                    }}
+                  >
+                    {t}
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -706,7 +733,14 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
                           <span className="text-3xl" aria-hidden>{sty.icon}</span>
                         )}
                         {tier && (
-                          <span className={"absolute -bottom-1 -right-1 text-[9px] font-mono px-1 py-0.5 rounded border " + tierBadgeClass}>
+                          <span
+                            className={"absolute -bottom-1 -right-1 text-[9px] font-mono px-1 py-0.5 rounded border " + (unique ? tierBadgeClass : "")}
+                            style={unique ? undefined : {
+                              color: tierColor(tier),
+                              borderColor: `color-mix(in oklch, ${tierColor(tier)} 60%, transparent)`,
+                              background: `color-mix(in oklch, ${tierColor(tier)} 22%, var(--surface))`,
+                            }}
+                          >
                             {tier}
                           </span>
                         )}
@@ -1901,6 +1935,7 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
   ];
   const [landsraadHouse, setLandsraadHouse] = useState<HouseReputationId>("AtreidesReputation");
   const [landsraadAmount, setLandsraadAmount] = useState(100);
+  const targetOnline = isPlayerOnline(target.playerId);
 
   function attempt(sub: string, label: string, warn: string) {
     setConfirm({ sub, label, warn });
@@ -2096,19 +2131,21 @@ export function PlayersTab({ setConsoleEntries }: TabProps) {
         <div className="p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <button
-              className="btn-ghost border border-slate-700"
+              className="btn-warn glow-warn"
+              disabled={targetOnline === false}
+              title={targetOnline === false ? "player is offline — nothing to kick" : "disconnect the player"}
               onClick={() => attempt("kick", "Kick", `Disconnect ${target.playerId}. They can reconnect immediately.`)}
             >
               Kick
             </button>
             <button
-              className="btn-danger"
+              className="btn-danger-outline glow-danger"
               onClick={() => attempt("clean", "Clean inventory", `Wipes ${target.playerId}'s entire inventory. Unrecoverable.`)}
             >
               Clean inventory
             </button>
             <button
-              className="btn-danger col-span-2"
+              className="btn-warn-outline glow-warn col-span-2"
               onClick={() => attempt("reset", "Reset progression", `Wipes ${target.playerId}'s XP, skill levels, and unspent points. Unrecoverable.`)}
             >
               Reset progression
