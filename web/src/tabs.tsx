@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { MAP_ROLE_META, mapDisplayName, mapRole, mapStatusPill } from "./mapNames";
 import { useAutoRefresh } from "./live";
+import { Icon } from "./icons";
 import {
   armorSetClass,
   armorSetLabel,
@@ -2927,21 +2928,20 @@ export function StatusTab({ setConsoleEntries }: TabProps) {
 
 // ---- Inventory (Phase 1: view + per-item delete) ----------------------
 
-// dune.inventories.inventory_type -> human container label. Values + meaning
-// lifted from Icehunter/dune-admin (repairGearInventoryTypes {0,1,14,15,27,30}
-// = "backpack, equipment, emote wheel, equipped weapons, action wheel, bank")
-// and confirmed against live character data.
-const INV_TYPE_LABELS: Record<string, string> = {
-  "0": "Backpack",
-  "1": "Equipped (armor & modules)",
-  "15": "Hotbar (held tools / weapons)",
-  "27": "Action wheel",
-  "14": "Emote wheel",
-  "30": "Bank",
-};
-const INV_TYPE_ORDER = ["0", "15", "1", "27", "14", "30"];
-function invTypeLabel(t: string): string {
-  return INV_TYPE_LABELS[t] || `Other (type ${t})`;
+// dune.items.inventory_type bucketed into the game's containers.
+// {0 backpack, 1 equipped, 15 hotbar/toolbar, 30 bank, 27 action, 14 emote}.
+const INV_CONTAINERS: { id: string; label: string; icon: string; match: (t: string) => boolean }[] = [
+  { id: "equipment", label: "Equipment", icon: "shield", match: (t) => t === "1" },
+  { id: "toolbar", label: "Toolbar", icon: "bolt", match: (t) => t === "15" },
+  { id: "backpack", label: "Backpack", icon: "items", match: (t) => t === "0" },
+  { id: "bank", label: "Bank", icon: "inventory", match: (t) => t === "30" },
+  { id: "other", label: "Other", icon: "layers", match: (t) => !["0", "1", "15", "30"].includes(t) },
+];
+
+// Durability meter — colored by remaining fraction.
+function InvBar({ v }: { v: number }) {
+  const tone = v > 0.5 ? "var(--ok)" : v > 0.25 ? "var(--warn)" : "var(--err)";
+  return <span className="xbar"><span className="xbar-fill" style={{ width: `${Math.round(v * 100)}%`, background: tone }} /></span>;
 }
 
 export function InventoryTab({ setConsoleEntries }: TabProps) {
@@ -2950,6 +2950,7 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [view, setView] = useState<string>("all");
 
   async function load() {
     if (!target.playerId) return;
@@ -2983,18 +2984,36 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
     return i >= 0 && i < row.length ? row[i] : "";
   };
 
-  // Group item stacks by their container (inventory_type).
-  const groups = new Map<string, string[][]>();
-  for (const r of rows) {
-    const t = cell(r, "inv_type");
-    const arr = groups.get(t) ?? [];
-    arr.push(r);
-    groups.set(t, arr);
-  }
-  const orderedTypes = [
-    ...INV_TYPE_ORDER.filter((t) => groups.has(t)),
-    ...[...groups.keys()].filter((t) => !INV_TYPE_ORDER.includes(t)).sort(),
-  ];
+  // Parse rows into typed items, bucketed by container.
+  interface InvItem { id: string; tmpl: string; name: string; qty: string; quality: string; dura: number | null; type: string; slot: string; }
+  const items: InvItem[] = rows.map((r) => {
+    const d = parseFloat(cell(r, "durability"));
+    const md = parseFloat(cell(r, "max_durability"));
+    const frac = !Number.isNaN(d) && !Number.isNaN(md) && md > 0 ? Math.max(0, Math.min(1, d / md)) : null;
+    const tmpl = cell(r, "template_id");
+    return { id: cell(r, "item_id"), tmpl, name: cell(r, "name") || tmpl, qty: cell(r, "stack_size"), quality: cell(r, "quality"), dura: frac, type: cell(r, "inv_type"), slot: cell(r, "slot") };
+  });
+  const cMeta = (cid: string) => INV_CONTAINERS.find((c) => c.id === cid) ?? INV_CONTAINERS[INV_CONTAINERS.length - 1];
+  const inContainer = (cid: string) => items.filter((it) => cMeta(cid).match(it.type));
+  const present = INV_CONTAINERS.filter((c) => items.some((it) => c.match(it.type)));
+  const show = (cid: string) => view === "all" || view === cid;
+  const delFloat = (it: InvItem) => <button className="tile-del" onClick={() => setConfirm({ id: it.id, name: it.name })} title="delete stack">✕</button>;
+  const ItemTable = ({ list }: { list: InvItem[] }) => (
+    <table className="tbl">
+      <thead><tr><th>Item</th><th>Qty</th><th>Quality</th><th>Durability</th><th></th></tr></thead>
+      <tbody>
+        {list.map((it) => (
+          <tr key={it.id}>
+            <td><div className="text-slate-200">{it.name}</div><div className="text-[10px] text-slate-600 font-mono">{it.tmpl} · #{it.id}{it.slot ? ` · slot ${it.slot}` : ""}</div></td>
+            <td className="font-mono">{it.qty}</td>
+            <td>{it.quality}</td>
+            <td className="w-28">{it.dura != null ? <InvBar v={it.dura} /> : <span className="text-slate-600">—</span>}</td>
+            <td className="text-right"><button className="btn-ghost btn-del text-xs" onClick={() => setConfirm({ id: it.id, name: it.name })}>delete</button></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 
   return (
     <div className="space-y-4">
@@ -3021,67 +3040,58 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
       </div>
 
       {table && rows.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-xs text-slate-500 font-mono">{rows.length} item stacks · {target.playerId}</div>
-          {orderedTypes.map((t) => {
-            const items = groups.get(t) ?? [];
-            return (
-              <div key={t} className="card">
-                <header className="card-header">
-                  <h3 className="font-semibold text-sm">{invTypeLabel(t)}</h3>
-                  <span className="text-xs text-slate-500">{items.length}</span>
-                </header>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="text-left text-slate-500 border-b border-slate-800">
-                      <tr>
-                        <th className="py-1 px-3">Item</th>
-                        <th className="px-3">Qty</th>
-                        <th className="px-3">Quality</th>
-                        <th className="px-3">Durability</th>
-                        <th className="px-3">Slot</th>
-                        <th className="px-3"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {items.map((r) => {
-                        const id = cell(r, "item_id");
-                        const tmpl = cell(r, "template_id");
-                        const name = cell(r, "name") || tmpl;
-                        const dura = cell(r, "durability");
-                        const maxd = cell(r, "max_durability");
-                        return (
-                          <tr key={id} className="border-b border-slate-900">
-                            <td className="py-1.5 px-3">
-                              <div className="text-slate-200">{name}</div>
-                              <div className="text-[10px] text-slate-600 font-mono">{tmpl} · #{id}</div>
-                            </td>
-                            <td className="px-3 font-mono">{cell(r, "stack_size")}</td>
-                            <td className="px-3">{cell(r, "quality")}</td>
-                            <td className="px-3 font-mono text-slate-400">
-                              {dura}
-                              {maxd && maxd !== "N/A" ? ` / ${maxd}` : ""}
-                            </td>
-                            <td className="px-3 font-mono text-slate-500">{cell(r, "slot")}</td>
-                            <td className="px-3 text-right">
-                              <button
-                                className="btn-ghost text-xs text-red-300 hover:text-red-200"
-                                onClick={() => setConfirm({ id, name })}
-                              >
-                                delete
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            );
-          })}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-slate-500 font-mono mr-1">{items.length} stacks · {target.playerId}</span>
+          <button className={"chip text-xs" + (view === "all" ? " is-active" : "")} onClick={() => setView("all")}>All <span className="chip-count">{items.length}</span></button>
+          {present.map((c) => (
+            <button key={c.id} className={"chip text-xs" + (view === c.id ? " is-active" : "")} onClick={() => setView(c.id)}>
+              <Icon name={c.icon} size={14} />{c.label}<span className="chip-count">{inContainer(c.id).length}</span>
+            </button>
+          ))}
         </div>
       )}
+
+      {table && show("equipment") && inContainer("equipment").length > 0 && (
+        <div className="card">
+          <header className="card-header"><div className="flex items-center gap-2"><Icon name="shield" size={17} style={{ color: "var(--accent)" }} /><h3 className="card-title">Equipment</h3></div><span className="text-xs text-slate-500">{inContainer("equipment").length}</span></header>
+          <div className="card-body"><div className="equip-grid">
+            {inContainer("equipment").map((it) => (
+              <div key={it.id} className="slot-tile">
+                {delFloat(it)}
+                <div className="text-sm truncate" title={it.name}>{it.name}</div>
+                <div className="text-[10px] text-slate-600 font-mono">q{it.quality}{parseInt(it.qty, 10) > 1 ? ` · ×${it.qty}` : ""}{it.slot ? ` · slot ${it.slot}` : ""}</div>
+                {it.dura != null && <div className="mt-auto"><InvBar v={it.dura} /></div>}
+              </div>
+            ))}
+          </div></div>
+        </div>
+      )}
+
+      {table && show("toolbar") && inContainer("toolbar").length > 0 && (
+        <div className="card">
+          <header className="card-header"><div className="flex items-center gap-2"><Icon name="bolt" size={17} style={{ color: "var(--accent)" }} /><h3 className="card-title">Toolbar</h3></div><span className="text-xs text-slate-500">{inContainer("toolbar").length}</span></header>
+          <div className="card-body"><div className="toolbar-bar">
+            {inContainer("toolbar").map((it) => (
+              <div key={it.id} className="tslot">
+                {delFloat(it)}
+                {it.slot && <span className="tslot-num">{it.slot}</span>}
+                <span className="tslot-name" title={it.name}>{it.name}</span>
+                {parseInt(it.qty, 10) > 1 && <span className="tslot-qty t-mono">×{it.qty}</span>}
+                {it.dura != null && <span className="tslot-dura"><InvBar v={it.dura} /></span>}
+              </div>
+            ))}
+          </div></div>
+        </div>
+      )}
+
+      {(["backpack", "bank", "other"] as const).map((cid) => (
+        table && show(cid) && inContainer(cid).length > 0 ? (
+          <div className="card" key={cid}>
+            <header className="card-header"><div className="flex items-center gap-2"><Icon name={cMeta(cid).icon} size={17} style={{ color: "var(--accent)" }} /><h3 className="card-title">{cMeta(cid).label}</h3></div><span className="text-xs text-slate-500">{inContainer(cid).length}</span></header>
+            <div className="overflow-x-auto"><ItemTable list={inContainer(cid)} /></div>
+          </div>
+        ) : null
+      ))}
       {table && rows.length === 0 && !loading && (
         <p className="text-sm text-slate-500 italic">
           No item stacks (empty inventory, or the character has no offline-readable items).
