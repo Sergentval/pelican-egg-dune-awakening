@@ -94,9 +94,13 @@ Protocol reverse-engineering credit:
 The egg has been running a production world end-to-end (real players,
 characters created, persistent save). The current code path:
 
-- `egg-dune-awakening.json` — Pelican PLCN_v3 egg, 36 panel variables
-  (FLS token + 22 game-side tunables + infrastructure ports). Install
+- `egg-dune-awakening.json` — **Pelican** egg (`PLCN_v1` format), 52 panel
+  variables (FLS token + game-side tunables + infrastructure ports). Install
   script fetches our repo tarball from GitHub, no upstream race.
+- `egg-dune-awakening-pterodactyl.json` — same egg in **Pterodactyl**
+  `PTDL_v2` format (pipe-string rules + `field_type`, single `startup`
+  string). Import this one on Pterodactyl panels; the `PLCN_v1` file above
+  also imports on Pelican. Both expose the identical 52 variables.
 - `docker/Dockerfile` — Debian Bookworm-slim runtime with required apt
   deps, tini as PID 1, K8s ServiceAccount mount declared as VOLUME.
   Published to
@@ -119,7 +123,8 @@ pelican-egg-dune-awakening/
 ├── ATTRIBUTION.md               ← credit + MIT lineage
 ├── LICENSE                      ← MIT (CubeCoders + this fork's edits)
 ├── NOTICE                       ← attribution summary
-├── egg-dune-awakening.json      ← the Pelican egg (import into the panel)
+├── egg-dune-awakening.json              ← Pelican egg (PLCN_v1)
+├── egg-dune-awakening-pterodactyl.json  ← Pterodactyl egg (PTDL_v2)
 ├── docker/
 │   ├── Dockerfile               ← runtime image
 │   ├── README.md                ← build / push / smoke-test instructions
@@ -184,6 +189,10 @@ the IGW port pool (7950+), and the internal admin HTTP wrapper (8089).
 3. In the Pelican panel: **Admin → Eggs → Import** → upload
    `egg-dune-awakening.json` → create a new server, paste the token into
    `DUNE_JWT`, set world title and region, deploy.
+   On **Pterodactyl** (Admin → Nests → Import Egg) upload
+   `egg-dune-awakening-pterodactyl.json` instead — the `PLCN_v1` file uses a
+   Pelican-only format that Pterodactyl rejects with "The JSON file provided
+   is not in a format that can be recognized."
 
 The install fetches scripts + Go source from this repo's `main` branch by
 default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for

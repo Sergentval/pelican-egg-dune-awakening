@@ -1,7 +1,7 @@
 {
     "_comment": "TEST VARIANT \u2014 points at ghcr.io/sergentval/games:dune_awakening (user's fork's image, not yet on pelican-eggs registry). Use for personal-panel smoke testing only. Do not submit this variant to upstream; submit egg-dune-awakening.yaml instead.",
     "meta": {
-        "version": "PLCN_v3",
+        "version": "PLCN_v1",
         "update_url": null
     },
     "exported_at": "2026-05-20T07:00:00+00:00",
@@ -19,9 +19,7 @@
         "Dune Awakening (user fork)": "ghcr.io/sergentval/games:dune_awakening"
     },
     "file_denylist": [],
-    "startup_commands": {
-        "Default": "bash scripts/console.sh /home/container"
-    },
+    "startup": "bash scripts/console.sh /home/container",
     "config": {
         "files": "{}",
         "startup": "{\"done\": \"Dune Awakening server ready: success\"}",
