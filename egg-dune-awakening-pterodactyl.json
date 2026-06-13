@@ -1,19 +1,13 @@
 {
-  "_comment": "Dune: Awakening — Pelican egg. Runs a full Linux Docker dedicated-server battlegroup using SteamCMD anonymous downloads + CubeCoders' MIT-licensed launch scripts (mock Kubernetes API, patchelf'd Funcom OCI binaries). Requires a custom runtime Docker image built from this repo's docker/Dockerfile.",
+  "_comment": "Dune: Awakening — Pterodactyl (PTDL_v2) egg. Same runtime as the Pelican egg; this variant is shaped for Pterodactyl's importer (rules as pipe-strings, field_type, single startup string). Build the runtime image from this repo's docker/Dockerfile. NOTE for editors: Pterodactyl stores each variable's rules as a pipe-delimited string, so never add a regex: rule containing a literal '|' here — it would split wrong on import. Treat the Pelican egg's array rules as the source of truth and keep the two files in sync.",
   "meta": {
-    "version": "PLCN_v1",
+    "version": "PTDL_v2",
     "update_url": null
   },
   "exported_at": "2026-05-27T13:35:00+00:00",
   "name": "Dune: Awakening",
   "author": "valentin95150@hotmail.fr",
-  "uuid": "6675695d-234b-40c8-b180-94cd20a67880",
   "description": "Dune: Awakening dedicated server (full battlegroup with always-warm Survival_1, Overmap, and DeepDesert_1 plus on-demand instances). Native Linux Docker via Funcom's official OCI tarballs (Steam app 4754530 retail / 3104830 PTC), extracted and patchelf'd at install time. Orchestration ports CubeCoders' AMP module (MIT) to the Wings runtime model. Requires a custom runtime image (see docker/Dockerfile) that pre-creates /var/run/secrets/kubernetes.io/serviceaccount/ with container-user ownership.",
-  "tags": [
-    "steamcmd",
-    "survival",
-    "mmo"
-  ],
   "features": [
     "steam_disk_space"
   ],
@@ -43,12 +37,8 @@
       "default_value": "4754530",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:4754530,3104830"
-      ],
-      "sort": 1
+      "rules": "required|string|in:4754530,3104830",
+      "field_type": "text"
     },
     {
       "name": "Release Version",
@@ -57,12 +47,8 @@
       "default_value": "4754530",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:4754530,3104830"
-      ],
-      "sort": 2
+      "rules": "required|string|in:4754530,3104830",
+      "field_type": "text"
     },
     {
       "name": "Self-Host Service Token (DUNE_JWT)",
@@ -71,11 +57,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string"
-      ],
-      "sort": 3
+      "rules": "required|string",
+      "field_type": "text"
     },
     {
       "name": "World Title",
@@ -84,12 +67,8 @@
       "default_value": "Pelican-hosted Sietch",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:64"
-      ],
-      "sort": 4
+      "rules": "required|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Region",
@@ -98,12 +77,8 @@
       "default_value": "Europe",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:32"
-      ],
-      "sort": 5
+      "rules": "required|string|max:32",
+      "field_type": "text"
     },
     {
       "name": "World Name Override",
@@ -112,12 +87,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:64"
-      ],
-      "sort": 6
+      "rules": "nullable|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Datacenter ID",
@@ -126,12 +97,8 @@
       "default_value": "pelican",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:32"
-      ],
-      "sort": 7
+      "rules": "required|string|max:32",
+      "field_type": "text"
     },
     {
       "name": "Bind IP",
@@ -140,12 +107,8 @@
       "default_value": "0.0.0.0",
       "user_viewable": false,
       "user_editable": false,
-      "rules": [
-        "required",
-        "string",
-        "max:45"
-      ],
-      "sort": 8
+      "rules": "required|string|max:45",
+      "field_type": "text"
     },
     {
       "name": "External (Public) IP",
@@ -154,12 +117,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:45"
-      ],
-      "sort": 9
+      "rules": "required|string|max:45",
+      "field_type": "text"
     },
     {
       "name": "Game Port Base (UDP)",
@@ -168,12 +127,8 @@
       "default_value": "7777",
       "user_viewable": true,
       "user_editable": false,
-      "rules": [
-        "required",
-        "numeric",
-        "between:1024,65505"
-      ],
-      "sort": 10
+      "rules": "required|numeric|between:1024,65505",
+      "field_type": "text"
     },
     {
       "name": "RabbitMQ Game Port (TCP/TLS)",
@@ -182,12 +137,8 @@
       "default_value": "5673",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "between:1024,65535"
-      ],
-      "sort": 11
+      "rules": "required|numeric|between:1024,65535",
+      "field_type": "text"
     },
     {
       "name": "RabbitMQ Game Mgmt Port (TCP)",
@@ -196,12 +147,8 @@
       "default_value": "15673",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "between:1024,65535"
-      ],
-      "sort": 12
+      "rules": "required|numeric|between:1024,65535",
+      "field_type": "text"
     },
     {
       "name": "Server Join Password",
@@ -210,12 +157,8 @@
       "default_value": "Sandworm",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:64"
-      ],
-      "sort": 13
+      "rules": "required|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Server Display Name",
@@ -224,12 +167,8 @@
       "default_value": "My Arrakis, My Dune",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:64"
-      ],
-      "sort": 14
+      "rules": "required|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Mining Output Multiplier",
@@ -238,12 +177,8 @@
       "default_value": "1.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 15
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "Vehicle Mining Output Multiplier",
@@ -252,12 +187,8 @@
       "default_value": "1.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 16
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "PvP Zone Resource Bonus",
@@ -266,12 +197,8 @@
       "default_value": "2.5",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 17
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "Vehicle Durability Damage",
@@ -280,12 +207,8 @@
       "default_value": "1.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "between:0,10"
-      ],
-      "sort": 18
+      "rules": "required|numeric|between:0,10",
+      "field_type": "text"
     },
     {
       "name": "Sandworm Invuln (Vehicle Exit, seconds)",
@@ -294,12 +217,8 @@
       "default_value": "900.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 19
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "Sandworm Invuln (Server Restart, seconds)",
@@ -308,12 +227,8 @@
       "default_value": "7200.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 20
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "Sandworm Can Damage Vehicles",
@@ -322,12 +237,8 @@
       "default_value": "False",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 21
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Sandstorms Enabled",
@@ -336,12 +247,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 22
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Sandstorm Treasure Drops",
@@ -350,12 +257,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 23
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Sandworms Enabled",
@@ -364,12 +267,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 24
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Sandworm Danger Zones Visible",
@@ -378,12 +277,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 25
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Force PvP On All Partitions",
@@ -392,12 +287,8 @@
       "default_value": "False",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 26
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Security Zones (Safe Zones) Enabled",
@@ -406,12 +297,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 27
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Coriolis Storm Auto-Spawn",
@@ -420,12 +307,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 28
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Item Deterioration Rate (seconds)",
@@ -434,12 +317,8 @@
       "default_value": "1.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "numeric",
-        "min:0"
-      ],
-      "sort": 29
+      "rules": "required|numeric|min:0",
+      "field_type": "text"
     },
     {
       "name": "Max Landclaim Segments Per Player",
@@ -448,12 +327,8 @@
       "default_value": "6",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "min:1"
-      ],
-      "sort": 30
+      "rules": "required|integer|min:1",
+      "field_type": "text"
     },
     {
       "name": "Building Blueprint Max Extensions",
@@ -462,12 +337,8 @@
       "default_value": "4",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "min:0"
-      ],
-      "sort": 31
+      "rules": "required|integer|min:0",
+      "field_type": "text"
     },
     {
       "name": "Base Backup Max Extensions",
@@ -476,12 +347,8 @@
       "default_value": "8",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "min:0"
-      ],
-      "sort": 32
+      "rules": "required|integer|min:0",
+      "field_type": "text"
     },
     {
       "name": "Building Restriction Limits Enforced",
@@ -490,12 +357,8 @@
       "default_value": "True",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:True,False"
-      ],
-      "sort": 33
+      "rules": "required|string|in:True,False",
+      "field_type": "text"
     },
     {
       "name": "Max Concurrent UE5 Instances",
@@ -504,13 +367,8 @@
       "default_value": "8",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "min:1",
-        "max:64"
-      ],
-      "sort": 34
+      "rules": "required|integer|min:1|max:64",
+      "field_type": "text"
     },
     {
       "name": "On-Demand Idle Timeout (Go duration)",
@@ -519,12 +377,8 @@
       "default_value": "10m",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:16"
-      ],
-      "sort": 35
+      "rules": "required|string|max:16",
+      "field_type": "text"
     },
     {
       "name": "Always-Warm Maps",
@@ -533,12 +387,8 @@
       "default_value": "Survival_1,Overmap,DeepDesert_1",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:512"
-      ],
-      "sort": 36
+      "rules": "required|string|max:512",
+      "field_type": "text"
     },
     {
       "name": "Deep Desert — Dimensional Partitions",
@@ -547,12 +397,8 @@
       "default_value": "3",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "between:0,12"
-      ],
-      "sort": 37
+      "rules": "required|integer|between:0,12",
+      "field_type": "text"
     },
     {
       "name": "Arrakeen — Dimensional Partitions",
@@ -561,12 +407,8 @@
       "default_value": "0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "between:0,12"
-      ],
-      "sort": 38
+      "rules": "required|integer|between:0,12",
+      "field_type": "text"
     },
     {
       "name": "Harko Village — Dimensional Partitions",
@@ -575,12 +417,8 @@
       "default_value": "0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "between:0,12"
-      ],
-      "sort": 39
+      "rules": "required|integer|between:0,12",
+      "field_type": "text"
     },
     {
       "name": "Enable SH_FallenLight (Third City)",
@@ -589,11 +427,8 @@
       "default_value": "false",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "in:true,false"
-      ],
-      "sort": 40
+      "rules": "required|in:true,false",
+      "field_type": "text"
     },
     {
       "name": "SH_FallenLight — Dimensional Partitions",
@@ -602,12 +437,8 @@
       "default_value": "0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "integer",
-        "between:0,12"
-      ],
-      "sort": 41
+      "rules": "required|integer|between:0,12",
+      "field_type": "text"
     },
     {
       "name": "Admin Web UI — Enabled",
@@ -616,12 +447,8 @@
       "default_value": "0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "in:0,1"
-      ],
-      "sort": 42
+      "rules": "required|string|in:0,1",
+      "field_type": "text"
     },
     {
       "name": "Admin Web UI — Bind IP",
@@ -630,12 +457,8 @@
       "default_value": "0.0.0.0",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "max:45"
-      ],
-      "sort": 43
+      "rules": "required|string|max:45",
+      "field_type": "text"
     },
     {
       "name": "Admin Web UI — Port",
@@ -644,13 +467,8 @@
       "default_value": "8090",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "required",
-        "string",
-        "regex:/^[0-9]+$/",
-        "max:5"
-      ],
-      "sort": 44
+      "rules": "required|string|regex:/^[0-9]+$/|max:5",
+      "field_type": "text"
     },
     {
       "name": "Admin Web UI — Public Domain",
@@ -659,12 +477,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:253"
-      ],
-      "sort": 45
+      "rules": "nullable|string|max:253",
+      "field_type": "text"
     },
     {
       "name": "Admin Web UI — Login Password",
@@ -673,13 +487,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "min:8",
-        "max:128"
-      ],
-      "sort": 46
+      "rules": "nullable|string|min:8|max:128",
+      "field_type": "text"
     },
     {
       "name": "Steam Web API Key (optional)",
@@ -688,12 +497,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:64"
-      ],
-      "sort": 47
+      "rules": "nullable|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Pelican Panel URL (scheduler auto-restart)",
@@ -702,12 +507,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:255"
-      ],
-      "sort": 48
+      "rules": "nullable|string|max:255",
+      "field_type": "text"
     },
     {
       "name": "Pelican Client API Key (scheduler auto-restart)",
@@ -716,12 +517,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:128"
-      ],
-      "sort": 49
+      "rules": "nullable|string|max:128",
+      "field_type": "text"
     },
     {
       "name": "Pelican Server ID (scheduler auto-restart)",
@@ -730,12 +527,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:64"
-      ],
-      "sort": 50
+      "rules": "nullable|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "Pelican Panel Resolve IP (scheduler auto-restart, optional)",
@@ -744,12 +537,8 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "string",
-        "max:64"
-      ],
-      "sort": 51
+      "rules": "nullable|string|max:64",
+      "field_type": "text"
     },
     {
       "name": "DB Backup Retention",
@@ -758,12 +547,8 @@
       "default_value": "7",
       "user_viewable": true,
       "user_editable": true,
-      "rules": [
-        "nullable",
-        "integer",
-        "between:1,365"
-      ],
-      "sort": 52
+      "rules": "nullable|integer|between:1,365",
+      "field_type": "text"
     }
   ]
 }
