@@ -1,5 +1,5 @@
 {
-  "_comment": "Dune: Awakening — Pterodactyl (PTDL_v2) egg. Same runtime as the Pelican egg; this variant is shaped for Pterodactyl's importer (rules as pipe-strings, field_type, single startup string). Build the runtime image from this repo's docker/Dockerfile.",
+  "_comment": "Dune: Awakening — Pterodactyl (PTDL_v2) egg. Same runtime as the Pelican egg; this variant is shaped for Pterodactyl's importer (rules as pipe-strings, field_type, single startup string). Build the runtime image from this repo's docker/Dockerfile. NOTE for editors: Pterodactyl stores each variable's rules as a pipe-delimited string, so never add a regex: rule containing a literal '|' here — it would split wrong on import. Treat the Pelican egg's array rules as the source of truth and keep the two files in sync.",
   "meta": {
     "version": "PTDL_v2",
     "update_url": null
