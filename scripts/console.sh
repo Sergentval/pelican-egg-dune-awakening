@@ -26,6 +26,33 @@ source "$(dirname "$(readlink -f "$0")")/lib.sh" "$BASE"
 # Dependency order — services started in this order; stopped in reverse
 SERVICES=(postgres mq-admin mq-game text-router fls-stub mock-k8s director gateway admin-http ue5-Survival_1 ue5-Overmap ue5-DeepDesert_1)
 
+# Services whose death makes the battlegroup non-functional even though the
+# rest of the tree is still alive. The supervisor loop below only used to act
+# when EVERYTHING died or every UE5 died — so losing exactly one of these
+# left a server that boots, registers with FLS, and then quietly fails every
+# player action. That is the failure mode behind issue #82: with text-router
+# (the RMQ auth backend) gone, RabbitMQ refuses every login and the Director
+# just logs "RMQ unreachable" forever while the container stays "healthy".
+# Bailing out lets Wings recreate the container, which actually fixes it.
+#
+# fls-stub, admin-http and mock-k8s are deliberately NOT here: the first two
+# are optional conveniences, and mock-k8s only matters while spawning (a dead
+# one is caught by the zero-UE5 rule).
+CRITICAL_SERVICES=(postgres mq-admin mq-game text-router director gateway)
+
+# Per-service hint printed when one of them dies, so the operator is pointed
+# at the right log instead of at the symptom.
+critical_hint() {
+  case "$1" in
+    text-router) echo "RMQ auth backend — every broker login is authorised here; the Director will report 'RMQ unreachable' (issue #82)" ;;
+    mq-admin|mq-game) echo "RabbitMQ broker — Director/gateway/UE5 traffic all flows through it" ;;
+    postgres)    echo "database — character and world state cannot be read or written" ;;
+    director)    echo "Battlegroup Director — no instance scaling, travel or login routing" ;;
+    gateway)     echo "FLS gateway — the server stops being advertised and drops out of the browser" ;;
+    *)           echo "critical service" ;;
+  esac
+}
+
 # --------------------------------------------------------------------------
 # Shutdown handler
 # --------------------------------------------------------------------------
@@ -109,15 +136,18 @@ trap shutdown_all SIGTERM SIGINT SIGHUP
 log "Verifying service status..."
 all_ok=1
 for svc in "${SERVICES[@]}"; do
+  # read_pid returns "" for a missing pid file AND for a pid that is no
+  # longer alive, so the two cases can't be told apart here — check the
+  # file directly to keep the message honest about which one happened.
   pid=$(read_pid "$svc")
-  if [ -z "$pid" ]; then
-    warn "  $svc: no PID file — service did not start"
-    all_ok=0
-  elif ! kill -0 "$pid" 2>/dev/null; then
-    warn "  $svc: pid $pid not running"
+  if [ -n "$pid" ]; then
+    log "  $svc: pid $pid OK"
+  elif [ -f "$(pid_file "$svc")" ]; then
+    warn "  $svc: pid $(cat "$(pid_file "$svc")" 2>/dev/null) not running — it started and then exited"
     all_ok=0
   else
-    log "  $svc: pid $pid OK"
+    warn "  $svc: no PID file — service did not start"
+    all_ok=0
   fi
 done
 [ "$all_ok" = 1 ] || warn "One or more services failed to start — see logs above"
@@ -232,6 +262,10 @@ ADMIN_LISTENER_PID=$!
 # --------------------------------------------------------------------------
 UE5_DEAD_GRACE="${UE5_DEAD_GRACE:-90}"   # seconds before declaring UE5-down fatal
 ue5_dead_since=0
+# Shorter than UE5's: a dead broker or auth backend has no legitimate reason
+# to be down for 90s, and every second of it is a player-visible failure.
+CRITICAL_DEAD_GRACE="${CRITICAL_DEAD_GRACE:-20}"
+critical_dead_since=0
 while true; do
   any_alive=0
   ue5_alive=0
@@ -248,6 +282,33 @@ while true; do
     warn "All services have exited: failed — bailing out so Wings can restart"
     [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null || true
     exit 1
+  fi
+
+  # Critical-service exit (case 1b): one of the load-bearing services died
+  # while the rest of the tree survived. Left alone this produces a server
+  # that looks up but cannot serve — see CRITICAL_SERVICES above. Grace is
+  # one loop iteration so a service that is mid-restart isn't misreported.
+  dead_critical=""
+  for svc in "${CRITICAL_SERVICES[@]}"; do
+    pid=$(read_pid "$svc")
+    [ -z "$pid" ] && dead_critical="$dead_critical $svc"
+  done
+  if [ -n "$dead_critical" ]; then
+    if [ "$critical_dead_since" = 0 ]; then
+      critical_dead_since=$(date +%s)
+      warn "Critical service(s) not running:$dead_critical — re-checking before bailing out"
+    elif [ $(( $(date +%s) - critical_dead_since )) -ge "$CRITICAL_DEAD_GRACE" ]; then
+      for svc in $dead_critical; do
+        warn "  $svc is down — $(critical_hint "$svc")"
+        warn "    see logs/$svc.log"
+      done
+      warn "Bailing out so Wings recreates the container"
+      [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null || true
+      exit 3
+    fi
+  elif [ "$critical_dead_since" != 0 ]; then
+    log "Critical services healthy again — cancelling restart grace"
+    critical_dead_since=0
   fi
 
   # Zero-UE5 exit (case 2): only count when EVERY ue5-* PID is dead AND

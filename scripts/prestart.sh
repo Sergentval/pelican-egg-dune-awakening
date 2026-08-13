@@ -33,6 +33,11 @@ source "$(dirname "$(readlink -f "$0")")/lib.sh" "$@"
 
 mkdir -p "$RUNTIME"
 
+# Drop pid files from the previous container incarnation before anything
+# calls launch_bg. A recycled PID in a stale file reads as "alive", and
+# console.sh's shutdown would then signal an unrelated process.
+purge_pids
+
 # Guard: the runtime image must pre-create the K8s ServiceAccount mount
 # (see docker/Dockerfile). pelican-entrypoint.sh already enforces this,
 # but defending in depth is cheap.
@@ -372,14 +377,16 @@ env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
   env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
     "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$LOGS/pg-init.log" -w -t 30 start >/dev/null 2>&1 || true
 
-PCOUNT=$(env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
-  "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune -tA \
-  -c "SELECT count(*) FROM dune.world_partition" 2>/dev/null || echo 0)
-
-if [ "${PCOUNT:-0}" -lt 29 ]; then
-  log "Seeding world partitions..."
-  env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
-    "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune <<'SQL' || warn "world_partition seed failed (non-fatal)"
+# Run unconditionally: the INSERT is ON CONFLICT DO NOTHING, so it is
+# idempotent and self-healing. The previous `if PCOUNT -lt 29` guard was an
+# optimization that turned into a correctness bug — once a world reached 29
+# rows it could never pick up a map Funcom added later. The 2026-08-12 depot
+# (build 24653560) ships partitions 29 (CB_Overland_S_08) and 30
+# (CB_Dungeon_ThePit); every world created before this fix is missing both,
+# and the Director cannot allocate a map with no world_partition row.
+log "Ensuring world partitions are seeded (idempotent)..."
+env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
+  "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune <<'SQL' || warn "world_partition seed failed (non-fatal)"
 SET search_path TO dune,public;
 INSERT INTO dune.world_partition (partition_id, map, partition_definition, dimension_index, blocked, label)
 VALUES
@@ -411,6 +418,15 @@ VALUES
   (26, 'CB_Overland_S_06', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S06'),
   (27, 'CB_Story_BanditFortress01', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Bandit Fortress'),
   (28, 'CB_Overland_S_07', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S07'),
+  -- 29/30 ship in Funcom's world-template.yaml (verified against depot
+  -- build 24653560, 2026-08-12) but were never seeded here. Ids match the
+  -- template's worldPartitions order exactly — never invent partition ids.
+  -- Funcom also ships DB upgrade scripts for CB_SurvivalChallenge_Station_15
+  -- (id 31 upstream), but that map has no entry in the current
+  -- world-template, so mock-k8s can never be asked for it. Left out until
+  -- it reappears in the template.
+  (29, 'CB_Overland_S_08', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S08'),
+  (30, 'CB_Dungeon_ThePit', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'The Pit'),
   -- SH_FallenLight warm anchor. Funcom ships this map (GameTweaks
   -- PlayerHardCap=80) but CubeCoders' AMP module never seeded it. We
   -- always insert the row — costs nothing if the operator doesn't
@@ -420,7 +436,6 @@ VALUES
   (130, 'SH_FallenLight', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Fallen Light')
 ON CONFLICT (partition_id) DO NOTHING;
 SQL
-fi
 
 # --------------------------------------------------------------------------
 # 6b. Seed dimensional partitions for multi-Sietch travel destinations.

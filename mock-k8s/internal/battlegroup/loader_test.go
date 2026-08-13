@@ -113,6 +113,71 @@ func TestExtractMapPartitions_SingleOccurrence(t *testing.T) {
 	}
 }
 
+// TestExtractMapPartitions_IgnoresRestartScalerPatterns covers the shape
+// Funcom shipped in the 2026-08-12 depot: `.spec.restartScalers[]` is a
+// scaling directive whose `map` field holds a REGEX, not a map name —
+//
+//	restartScalers:
+//	- map: ^SH_.*
+//	  size: 1
+//
+// Walking it like a map reference registers ServerSetScales named after the
+// pattern (`<world>-^sh-.*`), which are not valid object names and can never
+// correspond to a real UE5 instance. Only literal map names may be extracted.
+func TestExtractMapPartitions_IgnoresRestartScalerPatterns(t *testing.T) {
+	obj := map[string]any{
+		"spec": map[string]any{
+			"restartScalers": []any{
+				map[string]any{"map": "^SH_.*", "size": 1},
+				map[string]any{"map": "^(.*_)Story_.*", "size": 1},
+			},
+			"worldPartitions": []any{
+				map[string]any{"map": "Survival_1", "partitions": []any{
+					map[string]any{"id": 1},
+				}},
+				map[string]any{"map": "SH_Arrakeen", "partitions": []any{
+					map[string]any{"id": 3},
+				}},
+			},
+		},
+	}
+	want := []MapInfo{
+		{MapName: "Survival_1", PartitionID: 1},
+		{MapName: "SH_Arrakeen", PartitionID: 3},
+	}
+	got := ExtractMapPartitions(obj)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v (restartScalers regex entries must not become maps)", got, want)
+	}
+}
+
+// TestExtractMapPartitions_IgnoresRegexLikeMapNames is the defensive half of
+// the restartScalers fix: any future key carrying a pattern rather than a
+// literal name is rejected on the value itself. Funcom map names are
+// alphanumeric plus underscore; a name carrying regex metacharacters is a
+// pattern by construction.
+func TestExtractMapPartitions_IgnoresRegexLikeMapNames(t *testing.T) {
+	obj := map[string]any{
+		"spec": map[string]any{
+			"someFutureScaler": []any{
+				map[string]any{"map": "^CB_Overland_.*$"},
+				map[string]any{"map": "Story_(A|B)"},
+				map[string]any{"map": "DeepDesert_[0-9]+"},
+			},
+			"worldPartitions": []any{
+				map[string]any{"map": "Overmap", "partitions": []any{
+					map[string]any{"id": 2},
+				}},
+			},
+		},
+	}
+	want := []MapInfo{{MapName: "Overmap", PartitionID: 2}}
+	got := ExtractMapPartitions(obj)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v (regex-shaped map names must not be extracted)", got, want)
+	}
+}
+
 // TestExtractMapPartitions_ZeroOnlyMapRetained ensures a map that never
 // carries a real id is still listed (with id 0), preserving the prior
 // "enumerate every referenced map" behavior rather than silently dropping it.

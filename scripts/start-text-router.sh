@@ -42,9 +42,19 @@ launch_bg text-router "$LOGS/text-router.log" -- env \
   HOST_DATACENTER_IP_ADDRESS="$DUNE_EXTERNAL_IP" \
   "$WORK/TextRouter" --RMQGameHostname=127.0.0.1 --RMQGamePort="$DUNE_MQ_GAME_PORT"
 
-if wait_for_port 127.0.0.1 "$DUNE_TEXT_ROUTER_PORT" 30; then
-  log "Text Router ready: success (pid $(read_pid text-router))"
+# Two gates, because this service is the RMQ auth backend for BOTH brokers
+# and every later stage depends on it answering. A bound socket only proves
+# Kestrel started; /status proves the app can serve. If we advanced on the
+# socket alone, the Director could issue its RMQ login into a text-router
+# that is not serving yet — RabbitMQ turns that into ACCESS_REFUSED and the
+# Director reports "RMQ unreachable" (issue #82), which points the operator
+# at the broker instead of at the auth backend that actually failed.
+if wait_for_port 127.0.0.1 "$DUNE_TEXT_ROUTER_PORT" 30 \
+   && wait_for_http "http://127.0.0.1:$DUNE_TEXT_ROUTER_PORT/status" 200 30; then
+  log "Text Router ready: success (pid $(read_pid text-router), /status 200)"
 else
   tail -30 "$LOGS/text-router.log" >&2
-  die "Text Router failed to listen within 30s"
+  die "Text Router failed to become ready within 60s (port bind + /status 200). \
+Every RMQ login is authorised by this service — the Director will report \
+'RMQ unreachable' until it answers. See logs/text-router.log."
 fi

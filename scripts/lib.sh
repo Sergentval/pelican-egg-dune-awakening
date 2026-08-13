@@ -72,8 +72,14 @@ write_pid() {
 }
 
 read_pid() {
-  local f; f=$(pid_file "$1")
-  [ -f "$f" ] && cat "$f" || echo ""
+  local f; f=$(pid_file "$1") pid=""
+  [ -f "$f" ] && pid=$(cat "$f" 2>/dev/null)
+  # Validate before returning: an empty, non-numeric or dead pid is a
+  # phantom from a stale file. Returning it lets shutdown_all signal a
+  # PID the kernel has since recycled onto an unrelated process.
+  # (Ported from CubeCoders upstream, 2026-05-29.)
+  case "$pid" in ''|*[!0-9]*) echo ""; return ;; esac
+  kill -0 "$pid" 2>/dev/null && echo "$pid" || echo ""
 }
 
 is_running() {
@@ -97,6 +103,26 @@ launch_bg() {
   disown
 }
 
+# purge_pids — wipe pid files left over from a previous incarnation of this
+# container. Without this, a stale value (a PID the kernel has since reused
+# for an unrelated process) can survive into the new boot, where read_pid
+# validates it as "alive" and shutdown_all signals the wrong target.
+# Called from prestart.sh before any launch_bg.
+#
+# NOTE: upstream (CubeCoders) also rewrote launch_bg to have an inner
+# `setsid bash` write its own $$ so the pid file holds the session leader.
+# We deliberately do NOT port that. Under Wings, console.sh runs
+# non-interactively with job control off, so the backgrounded command is
+# not already a process-group leader and setsid execs in place rather than
+# forking — $! IS the final PID here. Their rewrite also opened a window
+# where the pid file does not exist yet right after launch_bg, which they
+# then had to patch in wait_for_udp_bind. Taking the robustness fixes
+# without that trade.
+purge_pids() {
+  mkdir -p "$RUNTIME/pids"
+  rm -f "$RUNTIME/pids/"*.pid 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------------
 # wait_for_port host port timeout_sec
 # --------------------------------------------------------------------------
@@ -111,16 +137,44 @@ wait_for_port() {
 }
 
 # --------------------------------------------------------------------------
+# wait_for_http url [expect_code] [timeout_sec]
+#
+# A listening socket is not readiness. ASP.NET binds its port before the app
+# can serve a request, and any service that answers RabbitMQ's auth_http
+# probes must be able to answer BEFORE the brokers' clients try to log in —
+# RabbitMQ turns a non-200 (or an unanswered) auth probe into a flat
+# ACCESS_REFUSED, which the Director surfaces as the misleading
+# "RMQ unreachable / BrokerUnreachableException" (issue #82). Gate on a real
+# response code so we never advance the boot sequence on a half-open port.
+# --------------------------------------------------------------------------
+wait_for_http() {
+  local url=$1 expect=${2:-200} timeout=${3:-30}
+  local i=0 code=""
+  while (( i < timeout )); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000)
+    [ "$code" = "$expect" ] && return 0
+    sleep 1; i=$((i+1))
+  done
+  return 1
+}
+
+# --------------------------------------------------------------------------
 # wait_for_udp_port — UE5 binds UDP; we can't simply connect.  Instead poll
 # /proc/net/udp6 + /proc/net/udp for the bound port owned by our PID.
 # --------------------------------------------------------------------------
 wait_for_udp_bind() {
   local name=$1 port=$2 timeout=${3:-120}
-  local pid; pid=$(read_pid "$name")
   local hex_port; hex_port=$(printf '%04X' "$port")
-  local i=0
+  # Re-read the pid inside the loop rather than capturing it once. read_pid
+  # now returns "" for a pid that is not yet written or not yet alive, and a
+  # single capture would freeze that "" for the whole timeout — we would sit
+  # out the full window and then fail a UE5 instance that is bound and READY.
+  # (Same class of bug CubeCoders hit upstream; cheap to be robust here.)
+  local i=0 pid=""
   while (( i < timeout )); do
-    if kill -0 "$pid" 2>/dev/null && grep -qE ":$hex_port " /proc/net/udp /proc/net/udp6 2>/dev/null; then
+    [ -z "$pid" ] && pid=$(read_pid "$name")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
+       && grep -qE ":$hex_port " /proc/net/udp /proc/net/udp6 2>/dev/null; then
       return 0
     fi
     sleep 1; i=$((i+1))

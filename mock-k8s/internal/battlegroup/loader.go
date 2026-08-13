@@ -150,6 +150,33 @@ func ExtractMapPartitions(obj map[string]any) []MapInfo {
 	return out
 }
 
+// patternMapKeys are BattleGroup spec keys whose `map` field holds a REGULAR
+// EXPRESSION rather than a literal map name. Funcom's 2026-08-12 depot added
+// .spec.restartScalers[], which matches whole families of maps at once:
+//
+//	restartScalers:
+//	- map: ^SH_.*
+//	  size: 1
+//
+// Descending into these would register ServerSetScales named after the pattern
+// (`<world>-^sh-.*`) that can never back a real UE5 instance.
+var patternMapKeys = map[string]struct{}{
+	"restartScalers": {},
+}
+
+// regexMetachars are the characters that mark a `map` value as a pattern.
+// Funcom map names are alphanumerics and underscores (Survival_1, Overmap,
+// DLC_Story_LostHarvest_EcolabA), so none of these can appear in a literal
+// name — rejecting on them cannot drop a real map, while still catching any
+// future pattern-bearing key we don't yet know to skip by name.
+const regexMetachars = `^$.*+?()[]{}|\`
+
+// isLiteralMapName reports whether s is a real map name rather than a scaling
+// directive's regular expression.
+func isLiteralMapName(s string) bool {
+	return s != "" && !strings.ContainsAny(s, regexMetachars)
+}
+
 // walkForMapPartitions accumulates the largest partition id seen for each map
 // name into best. Taking the max is what makes extraction order-independent
 // (see ExtractMapPartitions). A map whose only occurrences yield 0 is still
@@ -157,13 +184,16 @@ func ExtractMapPartitions(obj map[string]any) []MapInfo {
 func walkForMapPartitions(v any, best map[string]int64) {
 	switch t := v.(type) {
 	case map[string]any:
-		if mapName, ok := t["map"].(string); ok && mapName != "" {
+		if mapName, ok := t["map"].(string); ok && isLiteralMapName(mapName) {
 			pid := firstPartitionID(t["partitions"])
 			if prev, seen := best[mapName]; !seen || pid > prev {
 				best[mapName] = pid
 			}
 		}
-		for _, child := range t {
+		for key, child := range t {
+			if _, isPattern := patternMapKeys[key]; isPattern {
+				continue
+			}
 			walkForMapPartitions(child, best)
 		}
 	case []any:
