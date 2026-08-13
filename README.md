@@ -46,6 +46,45 @@ The trick is twofold:
 
 The egg wires this up against Wings.
 
+## Admin panel
+
+Optional web UI, off by default — set `DUNE_ADMIN_UI_ENABLED=1` and it is served
+by `admin-http.py` on the port you allocate. It runs against the same server-side
+admin pipeline as the console commands below, so anything the panel does can also
+be scripted.
+
+![Admin panel overview](docs/img/admin-overview.png)
+
+<table>
+<tr>
+<td width="50%"><a href="docs/img/admin-instances.png"><img src="docs/img/admin-instances.png" alt="Instances and partitions"></a></td>
+<td width="50%"><a href="docs/img/admin-map.png"><img src="docs/img/admin-map.png" alt="Live map"></a></td>
+</tr>
+<tr>
+<td><b>Instances &amp; partitions</b> — every map with its real partition id and
+port, grouped by role (always-warm landing zones, per-player dimension
+partitions, on-demand cities). Start, stop, scale or park a Sietch without
+touching the DB.</td>
+<td><b>Live map</b> — player positions per map, drawn from the last saved
+coordinates. Drop named locations and teleport a targeted player to one in a
+single click.</td>
+</tr>
+<tr>
+<td><a href="docs/img/admin-items.png"><img src="docs/img/admin-items.png" alt="Item catalog"></a></td>
+<td><a href="docs/img/admin-settings.png"><img src="docs/img/admin-settings.png" alt="Server settings"></a></td>
+</tr>
+<tr>
+<td><b>Items &amp; economy</b> — the full 2,558-item catalog with tier and
+rarity filters, single grants, bundles and a new-player kit.</td>
+<td><b>Server settings</b> — 195 tunables mapped to their real INI keys, with
+Funcom's defaults shown. Values are written to the server INI and take effect
+on the next restart.</td>
+</tr>
+</table>
+
+> Screenshots are from a freshly-booted battlegroup, which is why the player
+> lists are empty.
+
 ## Admin commands
 
 Server-side admin pipeline ships with the egg — bypasses the locked
