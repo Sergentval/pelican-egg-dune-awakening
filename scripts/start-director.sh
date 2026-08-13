@@ -30,6 +30,17 @@ launch_bg director "$LOGS/director.log" -- env \
   DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
   ASPNETCORE_URLS="http://127.0.0.1:$DUNE_DIRECTOR_PORT" \
   ASPNETCORE_CONTENTROOT="$RUNTIME/director-conf.d" \
+  `# Cap Director log volume. At Information level it dumps the ENTIRE` \
+  `# BattleGroup CR and every ServerState as JSON — a single boot of the` \
+  `# 2026-08-12 build wrote a 226 KB blob into director.log. CubeCoders` \
+  `# upstream filled a disk to 98% this way, which breaks Postgres writes` \
+  `# and stalls shutdown. Warning keeps WRN/ERR/FATAL.` \
+  `#` \
+  `# This governs the Serilog/ASP.NET pipeline. state/director_config.ini` \
+  `# ("level=", seeded to info by prestart) is Funcom's own file logger and` \
+  `# is a separate knob — raise BOTH when troubleshooting the Director.` \
+  "Serilog__MinimumLevel__Default=${DUNE_DIRECTOR_LOG_LEVEL:-Warning}" \
+  "Logging__LogLevel__Default=${DUNE_DIRECTOR_LOG_LEVEL:-Warning}" \
   Database_address="127.0.0.1:$DUNE_PG_PORT" \
   Database_name=dune \
   Database_user=dune \

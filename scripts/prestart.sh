@@ -33,6 +33,11 @@ source "$(dirname "$(readlink -f "$0")")/lib.sh" "$@"
 
 mkdir -p "$RUNTIME"
 
+# Drop pid files from the previous container incarnation before anything
+# calls launch_bg. A recycled PID in a stale file reads as "alive", and
+# console.sh's shutdown would then signal an unrelated process.
+purge_pids
+
 # Guard: the runtime image must pre-create the K8s ServiceAccount mount
 # (see docker/Dockerfile). pelican-entrypoint.sh already enforces this,
 # but defending in depth is cheap.
