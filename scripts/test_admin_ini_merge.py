@@ -8,6 +8,7 @@ plus the new render_value / normalize_value helpers used by PUT /api/settings.
 import unittest
 
 from admin_ini_merge import (
+    coerce_decimal_comma,
     normalize_value,
     read_flat,
     read_keyed,
@@ -140,6 +141,13 @@ class TestNormalizeValue(unittest.TestCase):
         self.assertEqual(normalize_value("1", "float"), "1.0")
         self.assertEqual(normalize_value("2.5", "float"), "2.5")
 
+    def test_float_accepts_comma_decimal_separator(self):
+        # Issue #82: on a German/French system the operator types 2,5.
+        # UE5's atof stops at the comma and applies 2 — a silently wrong
+        # value, not an error. Accept the comma and normalize it.
+        self.assertEqual(normalize_value("2,5", "float"), "2.5")
+        self.assertEqual(normalize_value(" -0,75 ", "float"), "-0.75")
+
     def test_enum(self):
         self.assertEqual(normalize_value("None", "enum", ["UseAllowList", "None"]), "None")
 
@@ -177,6 +185,45 @@ class TestNormalizeValue(unittest.TestCase):
         for t in ("struct", "array"):
             with self.assertRaises(ValueError):
                 normalize_value("   ", t)
+
+
+class TestCoerceDecimalComma(unittest.TestCase):
+    """Issue #82: a German/French operator types 2,5 for a float setting.
+
+    UE5 parses INI floats with atof, which stops at the comma: the server
+    silently runs 2 instead of 2.5. The boot path (apply-config.sh) has no
+    type coercion at all, so the comma reaches UserEngine.ini verbatim.
+    """
+
+    def test_rewrites_comma_on_float(self):
+        self.assertEqual(coerce_decimal_comma("2,5", "float"), "2.5")
+        self.assertEqual(coerce_decimal_comma("0,75", "float"), "0.75")
+        self.assertEqual(coerce_decimal_comma("-1,25", "float"), "-1.25")
+        self.assertEqual(coerce_decimal_comma("+3,5", "float"), "+3.5")
+
+    def test_leaves_dot_form_untouched(self):
+        for v in ("2.5", "1.0", "900.0", "0", "7200"):
+            self.assertEqual(coerce_decimal_comma(v, "float"), v)
+
+    def test_only_float_type_is_coerced(self):
+        # intlist is legitimately comma-separated — never touch it.
+        self.assertEqual(coerce_decimal_comma("1,2,3", "intlist"), "1,2,3")
+        self.assertEqual(coerce_decimal_comma("2,5", "string"), "2,5")
+        self.assertEqual(coerce_decimal_comma("2,5", "int"), "2,5")
+        self.assertEqual(coerce_decimal_comma("2,5", "struct"), "2,5")
+
+    def test_ambiguous_grouped_form_left_alone(self):
+        # "1.000,5" mixes a group separator with a decimal comma. Guessing
+        # here risks a 1000x error, so it passes through and fails validation
+        # downstream instead.
+        self.assertEqual(coerce_decimal_comma("1.000,5", "float"), "1.000,5")
+        self.assertEqual(coerce_decimal_comma("2,5,1", "float"), "2,5,1")
+
+    def test_non_numeric_left_alone(self):
+        self.assertEqual(coerce_decimal_comma("abc", "float"), "abc")
+        self.assertEqual(coerce_decimal_comma("", "float"), "")
+        self.assertEqual(coerce_decimal_comma(",5", "float"), ",5")
+        self.assertEqual(coerce_decimal_comma("5,", "float"), "5,")
 
 
 if __name__ == "__main__":

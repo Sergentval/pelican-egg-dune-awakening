@@ -172,7 +172,7 @@
     },
     {
       "name": "Mining Output Multiplier",
-      "description": "Hand-mined resource yield scalar. 1.0 = normal Funcom default. Higher = more ore per pickaxe swing. Maps to Dune.GlobalMiningOutputMultiplier.",
+      "description": "Hand-mined resource yield scalar. 1.0 = normal Funcom default. Higher = more ore per pickaxe swing. Maps to Dune.GlobalMiningOutputMultiplier. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_MINING_OUTPUT",
       "default_value": "1.0",
       "user_viewable": true,
@@ -182,7 +182,7 @@
     },
     {
       "name": "Vehicle Mining Output Multiplier",
-      "description": "Vehicle-mining resource yield scalar (sandcrawlers, etc.). 1.0 = normal. Maps to Dune.GlobalVehicleMiningOutputMultiplier.",
+      "description": "Vehicle-mining resource yield scalar (sandcrawlers, etc.). 1.0 = normal. Maps to Dune.GlobalVehicleMiningOutputMultiplier. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_VEHICLE_MINING_OUTPUT",
       "default_value": "1.0",
       "user_viewable": true,
@@ -192,7 +192,7 @@
     },
     {
       "name": "PvP Zone Resource Bonus",
-      "description": "Bonus multiplier applied to resource yields inside PvP-enabled zones. Funcom default 2.5. Maps to SecurityZones.PvpResourceMultiplier.",
+      "description": "Bonus multiplier applied to resource yields inside PvP-enabled zones. Funcom default 2.5. Maps to SecurityZones.PvpResourceMultiplier. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_PVP_ZONE_RESOURCE_MULT",
       "default_value": "2.5",
       "user_viewable": true,
@@ -202,7 +202,7 @@
     },
     {
       "name": "Vehicle Durability Damage",
-      "description": "Damage scalar applied to vehicle durability. 0 disables vehicle damage entirely, 1.0 = normal, 10 = maximum. Maps to dw.VehicleDurabilityDamageMultiplier.",
+      "description": "Damage scalar applied to vehicle durability. 0 disables vehicle damage entirely, 1.0 = normal, 10 = maximum. Maps to dw.VehicleDurabilityDamageMultiplier. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_VEHICLE_DURABILITY_DAMAGE",
       "default_value": "1.0",
       "user_viewable": true,
@@ -212,7 +212,7 @@
     },
     {
       "name": "Sandworm Invuln (Vehicle Exit, seconds)",
-      "description": "Window in seconds during which a player is safe from sandworms after exiting a vehicle. Funcom default 900 (15 min). Maps to Vehicle.SandwormInvulnerabilitySecondsOnExit.",
+      "description": "Window in seconds during which a player is safe from sandworms after exiting a vehicle. Funcom default 900 (15 min). Maps to Vehicle.SandwormInvulnerabilitySecondsOnExit. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_SANDWORM_INVULN_ON_EXIT",
       "default_value": "900.0",
       "user_viewable": true,
@@ -222,7 +222,7 @@
     },
     {
       "name": "Sandworm Invuln (Server Restart, seconds)",
-      "description": "Window in seconds during which players are safe from sandworms after the server restarts. Funcom default 7200 (2 h). Maps to Vehicle.SandwormInvulnerabilitySecondsOnServerRestart.",
+      "description": "Window in seconds during which players are safe from sandworms after the server restarts. Funcom default 7200 (2 h). Maps to Vehicle.SandwormInvulnerabilitySecondsOnServerRestart. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_SANDWORM_INVULN_ON_RESTART",
       "default_value": "7200.0",
       "user_viewable": true,
@@ -312,7 +312,7 @@
     },
     {
       "name": "Item Deterioration Rate (seconds)",
-      "description": "Item deterioration tick interval in seconds. 0 disables item decay entirely, 1.0 = normal (Funcom default), 10 = fastest. Maps to /DeteriorationSystem.ItemDeteriorationConstants.UpdateRateInSeconds.",
+      "description": "Item deterioration tick interval in seconds. 0 disables item decay entirely, 1.0 = normal (Funcom default), 10 = fastest. Maps to /DeteriorationSystem.ItemDeteriorationConstants.UpdateRateInSeconds. Use a dot as the decimal separator (2.5, not 2,5) — the panel rejects a comma.",
       "env_variable": "DUNE_ITEM_DETERIORATION_RATE",
       "default_value": "1.0",
       "user_viewable": true,

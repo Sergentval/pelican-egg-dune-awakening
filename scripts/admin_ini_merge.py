@@ -19,6 +19,32 @@ import re
 _BOOL_TRUE = {"true", "1", "yes", "on"}
 _BOOL_FALSE = {"false", "0", "no", "off"}
 
+# A bare decimal written with a comma separator: "2,5", "-0,75", "+3,5".
+# Deliberately narrow — exactly one comma with digits on both sides — so that
+# comma-separated lists ("1,2,3") and grouped forms ("1.000,5") never match.
+_DECIMAL_COMMA_RE = re.compile(r"^[+-]?\d+,\d+$")
+
+
+def coerce_decimal_comma(raw: str, vtype: str) -> str:
+    """Rewrite a comma decimal separator to a dot on float-typed settings.
+
+    Reported in issue #82: on a German (or French, Spanish, …) system the
+    operator naturally types `2,5` into the panel. UE5 reads INI floats with
+    atof, which stops at the comma — the server runs 2 instead of 2.5 and
+    never reports an error, so the setting looks applied but isn't.
+
+    Only `float` is coerced: `intlist` values are legitimately comma-separated,
+    and struct/array values carry their own commas. Anything that isn't a bare
+    decimal passes through untouched so it fails validation downstream rather
+    than being silently guessed at.
+    """
+    if vtype.lower() != "float":
+        return raw
+    stripped = raw.strip()
+    if not _DECIMAL_COMMA_RE.match(stripped):
+        return raw
+    return stripped.replace(",", ".")
+
 
 def render_value(raw: str, quoted: bool) -> str | None:
     """Render a value for an INI line. When quoted, wrap in double quotes;
@@ -163,7 +189,7 @@ def normalize_value(raw, vtype: str, enum: list[str] | None = None) -> str:
     if t == "int":
         return str(int(s))
     if t == "float":
-        return str(float(s))
+        return str(float(coerce_decimal_comma(s, "float")))
     if t == "enum":
         if enum and s in enum:
             return s

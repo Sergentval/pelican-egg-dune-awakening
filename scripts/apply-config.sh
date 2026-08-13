@@ -95,7 +95,14 @@ for st in settings:
         log(f"WARN unknown file sink {st.get('file')!r} for {env_name} — skipped")
         skipped_reject += 1
         continue
-    rendered = ini.render_value(raw, st.get("quoted", False))
+    # Issue #82: a panel variable typed on a German/French system arrives as
+    # "2,5". UE5's atof stops at the comma and applies 2 without complaining,
+    # so the operator sees a setting that looks applied but silently isn't.
+    value = ini.coerce_decimal_comma(raw, st.get("type", ""))
+    if value != raw:
+        log(f"  {env_name}: decimal separator normalized {raw!r} -> {value!r} "
+            f"(UE5 requires a dot)")
+    rendered = ini.render_value(value, st.get("quoted", False))
     if rendered is None:
         log(f"WARN value for {st['key']} contains a double quote — UE5 won't parse this. Skipped.")
         skipped_reject += 1

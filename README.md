@@ -155,6 +155,34 @@ A "battlegroup" is one world. It hosts multiple "Sietches" (always-warm hub
 maps + on-demand instances for dungeons / story missions / Deep Desert) on
 a shared UDP port pool.
 
+### Wings limits — check these before blaming the hardware
+
+Having enough RAM in the machine is not enough. Wings runs the server inside
+a container with **its own limits**, and a process that hits one of those is
+killed while the host still shows free memory. Both of these have bitten real
+deployments (see issue #82):
+
+| Limit | Where | Symptom when too low |
+|---|---|---|
+| **`container_pid_limit`** | `/etc/pelican/config.yml` on the Wings node (default **512**) | **The one that bites first.** `director` or `text-router` dies reporting **"Out of memory"** on a machine with tens of GB free, UE5 instances fail to spawn past the third or fourth, and map transitions kill services at the moment a second instance comes up. Raise to **4096**, restart Wings, then restart the server so the container is recreated. |
+| Server **Memory** | Panel → server → Build Configuration | A real cgroup memory ceiling. `director`/`text-router` are .NET services run with `DOTNET_RUNNING_IN_CONTAINER=true`, so they size their GC heap from the cgroup limit, not host RAM — a tight limit starves them long before the host is full. Set **Unlimited**, or comfortably above peak. |
+
+**Why "Out of memory" is a red herring here.** The cgroup pids controller counts
+**threads, not processes**, and 512 is a shared budget for the whole container:
+every UE5 Sietch, Postgres, both RabbitMQ brokers and the .NET services together.
+One battlegroup with three always-warm maps blows through it easily. When
+`pthread_create` then fails with `EAGAIN`, the .NET runtime surfaces it as
+`OutOfMemoryException` — so the log says "Out of memory" while free RAM is
+plentiful and the kernel OOM killer never fires. If you see that combination,
+check `container_pid_limit` before you touch RAM. (Confirmed in issue #82:
+Memory was already Unlimited and the OOM killer disabled; the pid limit was the
+whole story.)
+
+A dead `text-router` is especially misleading: it is the HTTP auth backend for
+both RabbitMQ brokers, so when it dies **every** broker login is refused and
+the Director reports `RMQ unreachable` / `ACCESS_REFUSED`. That reads like a
+broker fault, but the broker is fine — check `logs/text-router.log` first.
+
 ## Port allocation
 
 Assign these in the Pelican panel's **Allocations** tab when you create the

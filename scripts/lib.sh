@@ -137,6 +137,28 @@ wait_for_port() {
 }
 
 # --------------------------------------------------------------------------
+# wait_for_http url [expect_code] [timeout_sec]
+#
+# A listening socket is not readiness. ASP.NET binds its port before the app
+# can serve a request, and any service that answers RabbitMQ's auth_http
+# probes must be able to answer BEFORE the brokers' clients try to log in —
+# RabbitMQ turns a non-200 (or an unanswered) auth probe into a flat
+# ACCESS_REFUSED, which the Director surfaces as the misleading
+# "RMQ unreachable / BrokerUnreachableException" (issue #82). Gate on a real
+# response code so we never advance the boot sequence on a half-open port.
+# --------------------------------------------------------------------------
+wait_for_http() {
+  local url=$1 expect=${2:-200} timeout=${3:-30}
+  local i=0 code=""
+  while (( i < timeout )); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000)
+    [ "$code" = "$expect" ] && return 0
+    sleep 1; i=$((i+1))
+  done
+  return 1
+}
+
+# --------------------------------------------------------------------------
 # wait_for_udp_port — UE5 binds UDP; we can't simply connect.  Instead poll
 # /proc/net/udp6 + /proc/net/udp for the bound port owned by our PID.
 # --------------------------------------------------------------------------
