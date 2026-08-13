@@ -537,15 +537,22 @@ export function ItemsTab({ setConsoleEntries }: TabProps) {
             </div>
             <div>
               <label className="label" htmlFor="give-dura">Durability <span className="text-slate-400">· {Math.round(durability * 100)}%</span></label>
-              <div className="flex items-center gap-2">
+              {/* min-w-0 on the range is load-bearing (issue #85): an
+                  input[type=range] has a UA-default intrinsic width, and a flex
+                  item's default min-width:auto refuses to shrink below it. The
+                  slider therefore stayed wide and pushed the presets out of the
+                  card, clipping the 100% chip. shrink-0 keeps the presets at
+                  their natural size, and flex-wrap is the last resort when the
+                  column is genuinely too narrow for one row. */}
+              <div className="flex flex-wrap items-center gap-2">
                 <input
                   id="give-dura" type="range" min={0} max={1} step={0.05} value={durability}
                   onChange={(e) => setDurability(parseFloat(e.target.value))}
-                  className="dura-range flex-1"
+                  className="dura-range flex-1 min-w-0 basis-24"
                   style={{ "--p": durability } as React.CSSProperties}
                 />
-                <button type="button" className={"chip text-xs" + (durability === 0.5 ? " is-active" : "")} onClick={() => setDurability(0.5)}>50%</button>
-                <button type="button" className={"chip text-xs" + (durability === 1 ? " is-active" : "")} onClick={() => setDurability(1)}>100%</button>
+                <button type="button" className={"chip text-xs shrink-0" + (durability === 0.5 ? " is-active" : "")} onClick={() => setDurability(0.5)}>50%</button>
+                <button type="button" className={"chip text-xs shrink-0" + (durability === 1 ? " is-active" : "")} onClick={() => setDurability(1)}>100%</button>
               </div>
             </div>
           </div>
