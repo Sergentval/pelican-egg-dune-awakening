@@ -57,9 +57,21 @@ if [ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ]; then
     [ "$BIND" = "0.0.0.0" ] || WAIT_HOST="$BIND"
     if wait_for_port "$WAIT_HOST" "$PORT" 5; then
         log "admin-http UI ready: success (pid $(read_pid admin-http))"
-        log "  URL: http://${DUNE_EXTERNAL_IP:-$BIND}:${PORT}/"
+        # Advertise the URL that actually works, and only that one. Setting a
+        # public domain makes admin-http mark the session + CSRF cookies
+        # Secure (admin-http.py _cookie_flags), so a browser silently discards
+        # them over plain HTTP: the login form submits, succeeds server-side,
+        # and the operator lands back on the login screen with no error. The
+        # panel console linkifies whatever we print, so leading with the
+        # http://IP:PORT line was walking people straight into that.
         if [ -n "${DUNE_ADMIN_UI_DOMAIN:-}" ]; then
-            log "  Public domain: https://${DUNE_ADMIN_UI_DOMAIN}/ (configure your reverse proxy to point here)"
+            log "  URL: https://${DUNE_ADMIN_UI_DOMAIN}/"
+            log "  Reverse proxy should forward that hostname to http://${DUNE_EXTERNAL_IP:-$BIND}:${PORT}/"
+            log "  NOTE: log in via the https:// URL above — session cookies are"
+            log "        marked Secure once a domain is set, so a browser will drop"
+            log "        them on http://${DUNE_EXTERNAL_IP:-$BIND}:${PORT}/ and the login will not stick."
+        else
+            log "  URL: http://${DUNE_EXTERNAL_IP:-$BIND}:${PORT}/"
         fi
     else
         tail -30 "$LOGS/admin-http.log" >&2 || true

@@ -472,7 +472,7 @@
     },
     {
       "name": "Admin Web UI — Public Domain",
-      "description": "Optional. Hostname you'll access the UI from (e.g. dune-admin.example.com). Used for CORS / cookie policy and for the login QR code. Leave blank if accessing via IP:port.",
+      "description": "Optional. Hostname you'll access the UI from (e.g. dune-admin.example.com), without the scheme. Setting it makes the session cookies Secure, so from then on the panel MUST be reached over https://<that hostname> behind your reverse proxy — logging in over http://IP:port will silently fail because the browser discards the cookie. Leave blank if you access the UI directly via IP:port over plain HTTP.",
       "env_variable": "DUNE_ADMIN_UI_DOMAIN",
       "default_value": "",
       "user_viewable": true,
