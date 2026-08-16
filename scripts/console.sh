@@ -53,6 +53,29 @@ critical_hint() {
   esac
 }
 
+is_critical() {
+  local svc=$1 c
+  for c in "${CRITICAL_SERVICES[@]}"; do
+    [ "$c" = "$svc" ] && return 0
+  done
+  return 1
+}
+
+# The non-critical services are worth a line when they die, but never worth
+# recreating the container for — the battlegroup keeps running without them.
+# Losing admin-http costs the operator remote control, not the session their
+# players are in, so bouncing everyone to recover a web UI would be a worse
+# outage than the one being recovered from. The supervisor below reports them
+# once and leaves the decision to the operator (`panel restart`).
+noncritical_hint() {
+  case "$1" in
+    admin-http) echo "the admin panel is unreachable; the game is unaffected — type 'panel restart' in this console to bring it back" ;;
+    fls-stub)   echo "FLS token broker used by the gateway" ;;
+    mock-k8s)   echo "instance-scaling backend the Director calls" ;;
+    *)          echo "background service" ;;
+  esac
+}
+
 # --------------------------------------------------------------------------
 # Shutdown handler
 # --------------------------------------------------------------------------
@@ -204,10 +227,82 @@ done
 TAIL_PID=$!
 
 # --------------------------------------------------------------------------
+# `panel` console commands — recover the admin panel without restarting the
+# server. Deliberately operator-triggered rather than automatic: an
+# unattended restart loop on a service that is crashing for a reason would
+# hide the reason and spam the log, and nothing else here self-heals.
+#
+# Every fallible command is guarded: lib.sh sets `set -e`, and this runs
+# inside the listener's background subshell, so an unguarded non-zero
+# status would kill the stdin listener and silently take every console
+# command with it.
+# --------------------------------------------------------------------------
+panel_stop() {
+  local pid
+  pid=$(read_pid admin-http) || true
+  if [ -z "$pid" ]; then
+    printf '[panel] [INFO] admin-http was not running\n'
+    return 0
+  fi
+  printf '[panel] [INFO] stopping admin-http (pid %s)\n' "$pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    printf '[panel] [WARN] pid %s ignored SIGTERM after 3s — SIGKILL\n' "$pid"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  return 0
+}
+
+panel_command() {
+  local sub=$1 pid
+  case "$sub" in
+    status)
+      pid=$(read_pid admin-http) || true
+      if [ -n "$pid" ]; then
+        printf '[panel] [INFO] admin-http is running (pid %s), mode=%s\n' \
+          "$pid" "$([ "${DUNE_ADMIN_UI_ENABLED:-0}" = "1" ] && echo UI || echo internal)"
+      else
+        printf '[panel] [INFO] admin-http is NOT running — type "panel restart" to start it\n'
+      fi
+      ;;
+    restart)
+      panel_stop
+      # start-admin-http.sh re-reads the password and the session secret
+      # from $STATE via lib.sh, so the restarted panel signs tokens with the
+      # same key: operators who were logged in stay logged in.
+      #
+      # Output goes to a file rather than down a pipe, and the run is
+      # timeout-bounded. Piping it would hand the launcher's stdout to
+      # whatever it backgrounds; one descendant holding that pipe open
+      # blocks the reader forever and takes the console's stdin listener
+      # with it. launch_bg redirects to the service log today, but this
+      # command must not be one refactor away from wedging the console.
+      local out; out=$(mktemp)
+      timeout 60 bash "$SCRIPTS/start-admin-http.sh" "$BASE" </dev/null >"$out" 2>&1 || true
+      sed 's/^/[panel] /' "$out" || true
+      rm -f "$out"
+      ;;
+    stop)
+      panel_stop
+      ;;
+    *)
+      printf '[panel] [INFO] usage: panel <status|restart|stop>\n'
+      ;;
+  esac
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # Admin stdin listener: Pelican panel's "Console" tab forwards typed input
 # to the container's stdin. We watch for lines starting with `admin ` (or
 # `/admin `) and pipe them into scripts/admin-publish.sh — that's the
 # AMQP-publish helper that reaches the seabass server-command handler.
+# `panel ...` is handled locally instead (see panel_command above).
 # Anything else is just echoed back with [admin] [INFO] so operators see
 # their input in the panel log.
 #
@@ -226,6 +321,13 @@ admin_listener() {
         continue ;;
       /admin|admin)
         printf '[admin] [INFO] usage: admin <broadcast|shutdown|kick|give|xp|teleport|exec|raw> ...\n' ;;
+      /panel|panel)
+        panel_command "" ;;
+      /panel\ *|panel\ *)
+        rest="${trimmed#panel }"
+        rest="${rest#/panel }"
+        printf '[panel] [INFO] > %s\n' "$trimmed"
+        panel_command "$rest" ;;
       /admin\ *|admin\ *)
         rest="${trimmed#admin }"
         rest="${rest#/admin }"
@@ -266,6 +368,11 @@ ue5_dead_since=0
 # to be down for 90s, and every second of it is a player-visible failure.
 CRITICAL_DEAD_GRACE="${CRITICAL_DEAD_GRACE:-20}"
 critical_dead_since=0
+# Consecutive misses seen per non-critical service. Reported on the second
+# one (~5-10s) so an operator's own `panel restart` doesn't announce itself
+# as a failure, then held until the service returns — one line per death,
+# never a repeating alarm.
+declare -A noncrit_misses=()
 while true; do
   any_alive=0
   ue5_alive=0
@@ -274,6 +381,25 @@ while true; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       any_alive=1
       case "$svc" in ue5-*) ue5_alive=1 ;; esac
+      if [ -n "${noncrit_misses[$svc]:-}" ]; then
+        [ "${noncrit_misses[$svc]}" -ge 2 ] && log "$svc is back up (pid $pid)"
+        unset 'noncrit_misses[$svc]'
+      fi
+    else
+      # Non-critical and non-UE5: report, never act. UE5 and the critical
+      # set have their own bail-out rules further down.
+      case "$svc" in
+        ue5-*) ;;
+        *)
+          if ! is_critical "$svc"; then
+            noncrit_misses[$svc]=$(( ${noncrit_misses[$svc]:-0} + 1 ))
+            if [ "${noncrit_misses[$svc]}" -eq 2 ]; then
+              warn "$svc is not running — $(noncritical_hint "$svc")"
+              warn "    see logs/$svc.log"
+            fi
+          fi
+          ;;
+      esac
     fi
   done
 

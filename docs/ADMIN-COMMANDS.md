@@ -24,6 +24,27 @@ up in the same console.
 admin broadcast "Hello" "Server-side admin is live" 15
 ```
 
+The same console also takes `panel <status|restart|stop>`, which acts on
+the admin panel process itself rather than publishing to the game:
+
+```text
+panel status     # is admin-http running, and on which pid
+panel restart    # stop it (SIGTERM, then SIGKILL after 3s) and start it again
+panel stop       # stop it and leave it stopped
+```
+
+Use it if the panel becomes unreachable while the game is fine. The
+restart re-reads the password and session secret from `server/state/`, so
+**you stay logged in** — browser sessions survive it. It never touches the
+game server: no player is disconnected and no world state is written.
+
+There is deliberately no automatic restart. A service that is crashing for
+a reason should surface that reason rather than be looped silently, and
+nothing else in `console.sh` self-heals. What you get instead is a
+one-line notice in the console when a non-critical service dies
+(`admin-http`, `fls-stub`, `mock-k8s`), pointing at its log — the decision
+to restart stays yours.
+
 ### 2. HTTP loopback (for tooling / mods)
 
 `scripts/admin-http.py` runs in two modes:
