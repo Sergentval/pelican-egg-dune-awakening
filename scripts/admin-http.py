@@ -60,6 +60,7 @@ import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
+import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
 
 
 # --------------------------------------------------------------------------
@@ -734,6 +735,22 @@ def read_setting_value(st: dict) -> str | None:
     if val is not None and st.get("quoted") and len(val) >= 2 and val[0] == '"' and val[-1] == '"':
         val = val[1:-1]
     return val
+
+
+def pin_setting_to_egg(st: dict, value):
+    """Keep a setting's Pelican variable in step with the INI it writes.
+
+    Returns None when the setting has no egg variable (171 of the 195 are
+    panel-only and always survive a boot), else (ok, detail).
+
+    apply-config.sh rewrites every env-backed setting from its variable at
+    boot, so without this the INI write is undone by the next restart —
+    including the scheduler's unattended one, where nobody is watching."""
+    env = st.get("env")
+    if not env:
+        return None
+    rendered = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    return admin_pelican.set_variable(env, rendered)
 
 
 def write_setting(st: dict, value) -> None:
@@ -1984,6 +2001,20 @@ class Handler(BaseHTTPRequestHandler):
                 if st is None:
                     errors.append({"id": sid, "error": "unknown setting id"})
                     continue
+                # A setting backed by an egg variable is rewritten from that
+                # variable by apply-config.sh on EVERY boot. Writing only the
+                # INI meant the restart this endpoint asks for was the very
+                # thing that reverted the change — silently. So the variable
+                # moves first: if the panel refuses it, nothing is written and
+                # the operator is told why, rather than watching the value
+                # evaporate at the next restart (which the scheduler may do
+                # unattended).
+                pinned = pin_setting_to_egg(st, value)
+                if pinned is not None:
+                    ok_pin, detail = pinned
+                    if not ok_pin:
+                        errors.append({"id": sid, "error": detail})
+                        continue
                 try:
                     write_setting(st, value)
                     applied.append(sid)

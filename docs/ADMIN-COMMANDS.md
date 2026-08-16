@@ -90,6 +90,30 @@ source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
 before the password is checked and refunded when it turns out to be
 correct, so parallel guesses cannot overrun the quota.
 
+#### Settings changed in the panel now stick
+
+`apply-config.sh` rewrites every **env-backed** setting from its Pelican
+variable on *every* boot. So changing one of those in the admin panel used
+to be undone by the restart the panel itself asked for — silently, and
+increasingly often now that the scheduler restarts unattended.
+
+Of the 195 settings in the catalogue, **24 carry an `env`** and were
+affected; the other 171 are panel-only and always survived. `PUT
+/api/settings` now writes the egg variable first and only touches the INI
+if the panel accepted it:
+
+- Panel refuses the value → **nothing is written**, and the error says why
+  (`"The value must be a number."` comes straight from the panel).
+- Panel unreachable, or `DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID}` unset →
+  the change is **refused**, not applied-then-lost.
+- `HTTP 400 — the environment variable does not exist` → the panel's egg
+  predates that variable. Re-import the egg; a reinstall updates
+  `scripts/` but not the egg definition.
+
+The value sent to the panel is the same rendering that goes into the INI,
+which is why the egg rules match it (`in:True,False` for booleans,
+`numeric` for multipliers).
+
 #### The command audit survives restarts
 
 `GET /api/history` — the **Command audit** view in the Events tab — is
