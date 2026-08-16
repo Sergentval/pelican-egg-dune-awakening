@@ -4,6 +4,8 @@ import http.client
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -583,6 +585,90 @@ class TestRestartFiresAtMostOnce(unittest.TestCase):
         sch.arm_restart(led, WED_0830, 60, 60)
         sch.run_tick("/b", led, now=WED_0830 + timedelta(seconds=45), cfg=self.QUIET)
         self.assertEqual(len(self.fired), 1, "a normally-late tick must still restart")
+
+
+class TestCertificateRenewal(unittest.TestCase):
+    ENV = ("DUNE_ACME_DNS_BACKEND", "DUNE_ACME_DOMAIN", "DUNE_ADMIN_UI_DOMAIN")
+
+    def setUp(self):
+        saved = {k: os.environ.get(k) for k in self.ENV}
+
+        def restore():
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.addCleanup(restore)
+        for k in self.ENV:
+            os.environ.pop(k, None)
+        self.base = tempfile.mkdtemp()
+
+    def _cert(self, days):
+        import subprocess as sp
+        tls = os.path.join(self.base, "server", "state", "tls")
+        os.makedirs(tls, exist_ok=True)
+        sp.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-days", str(days), "-keyout", os.path.join(tls, "privkey.pem"),
+                "-out", os.path.join(tls, "fullchain.pem"), "-subj", "/CN=x"],
+               check=True, capture_output=True)
+
+    def test_never_due_when_acme_is_off(self):
+        self.assertFalse(sch.certificate_due(self.base, None))
+
+    def test_due_immediately_when_configured_and_no_certificate(self):
+        # A first boot must not wait twelve hours for HTTPS.
+        os.environ["DUNE_ACME_DNS_BACKEND"] = "cloudflare"
+        self.assertTrue(sch.certificate_due(self.base, None))
+
+    def test_not_due_again_straight_after_a_check(self):
+        os.environ["DUNE_ACME_DNS_BACKEND"] = "cloudflare"
+        self._cert(90)
+        self.assertFalse(sch.certificate_due(self.base, sch._iso(WED_0830), now=WED_0830))
+
+    def test_due_again_after_the_check_interval(self):
+        os.environ["DUNE_ACME_DNS_BACKEND"] = "cloudflare"
+        self._cert(90)
+        later = WED_0830 + timedelta(seconds=sch.CERT_CHECK_EVERY_SECS + 60)
+        self.assertTrue(sch.certificate_due(self.base, sch._iso(WED_0830), now=later))
+
+    def test_a_healthy_certificate_is_not_reissued(self):
+        os.environ.update({"DUNE_ACME_DNS_BACKEND": "cloudflare",
+                           "DUNE_ADMIN_UI_DOMAIN": "panel.example.com"})
+        self._cert(90)
+        ok, detail = sch.renew_certificate(self.base)
+        self.assertTrue(ok)
+        self.assertIn("still valid", detail)
+
+    def test_renewal_without_a_domain_says_which_variable(self):
+        os.environ["DUNE_ACME_DNS_BACKEND"] = "cloudflare"
+        ok, detail = sch.renew_certificate(self.base)
+        self.assertFalse(ok)
+        self.assertIn("DUNE_ADMIN_UI_DOMAIN", detail)
+
+    def test_the_tick_does_not_block_on_it(self):
+        """A DNS-01 order waits on propagation for minutes. Blocking the
+        loop that long would push an armed restart past the staleness
+        guard, where it is discarded instead of fired."""
+        os.environ.update({"DUNE_ACME_DNS_BACKEND": "cloudflare",
+                           "DUNE_ADMIN_UI_DOMAIN": "panel.example.com"})
+        original = sch.renew_certificate
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow(base):
+            started.set()
+            release.wait(10)
+            return True, "issued"
+        sch.renew_certificate = slow
+        self.addCleanup(setattr, sch, "renew_certificate", original)
+        self.addCleanup(release.set)
+
+        led = sch.SchedulerLedger(os.path.join(self.base, "led.db"))
+        began = time.monotonic()
+        acts = sch.run_tick(self.base, led, now=WED_0830,
+                            cfg={"restart": {"enabled": False}, "backup": {"enabled": False}})
+        elapsed = time.monotonic() - began
+        self.assertTrue(started.wait(5), "the renewal never started")
+        self.assertLess(elapsed, 2.0, f"the tick blocked for {elapsed:.1f}s on the renewal")
+        self.assertIn("certificate", [a[0] for a in acts])
 
 
 class TestCancelRestart(unittest.TestCase):

@@ -177,6 +177,45 @@ this panel is genuinely plain HTTP.
 `off` means the session token crosses the network in the clear. That is
 fine on a trusted LAN and not fine on anything the internet can reach.
 
+#### Automatic HTTPS from the egg
+
+The panel can obtain and renew its own Let's Encrypt certificate, for the
+operator who points a DNS record straight at an exposed box and has nothing
+in front to terminate TLS. Off unless `DUNE_ACME_DNS_BACKEND` is set.
+
+It uses **DNS-01**, not by preference: HTTP-01 validates against port 80 of
+your domain and a panel allocates arbitrary high ports, so it is a dead end
+for most servers. TLS-ALPN-01 has the same problem on 443. DNS-01 proves
+control by publishing a TXT record and needs no inbound port at all.
+
+That TXT is published by a credential the container holds, which is the
+whole security question. **Three shapes, and the choice is yours:**
+
+| Backend | The container can | Costs |
+| --- | --- | --- |
+| `acme-dns`, own instance (`DUNE_ACME_DNS_URL`) | write **one TXT** in a throwaway zone, nothing else | one more service to run |
+| `acme-dns`, public instance (default) | the same one TXT | a third party sees every validation, and could answer challenges for the delegated name |
+| `cloudflare` | **rewrite every record in the zone** — Cloudflare tokens cannot be scoped to one record | nothing to set up |
+
+The first two rest on CNAME delegation, which Let's Encrypt supports: you
+create one record, once, and the container never holds a credential for
+your real domain.
+
+```text
+_acme-challenge.dune-admin.example.com.  CNAME  <the validation zone>.
+```
+
+The boot log prints the exact CNAME to create the first time an acme-dns
+backend registers. Set `DUNE_ACME_STAGING=1` while you get the delegation
+right — staging certificates are not browser-trusted, but its rate limits
+are far looser than production's, and a failed order costs an attempt.
+
+Renewal runs in the scheduler, checked twice a day and renewed below 30
+days remaining. The new certificate is written to `server/state/tls/` and
+the panel picks it up **without restarting** — so set `DUNE_ACME_EMAIL`,
+because otherwise a silently failed renewal is only noticed when the
+certificate expires and the panel stops being reachable.
+
 #### Behind a reverse proxy: declare it, or the rate limit is one bucket
 
 **If you serve the panel through a reverse proxy, set

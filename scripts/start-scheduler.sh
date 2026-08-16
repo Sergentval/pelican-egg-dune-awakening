@@ -27,5 +27,12 @@ launch_bg scheduler "$LOGS/scheduler.log" -- \
         DUNE_PELICAN_SERVER_ID="${DUNE_PELICAN_SERVER_ID:-}" \
         DUNE_PELICAN_RESOLVE="${DUNE_PELICAN_RESOLVE:-}" \
         DUNE_BACKUP_RETENTION="${DUNE_BACKUP_RETENTION:-}" \
+        DUNE_ADMIN_UI_DOMAIN="${DUNE_ADMIN_UI_DOMAIN:-}" \
+        DUNE_ACME_DNS_BACKEND="${DUNE_ACME_DNS_BACKEND:-}" \
+        DUNE_ACME_EMAIL="${DUNE_ACME_EMAIL:-}" \
+        DUNE_ACME_STAGING="${DUNE_ACME_STAGING:-}" \
+        DUNE_ACME_CLOUDFLARE_TOKEN="${DUNE_ACME_CLOUDFLARE_TOKEN:-}" \
+        DUNE_ACME_CLOUDFLARE_ZONE="${DUNE_ACME_CLOUDFLARE_ZONE:-}" \
+        DUNE_ACME_DNS_URL="${DUNE_ACME_DNS_URL:-}" \
         "$PY" "$SCRIPT" scan-loop "$BASE"
 log "scheduler started (no-op while schedule.json restart/backup both disabled)"

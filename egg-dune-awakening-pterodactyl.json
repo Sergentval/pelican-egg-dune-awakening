@@ -511,6 +511,66 @@
       "field_type": "text"
     },
     {
+      "name": "Automatic HTTPS — DNS Backend",
+      "description": "Leave blank (default) and the panel serves plain HTTP, expecting something in front to terminate TLS. Set it and the panel obtains its own Let's Encrypt certificate for DUNE_ADMIN_UI_DOMAIN and renews it unattended, with no inbound port needed. TRADE-OFF, pick knowingly: 'acme-dns' with DUNE_ACME_DNS_URL pointing at your own acme-dns instance is safest — the credential can write one TXT record in a throwaway zone and nothing else. 'acme-dns' left at the public instance keeps that tight credential but lets a third party see every validation. 'cloudflare' needs no delegation but a Cloudflare token cannot be scoped below a whole zone, so it can rewrite every record in your domain. The first two need one CNAME: _acme-challenge.<your panel domain> pointing at the validation zone, which the boot log prints for you.",
+      "env_variable": "DUNE_ACME_DNS_BACKEND",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:cloudflare,acme-dns",
+      "field_type": "text"
+    },
+    {
+      "name": "Automatic HTTPS — Contact Email",
+      "description": "Optional. Given to Let's Encrypt as the account contact, which is where expiry warnings go if renewal ever stops working. Strongly recommended: without it a silently failed renewal is only noticed when the certificate expires.",
+      "env_variable": "DUNE_ACME_EMAIL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|email",
+      "field_type": "text"
+    },
+    {
+      "name": "Automatic HTTPS — Cloudflare API Token",
+      "description": "Only for DUNE_ACME_DNS_BACKEND=cloudflare. An API token with Zone:DNS:Edit on the zone holding your panel domain. Note that Cloudflare tokens cannot be scoped to a single record: this token can rewrite every DNS record in that zone, which is why acme-dns with CNAME delegation is the safer option.",
+      "env_variable": "DUNE_ACME_CLOUDFLARE_TOKEN",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:255",
+      "field_type": "text"
+    },
+    {
+      "name": "Automatic HTTPS — Cloudflare Zone",
+      "description": "Optional. The zone name the token can see (example.com). Left blank the zone is discovered from the panel domain, which is right unless the token is scoped oddly.",
+      "env_variable": "DUNE_ACME_CLOUDFLARE_ZONE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:253",
+      "field_type": "text"
+    },
+    {
+      "name": "Automatic HTTPS — acme-dns Server",
+      "description": "Only for DUNE_ACME_DNS_BACKEND=acme-dns. URL of your own acme-dns instance. Left blank the public instance at https://auth.acme-dns.io is used — no infrastructure to run, but a third party then sees every validation and could in principle answer challenges for the delegated name.",
+      "env_variable": "DUNE_ACME_DNS_URL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|max:255",
+      "field_type": "text"
+    },
+    {
+      "name": "Automatic HTTPS — Use Staging",
+      "description": "Set to 1 to issue from Let's Encrypt's staging environment while setting this up. Staging certificates are NOT trusted by browsers — the padlock will still be broken — but its rate limits are far looser, so get the DNS delegation working here first. Set back to 0 for a real certificate.",
+      "env_variable": "DUNE_ACME_STAGING",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:0,1",
+      "field_type": "text"
+    },
+    {
       "name": "Admin Web UI — Login Password",
       "description": "Password required to log into the admin UI. REQUIRED when the UI is enabled. Treat as a secret. If left blank while enabled, prestart.sh auto-generates one and writes the value to the container log (look for 'admin-ui generated password').",
       "env_variable": "DUNE_ADMIN_UI_PASSWORD",
