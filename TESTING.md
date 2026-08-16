@@ -156,8 +156,23 @@ who'll test draft PRs on their own panels. Open both PRs as **draft**,
 post in their `#egg-testing` channel, and they'll exercise the panel
 import + first boot for you.
 
+## Offline tests (no server, no token, seconds to run)
+
+Run these first — they need neither the depot nor a Funcom token, so a
+failure here is never worth booting a server to investigate.
+
+```bash
+for t in scripts/test_*.py; do python3 "$t" || break; done  # pure-logic units
+bash scripts/test_console_panel.sh                          # console `panel` commands (~40s)
+```
+
+`test_console_panel.sh` boots the real `console.sh` against a throwaway
+fake container and drives the stdin listener, so it covers the whole
+supervisor loop rather than a function in isolation.
+
 ## Minimum bar before opening the PRs
 
+- [ ] Offline tests above all pass.
 - [ ] Path A end-to-end clean: `Dune Awakening server ready: success`
   appears in the log.
 - [ ] All three always-warm UE5 maps spawn and bind their UDP ports.
