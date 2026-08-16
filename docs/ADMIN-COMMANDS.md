@@ -90,6 +90,35 @@ source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
 before the password is checked and refunded when it turns out to be
 correct, so parallel guesses cannot overrun the quota.
 
+#### Behind a reverse proxy: declare it, or the rate limit is one bucket
+
+**If you serve the panel through a reverse proxy, set
+`DUNE_ADMIN_UI_TRUSTED_PROXIES`.** Otherwise every request arrives from
+the proxy's address, all logins share a single bucket, and 5 failures
+from anywhere on the internet lock *you* out for the window — the rate
+limit stops protecting the account and becomes a denial of service on it.
+The boot log tells you which mode you are in:
+
+```text
+proxies : none declared — bucketing on the socket peer (behind a reverse proxy that is ONE bucket for everyone; set DUNE_ADMIN_UI_TRUSTED_PROXIES)
+proxies : trusting X-Forwarded-For from 10.99.0.1/32
+```
+
+Accepts IPs and CIDRs, comma or space separated (`10.99.0.1`,
+`10.99.0.0/24, 172.20.0.0/16`). Set it to the address **admin-http sees
+the proxy connecting from** — read it straight off a request line in
+`logs/admin-http.log`, which now prints the peer:
+
+```text
+[admin-http] [INFO] 10.99.0.1 POST /api/login -> "POST /api/login HTTP/1.1" 200 -
+```
+
+Only declared peers are believed, and the client is resolved to the
+rightmost `X-Forwarded-For` entry that isn't itself declared — a client
+can prepend anything it likes to that header, so only hops you have
+vouched for are allowed to vouch for what they appended. Leave it empty
+(the default) and the header is ignored entirely.
+
 #### Listener limits
 
 UI mode binds `0.0.0.0`, so the socket is scanned from the open
