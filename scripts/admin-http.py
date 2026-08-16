@@ -2838,6 +2838,45 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200 if r["ok"] else 400, r.get("data", r))
             return
 
+        # Ad-hoc restart: arm one at now+delay, with the in-game countdown
+        # opening `warn_window_secs` before it rather than immediately.
+        # `admin shutdown` alone only banners players — verified, it stops
+        # nothing — so this goes through the scheduler's pending-restart
+        # mechanism, which is what actually calls the panel's power API.
+        if path == "/api/schedule/restart-in":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            try:
+                delay = int(body["delay_secs"])
+                window = int(body.get("warn_window_secs", min(delay, 600)))
+                freq = int(body.get("warn_freq_secs", 60))
+            except (KeyError, TypeError, ValueError):
+                self._write(400, {"error": "delay_secs required; warn_window_secs and "
+                                           "warn_freq_secs optional, all integers"})
+                return
+            if delay < 0 or window < 0 or freq < 1:
+                self._write(400, {"error": "delay_secs/warn_window_secs must be >= 0, "
+                                           "warn_freq_secs >= 1"})
+                return
+            r = run_schedule("arm-restart", str(delay), str(window), str(freq), timeout=30)
+            self._write(200 if r["ok"] else 400, r.get("data", r))
+            return
+
+        if path == "/api/schedule/cancel-restart":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            r = run_schedule("cancel-restart", timeout=45)
+            self._write(200 if r["ok"] else 400, r.get("data", r))
+            return
+
         # Manual task trigger: /api/tasks/trigger/<backup|restart|task-id> (auth+csrf).
         # backup/restart hit their bespoke runners; any other id is a generic
         # scheduled task run on demand (run-task ignores the schedule/enabled gate).

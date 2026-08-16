@@ -36,6 +36,10 @@ import admin_pelican  # noqa: E402  (sys.path; shared Pelican client-API access)
 DEFAULT_TICK_SECS = 30
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 PENDING_KEY = "pending_restart_at"
+# The announcement is armed separately from the restart so players get
+# silence until the warning window opens. See arm_restart().
+PENDING_WARN_KEY = "pending_warn_at"
+PENDING_WARN_SPEC = "pending_warn_spec"
 
 # Generic scheduled-task framework (Phase 1). Tasks live in an array alongside
 # the special-cased restart/backup, each: {id, type, enabled, schedule, params}.
@@ -313,6 +317,13 @@ CREATE TABLE IF NOT EXISTS scheduler_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)
 
 class SchedulerLedger:
     def __init__(self, path):
+        # Create the state directory rather than failing with a bare
+        # sqlite3.OperationalError: these commands are reachable from the
+        # admin panel now, and an unhandled traceback there reads as a bug
+        # in the panel rather than a missing directory.
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
@@ -515,6 +526,45 @@ def pelican_restart():
     return admin_pelican.restart()
 
 
+def arm_restart(ledger, restart_at, warn_window_secs, warn_freq_secs, stype="Restart"):
+    """Arm a restart at `restart_at`, with the in-game countdown starting
+    `warn_window_secs` before it.
+
+    The countdown cannot be expressed as "quiet, then warn" in a single
+    envelope: the game banners every BroadcastFrequency from the moment it
+    receives one until ShutdownTimestamp. Announcing an 8-hour restart up
+    front therefore means eight hours of banners — 480 of them at the old
+    60s default. So the announcement is *armed* here and published later,
+    at restart_at - warn_window, with a lead of exactly the time then
+    remaining. Players get silence until the window opens."""
+    window = max(int(warn_window_secs), 0)
+    ledger.set_state(PENDING_KEY, _iso(restart_at))
+    ledger.set_state(PENDING_WARN_KEY, _iso(restart_at - timedelta(seconds=window)))
+    ledger.set_state(PENDING_WARN_SPEC, json.dumps(
+        {"type": str(stype), "freq_secs": max(int(warn_freq_secs), 1)}))
+
+
+def cancel_restart(base, ledger):
+    """Disarm both halves. Returns (ok, detail). If the announcement has
+    already gone out, players are told it is off — otherwise they would
+    keep counting down to a restart that is no longer coming."""
+    announced = ledger.get_state(PENDING_WARN_KEY) is None and \
+        ledger.get_state(PENDING_KEY) is not None
+    ledger.clear_state(PENDING_KEY)
+    ledger.clear_state(PENDING_WARN_KEY)
+    ledger.clear_state(PENDING_WARN_SPEC)
+    if not announced:
+        return True, "pending restart cancelled (no announcement had gone out)"
+    try:
+        r = subprocess.run(["bash", _publish(base), "shutdown", "cancel"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"disarmed, but the in-game countdown could not be cancelled: {e}"[:300]
+    ok = r.returncode == 0
+    return ok, ("pending restart cancelled, in-game countdown withdrawn" if ok
+                else f"disarmed, but the cancel broadcast failed: {(r.stderr or r.stdout).strip()[:200]}")
+
+
 def run_tick(base, ledger, now=None, cfg=None):
     """One scheduler tick. Returns a list of (task, ok, detail) actions taken."""
     now = now or _now_dt()
@@ -527,9 +577,11 @@ def run_tick(base, ledger, now=None, cfg=None):
         ok, detail = pelican_restart()
         ledger.record("restart", "ok" if ok else "error", detail)
         ledger.clear_state(PENDING_KEY)
+        ledger.clear_state(PENDING_WARN_KEY)
+        ledger.clear_state(PENDING_WARN_SPEC)
         return [("restart", ok, detail)]  # container is restarting — stop here
 
-    # 2) restart warn (broadcast countdown + arm pending), if due
+    # 2) arm from the recurring schedule, if a slot is due
     rcfg = cfg.get("restart", {})
     if pend is None and restart_due(rcfg, now, ledger.last("restart-warn")):
         if not restart_configured():
@@ -537,11 +589,28 @@ def run_tick(base, ledger, now=None, cfg=None):
                           "auto-restart enabled but DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID} unset")
             actions.append(("restart-warn", False, "not configured"))
         else:
+            # The announcement window is the whole lead here, i.e. announce
+            # immediately — what this path has always done. Step 3 below
+            # publishes it on this very tick, so behaviour is unchanged.
             lead = max(int(rcfg.get("warn_lead_secs", 300)), 0)
-            ok, detail = broadcast_restart(base, lead, int(rcfg.get("warn_freq_secs", 60)))
-            ledger.record("restart-warn", "ok" if ok else "error", detail)
-            ledger.set_state(PENDING_KEY, _iso(now + timedelta(seconds=lead)))
-            actions.append(("restart-warn", ok, detail))
+            pend = now + timedelta(seconds=lead)
+            arm_restart(ledger, pend, lead, int(rcfg.get("warn_freq_secs", 60)))
+
+    # 3) publish the in-game countdown once its window opens. Deliberately
+    # after arming, so a slot armed on this tick announces on this tick.
+    # The lead is the time actually REMAINING, computed now, so the banner
+    # lands on the restart rather than on the moment it was armed.
+    warn_at = _parse_iso(ledger.get_state(PENDING_WARN_KEY))
+    if pend is not None and warn_at is not None and now >= warn_at:
+        try:
+            spec = json.loads(ledger.get_state(PENDING_WARN_SPEC) or "{}")
+        except ValueError:
+            spec = {}
+        remaining = max(int((pend - now).total_seconds()), 1)
+        ok, detail = broadcast_restart(base, remaining, int(spec.get("freq_secs", 60)))
+        ledger.clear_state(PENDING_WARN_KEY)
+        ledger.record("restart-warn", "ok" if ok else "error", detail)
+        actions.append(("restart-warn", ok, detail))
 
     # 3) backup, if due
     bcfg = cfg.get("backup", {})
@@ -643,7 +712,38 @@ def _main(argv):
             except Exception as e:  # never let the loop die
                 print(f"[scheduler] tick error: {e}", flush=True)
             time.sleep(DEFAULT_TICK_SECS)
-    print("usage: admin_schedule.py <scan-loop|status|runs|run-backup|run-restart|run-task <id>|set-config <json>> [BASE]",
+    if cmd == "arm-restart":
+        # arm-restart BASE <delay_secs> <warn_window_secs> <warn_freq_secs>
+        try:
+            delay = max(int(argv[3]), 0)
+            window = max(int(argv[4]), 0)
+            freq = max(int(argv[5]), 1)
+        except (IndexError, ValueError):
+            print(json.dumps({"ok": False, "error":
+                              "usage: arm-restart BASE <delay_secs> <warn_window_secs> <warn_freq_secs>"}))
+            return 2
+        if not restart_configured():
+            print(json.dumps({"ok": False, "error":
+                              "restart needs DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID}"}))
+            return 0
+        led = SchedulerLedger(ledger_path(base))
+        at = _now_dt() + timedelta(seconds=delay)
+        # A window wider than the delay just means "announce now".
+        arm_restart(led, at, min(window, delay), freq)
+        led.record("restart-armed", "ok", f"restart at {_iso(at)}, warn {min(window, delay)}s before")
+        state = {"restart_at": _iso(at), "warn_at": led.get_state(PENDING_WARN_KEY)}
+        led.close()
+        print(json.dumps({"ok": True, "data": state}))
+        return 0
+    if cmd == "cancel-restart":
+        led = SchedulerLedger(ledger_path(base))
+        ok, detail = cancel_restart(base, led)
+        led.record("restart-cancel", "ok" if ok else "error", detail)
+        led.close()
+        print(json.dumps({"ok": ok, "detail": detail}))
+        return 0
+    print("usage: admin_schedule.py <scan-loop|status|runs|run-backup|run-restart|"
+          "arm-restart <delay> <window> <freq>|cancel-restart|run-task <id>|set-config <json>> [BASE]",
           file=sys.stderr)
     return 2
 

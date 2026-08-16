@@ -5,7 +5,11 @@ import { useEffect, useMemo, useState } from "react";
 import { MAP_ROLE_META, mapDisplayName, mapRole, mapStatusPill } from "./mapNames";
 import { useAutoRefresh } from "./live";
 import { Icon } from "./icons";
+import type { ArmRestartResult, ScheduleResponse, TriggerResult } from "./api";
 import {
+  armRestart,
+  cancelArmedRestart,
+  fetchSchedule,
   armorSetClass,
   armorSetLabel,
   armorSetTier,
@@ -1865,57 +1869,216 @@ export function MovementTab({ setConsoleEntries }: TabProps) {
 
 // ---- Maintenance (shutdown + xp + water) -------------------------------
 
-export function MaintenanceTab({ setConsoleEntries }: TabProps) {
-  const [shutType, setShutType] = useState("Restart");
-  const [shutLead, setShutLead] = useState(600);
-  const [shutFreq, setShutFreq] = useState(60);
+// Duration entry. The old card took raw seconds, so "restart in 8 hours"
+// meant typing 28800 — and 8 hours at the old 60s reminder is 480 banners
+// in players' faces, which is why the reminder is now a window that opens
+// shortly before the restart instead of running the whole time.
+const UNIT_SECS = { s: 1, min: 60, h: 3600 } as const;
+type Unit = keyof typeof UNIT_SECS;
 
-  async function submitShutdown(e: React.FormEvent, cancel = false) {
+const DELAY_PRESETS: { label: string; secs: number }[] = [
+  { label: "5 min", secs: 300 },
+  { label: "30 min", secs: 1800 },
+  { label: "1 h", secs: 3600 },
+  { label: "4 h", secs: 14400 },
+  { label: "8 h", secs: 28800 },
+  { label: "16 h", secs: 57600 },
+];
+
+function humanSecs(total: number): string {
+  if (total <= 0) return "now";
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const parts = [h && `${h} h`, m && `${m} min`, !h && s ? `${s} s` : ""].filter(Boolean);
+  return parts.join(" ") || `${total} s`;
+}
+
+function clockAfter(secs: number): string {
+  return new Date(Date.now() + secs * 1000).toLocaleString([], {
+    weekday: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function DurationField({ id, label, value, unit, units, onValue, onUnit, hint }: {
+  id: string; label: string; value: number; unit: Unit; units: Unit[];
+  onValue: (v: number) => void; onUnit: (u: Unit) => void; hint?: string;
+}) {
+  return (
+    <div>
+      <label className="label" htmlFor={id}>{label}</label>
+      <div className="flex gap-2">
+        <input id={id} type="number" min={0} value={value} className="input-field flex-1"
+               onChange={(e) => onValue(Math.max(0, parseInt(e.target.value) || 0))} />
+        <select aria-label={`${label} unit`} value={unit} className="input-field w-28"
+                onChange={(e) => onUnit(e.target.value as Unit)}>
+          {units.map((u) => (
+            <option key={u} value={u}>{u === "s" ? "seconds" : u === "min" ? "minutes" : "hours"}</option>
+          ))}
+        </select>
+      </div>
+      {hint && <p className="text-xs text-slate-500 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+export function MaintenanceTab({ setConsoleEntries }: TabProps) {
+  const [delay, setDelay] = useState(4);
+  const [delayUnit, setDelayUnit] = useState<Unit>("h");
+  const [warn, setWarn] = useState(30);
+  const [warnUnit, setWarnUnit] = useState<Unit>("min");
+  const [every, setEvery] = useState(10);
+  const [everyUnit, setEveryUnit] = useState<Unit>("min");
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
+
+  // Announce-only, for downtime that is not a restart.
+  const [noticeType, setNoticeType] = useState("Maintenance");
+  const [noticeMins, setNoticeMins] = useState(30);
+
+  const delaySecs = delay * UNIT_SECS[delayUnit];
+  const warnSecs = Math.min(warn * UNIT_SECS[warnUnit], delaySecs);
+  const everySecs = Math.max(every * UNIT_SECS[everyUnit], 1);
+  const banners = warnSecs > 0 ? Math.ceil(warnSecs / everySecs) : 0;
+
+  const refresh = async () => {
+    const res = await fetchSchedule();
+    if (res.ok) setPending((res.body as ScheduleResponse).pending_restart);
+  };
+  useEffect(() => { void refresh(); }, []);
+  useAutoRefresh(refresh, 30000);
+
+  async function schedule(e: React.FormEvent) {
     e.preventDefault();
-    if (cancel) {
-      await runAndLog(setConsoleEntries, "shutdown", { type: "cancel" }, "shutdown cancel");
-    } else {
-      await runAndLog(setConsoleEntries, "shutdown", { type: shutType, lead_secs: shutLead, freq_secs: shutFreq }, `shutdown ${shutType} in ${shutLead}s`);
-    }
+    setBusy(true);
+    const res = await armRestart(delaySecs, warnSecs, everySecs);
+    const b = res.body as ArmRestartResult;
+    const ok = res.ok && b.ok;
+    pushToConsole(setConsoleEntries, `restart in ${humanSecs(delaySecs)}`,
+      ok ? `armed for ${b.restart_at}; players warned from ${b.warn_at}`
+         : (b.error || "could not arm the restart"), ok);
+    await refresh();
+    setBusy(false);
+  }
+
+  async function cancel() {
+    setBusy(true);
+    const res = await cancelArmedRestart();
+    const b = res.body as TriggerResult;
+    const ok = res.ok && b.ok;
+    pushToConsole(setConsoleEntries, "cancel armed restart",
+      b.detail || b.error || "", ok);
+    await refresh();
+    setBusy(false);
+  }
+
+  async function sendNotice(e: React.FormEvent) {
+    e.preventDefault();
+    await runAndLog(setConsoleEntries, "shutdown",
+      { type: noticeType, lead_secs: noticeMins * 60, freq_secs: 300 },
+      `${noticeType} notice in ${noticeMins} min`);
   }
 
   return (
-    <div className="card max-w-2xl">
-      <header className="card-header">
-        <h2 className="font-semibold">Scheduled shutdown</h2>
-        <span className="text-xs text-slate-500">sysadmin · affects all players</span>
-      </header>
-      <form onSubmit={(e) => submitShutdown(e)} className="p-4 space-y-4">
-        <p className="text-xs text-slate-400">
-          Broadcasts a countdown to every Sietch, then triggers a server-wide shutdown of the chosen type.
-          Use <span className="font-mono text-slate-300">Cancel pending</span> to abort an in-flight countdown.
-        </p>
-        <div>
-          <label className="label" htmlFor="shut-type">Type</label>
-          <select id="shut-type" value={shutType} onChange={(e) => setShutType(e.target.value)} className="input-field">
-            <option>Restart</option>
-            <option>Maintenance</option>
-            <option>Update</option>
-          </select>
-          <p className="text-xs text-slate-500 mt-1">
-            <span className="text-slate-300">Restart</span> bounces the server (fastest). <span className="text-slate-300">Maintenance</span> announces planned downtime. <span className="text-slate-300">Update</span> signals a version update. All broadcast a countdown to players first.
+    <div className="space-y-4 max-w-2xl">
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Scheduled restart</h2>
+          <span className="text-xs text-slate-500">sysadmin · affects all players</span>
+        </header>
+        <form onSubmit={schedule} className="p-4 space-y-4">
+          <p className="text-xs text-slate-400">
+            Warns every Sietch with an in-game countdown, then restarts the server through the
+            panel when it runs out. The countdown only starts shortly before the restart, so a
+            restart hours away does not banner players the whole time.
           </p>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
+
+          {pending && (
+            <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+              Pending: restart at{" "}
+              <span className="font-mono">{new Date(pending).toLocaleString()}</span>
+            </div>
+          )}
+
           <div>
-            <label className="label" htmlFor="shut-lead">Lead time (s)</label>
-            <input id="shut-lead" type="number" min={30} value={shutLead} onChange={(e) => setShutLead(parseInt(e.target.value) || 60)} className="input-field" />
+            <span className="label">When</span>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {DELAY_PRESETS.map((p) => {
+                const active = delaySecs === p.secs;
+                return (
+                  <button key={p.label} type="button"
+                    className={active ? "btn-primary text-xs px-3 py-1" : "btn-ghost border border-slate-700 text-xs px-3 py-1"}
+                    onClick={() => {
+                      setDelay(p.secs >= 3600 ? p.secs / 3600 : p.secs / 60);
+                      setDelayUnit(p.secs >= 3600 ? "h" : "min");
+                    }}>{p.label}</button>
+                );
+              })}
+            </div>
+            <DurationField id="restart-delay" label="" value={delay} unit={delayUnit}
+              units={["s", "min", "h"]} onValue={setDelay} onUnit={setDelayUnit} />
+            <p className="text-xs text-slate-400 mt-1">
+              {delaySecs > 0
+                ? <>Restarts at <span className="text-slate-200 font-mono">{clockAfter(delaySecs)}</span>, in {humanSecs(delaySecs)}.</>
+                : <span className="text-amber-300">Restarts immediately — players get no warning.</span>}
+            </p>
           </div>
-          <div>
-            <label className="label" htmlFor="shut-freq">Re-broadcast every (s)</label>
-            <input id="shut-freq" type="number" min={5} value={shutFreq} onChange={(e) => setShutFreq(parseInt(e.target.value) || 60)} className="input-field" />
+
+          <div className="grid grid-cols-2 gap-3">
+            <DurationField id="restart-warn" label="Start warning" value={warn} unit={warnUnit}
+              units={["s", "min", "h"]} onValue={setWarn} onUnit={setWarnUnit}
+              hint="before the restart" />
+            <DurationField id="restart-every" label="Remind every" value={every} unit={everyUnit}
+              units={["s", "min", "h"]} onValue={setEvery} onUnit={setEveryUnit}
+              hint={`${banners} banner${banners === 1 ? "" : "s"} to players`} />
           </div>
-        </div>
-        <div className="flex gap-2">
-          <button type="submit" className="btn-primary">Schedule</button>
-          <button type="button" className="btn-ghost border border-slate-700" onClick={(e) => submitShutdown(e, true)}>Cancel pending</button>
-        </div>
-      </form>
+          {banners > 20 && (
+            <p className="text-xs text-amber-300">
+              {banners} banners is a lot to put in front of players — widen the reminder interval.
+            </p>
+          )}
+          {warnSecs < warn * UNIT_SECS[warnUnit] && (
+            <p className="text-xs text-slate-500">
+              Warning window trimmed to {humanSecs(warnSecs)} — it cannot start before you schedule it.
+            </p>
+          )}
+
+          <div className="flex gap-2">
+            <button type="submit" className="btn-primary" disabled={busy}>Schedule restart</button>
+            <button type="button" className="btn-ghost border border-slate-700"
+                    onClick={cancel} disabled={busy || !pending}>Cancel pending</button>
+          </div>
+        </form>
+      </div>
+
+      <div className="card">
+        <header className="card-header">
+          <h2 className="font-semibold">Announce only</h2>
+          <span className="text-xs text-slate-500">no restart</span>
+        </header>
+        <form onSubmit={sendNotice} className="p-4 space-y-3">
+          <p className="text-xs text-slate-400">
+            Shows players a countdown banner and nothing else — nothing is stopped or restarted.
+            Use it to flag downtime you will carry out yourself.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label" htmlFor="notice-type">Type</label>
+              <select id="notice-type" value={noticeType} className="input-field"
+                      onChange={(e) => setNoticeType(e.target.value)}>
+                <option>Maintenance</option>
+                <option>Update</option>
+              </select>
+            </div>
+            <div>
+              <label className="label" htmlFor="notice-mins">Countdown (minutes)</label>
+              <input id="notice-mins" type="number" min={1} value={noticeMins} className="input-field"
+                     onChange={(e) => setNoticeMins(Math.max(1, parseInt(e.target.value) || 1))} />
+            </div>
+          </div>
+          <button type="submit" className="btn-ghost border border-slate-700">Send notice</button>
+        </form>
+      </div>
     </div>
   );
 }
