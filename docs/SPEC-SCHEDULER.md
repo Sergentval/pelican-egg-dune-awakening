@@ -111,8 +111,10 @@ Verify: tsc + vite; manual trigger from the panel records a run.
   self-restart exists. Backup is independent + works without it.
 - **Restore is destructive** — offline-gated + confirm-token + CLI-only at first.
 - **Wings owns the lifecycle** — we restart *through* the panel API, not by self-exec.
-- **`data/admin/schedule.json` resets on egg reinstall** (like welcome-kit.json); the
-  run ledger in `state/` persists. Document it.
+- ~~**`data/admin/schedule.json` resets on egg reinstall**~~ — resolved. Operator
+  config lives in `server/state/admin/schedule.json` (`admin_schedule.config_path`),
+  seeded from the `data/admin/` shipped default only when absent, so it survives a
+  reinstall along with the run ledger in `server/state/`.
 - **pg_dump version** — use the same extracted postgres17 `$PG_BIN` as the live server
   to avoid a version-mismatch dump.
 - **Backup disk** — `pg_dump -Fc` of the dune schema is modest, but retention bounds it;
