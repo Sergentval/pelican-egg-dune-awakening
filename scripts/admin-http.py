@@ -30,6 +30,7 @@ import csv
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -324,6 +325,78 @@ def revoke_token(payload: dict) -> bool:
         REVOCATIONS[jti] = exp
         _save_revocations()
     return True
+
+
+# --------------------------------------------------------------------------
+# Client IP resolution.
+#
+# The socket peer is the only trustworthy source by default: honouring
+# X-Forwarded-For unconditionally lets any client forge an arbitrary
+# address and hand itself a fresh rate-limit bucket per request.
+#
+# But behind a TLS-terminating reverse proxy the socket peer is the PROXY
+# for every request, so all logins share one bucket — 5 failures from
+# anywhere on the internet then lock the operator out for the window. The
+# rate limit stops protecting anyone and becomes a denial of service on
+# the account it was meant to defend.
+#
+# So: trust the header only from peers the operator has declared, and
+# resolve to the RIGHTMOST address that isn't one of those. Entries to
+# the left of it are attacker-supplied — a client can prepend anything it
+# likes, and only the hops we know about are allowed to vouch for what
+# they appended. Empty declaration (the default) = peer only, i.e. the
+# previous behaviour exactly, so nobody inherits a new trust surface.
+# --------------------------------------------------------------------------
+def _parse_trusted_proxies(raw: str) -> list:
+    """Comma/space-separated IPs and CIDRs -> ip_network list. Invalid
+    entries are logged and dropped rather than silently widening or
+    narrowing trust."""
+    nets = []
+    for token in re.split(r"[,\s]+", raw.strip()):
+        if not token:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            log(f"WARN ignoring invalid DUNE_ADMIN_UI_TRUSTED_PROXIES entry {token!r}")
+    return nets
+
+
+TRUSTED_PROXIES = _parse_trusted_proxies(os.environ.get("DUNE_ADMIN_UI_TRUSTED_PROXIES", ""))
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    if not TRUSTED_PROXIES:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in TRUSTED_PROXIES)
+
+
+def resolve_client_ip(peer: str, forwarded_for: str) -> str:
+    """The address to bucket this request under.
+
+    Returns `peer` unless it is a declared proxy, in which case the
+    rightmost X-Forwarded-For entry that is not itself a declared proxy
+    wins. Falls back to `peer` when the header is absent, unparseable, or
+    contains nothing but declared proxies."""
+    if not peer:
+        return "unknown"
+    if not _is_trusted_proxy(peer) or not forwarded_for:
+        return peer
+    for candidate in reversed([p.strip() for p in forwarded_for.split(",")]):
+        if not candidate or _is_trusted_proxy(candidate):
+            continue
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            # A malformed hop means we can no longer tell who appended
+            # what; stop rather than trust anything further left.
+            return peer
+        return candidate
+    return peer
 
 
 # --------------------------------------------------------------------------
@@ -1043,18 +1116,12 @@ class Handler(BaseHTTPRequestHandler):
         return bool(supplied) and hmac.compare_digest(supplied, expected)
 
     def _client_ip(self) -> str:
-        """Source IP for rate-limit bucketing. Trusts the socket peer —
-        deliberately NOT X-Forwarded-For, because honouring that header
-        in front of a proxy that doesn't strip it lets attackers forge
-        an arbitrary IP and bypass per-IP rate limits. If a TLS-
-        terminating reverse proxy is in front, all logins appear from
-        127.0.0.1, which collapses the per-IP bucket into a single
-        global bucket — that's a known limitation; operators behind a
-        proxy should pair this with per-account lockout at the proxy."""
+        """Source IP for rate-limit bucketing — see resolve_client_ip()."""
         try:
-            return self.client_address[0]
+            peer = self.client_address[0]
         except (AttributeError, IndexError):
             return "unknown"
+        return resolve_client_ip(peer, self.headers.get("X-Forwarded-For", ""))
 
     def _cookie_flags(self) -> str:
         """Cookie attribute string shared by session + csrf cookies."""
@@ -2929,6 +2996,12 @@ def main() -> None:
         log(f"  data    : vehicles={len(_DATA['vehicles'])} items={len(_DATA['items'])} skills={len(_DATA['skills'])}")
         log(f"  steam   : {'STEAM_API_KEY set — persona lookups enabled' if STEAM_API_KEY else 'STEAM_API_KEY blank — persona lookups disabled'}")
         log(f"  ratelim : {LOGIN_MAX_ATTEMPTS} /api/login attempts per {LOGIN_WINDOW_SECONDS}s per-IP")
+        if TRUSTED_PROXIES:
+            log(f"  proxies : trusting X-Forwarded-For from {', '.join(str(n) for n in TRUSTED_PROXIES)}")
+        else:
+            log("  proxies : none declared — bucketing on the socket peer "
+                "(behind a reverse proxy that is ONE bucket for everyone; "
+                "set DUNE_ADMIN_UI_TRUSTED_PROXIES)")
         log(f"  revoked : {len(REVOCATIONS)} session token(s) on the revocation list")
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")

@@ -263,6 +263,95 @@ class LogMessageResilience(unittest.TestCase):
         self.assertTrue(self._capture(self._stub(), "100% complete"))
 
 
+class ClientIPResolution(unittest.TestCase):
+    """Which address a request gets bucketed under. Getting this wrong in
+    either direction is a security bug: too trusting hands every client a
+    fresh rate-limit bucket per request, too strict collapses the whole
+    internet into one bucket behind a proxy."""
+
+    def trust(self, raw: str) -> None:
+        original = admin_http.TRUSTED_PROXIES
+        admin_http.TRUSTED_PROXIES = admin_http._parse_trusted_proxies(raw)
+        self.addCleanup(setattr, admin_http, "TRUSTED_PROXIES", original)
+
+    # --- default: nothing declared -------------------------------------
+    def test_header_is_ignored_when_no_proxy_is_declared(self) -> None:
+        self.trust("")
+        self.assertEqual(
+            admin_http.resolve_client_ip("10.99.0.1", "1.2.3.4"), "10.99.0.1",
+            "an undeclared deployment must not inherit a spoofing surface",
+        )
+
+    def test_peer_wins_without_a_header(self) -> None:
+        self.trust("10.99.0.1")
+        self.assertEqual(admin_http.resolve_client_ip("10.99.0.1", ""), "10.99.0.1")
+
+    # --- the deployment this exists for --------------------------------
+    def test_declared_proxy_yields_the_real_client(self) -> None:
+        self.trust("10.99.0.1")
+        self.assertEqual(admin_http.resolve_client_ip("10.99.0.1", "203.0.113.9"), "203.0.113.9")
+
+    def test_cidr_declaration(self) -> None:
+        self.trust("10.99.0.0/24")
+        self.assertEqual(admin_http.resolve_client_ip("10.99.0.7", "203.0.113.9"), "203.0.113.9")
+
+    def test_chain_of_declared_proxies_collapses_to_the_client(self) -> None:
+        self.trust("10.99.0.1, 172.20.0.5")
+        self.assertEqual(
+            admin_http.resolve_client_ip("10.99.0.1", "203.0.113.9, 172.20.0.5"),
+            "203.0.113.9",
+        )
+
+    # --- spoofing attempts ---------------------------------------------
+    def test_forged_prefix_cannot_win(self) -> None:
+        # The client prepends whatever it likes; only the hop our proxy
+        # appended is real, and it is the rightmost untrusted entry.
+        self.trust("10.99.0.1")
+        self.assertEqual(
+            admin_http.resolve_client_ip("10.99.0.1", "1.1.1.1, 8.8.8.8, 203.0.113.9"),
+            "203.0.113.9",
+        )
+
+    def test_header_from_an_undeclared_peer_is_ignored(self) -> None:
+        self.trust("10.99.0.1")
+        self.assertEqual(
+            admin_http.resolve_client_ip("198.51.100.4", "203.0.113.9"), "198.51.100.4",
+            "a direct client must not be able to pick its own bucket",
+        )
+
+    def test_malformed_hop_falls_back_to_the_peer(self) -> None:
+        self.trust("10.99.0.1")
+        for junk in ("not-an-ip", "203.0.113.9, junk", "<script>"):
+            with self.subTest(junk=junk):
+                self.assertEqual(admin_http.resolve_client_ip("10.99.0.1", junk), "10.99.0.1")
+
+    def test_header_of_only_declared_proxies_falls_back(self) -> None:
+        self.trust("10.99.0.1, 172.20.0.5")
+        self.assertEqual(
+            admin_http.resolve_client_ip("10.99.0.1", "172.20.0.5, 10.99.0.1"), "10.99.0.1"
+        )
+
+    def test_empty_peer(self) -> None:
+        self.trust("10.99.0.1")
+        self.assertEqual(admin_http.resolve_client_ip("", "203.0.113.9"), "unknown")
+
+    # --- parsing --------------------------------------------------------
+    def test_ipv6_declaration_and_resolution(self) -> None:
+        self.trust("::1")
+        self.assertEqual(admin_http.resolve_client_ip("::1", "2001:db8::5"), "2001:db8::5")
+
+    def test_invalid_declarations_are_dropped_not_widened(self) -> None:
+        nets = admin_http._parse_trusted_proxies("10.99.0.1, nonsense, 172.20.0.0/16, 999.1.1.1")
+        self.assertEqual([str(n) for n in nets], ["10.99.0.1/32", "172.20.0.0/16"])
+
+    def test_whitespace_and_empty_tokens(self) -> None:
+        self.assertEqual(admin_http._parse_trusted_proxies("  "), [])
+        self.assertEqual(
+            [str(n) for n in admin_http._parse_trusted_proxies("10.0.0.1  10.0.0.2,,")],
+            ["10.0.0.1/32", "10.0.0.2/32"],
+        )
+
+
 class LoginGateAtomicity(unittest.TestCase):
     """The rate limiter is now reachable from many threads at once."""
 

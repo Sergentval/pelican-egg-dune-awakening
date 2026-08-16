@@ -667,6 +667,20 @@
       "sort": 45
     },
     {
+      "name": "Admin Web UI — Trusted Proxies",
+      "description": "Optional, but set it if a reverse proxy fronts the panel. Comma or space separated IPs/CIDRs that admin-http should believe X-Forwarded-For from (e.g. 10.99.0.1 or 172.20.0.0/16). Use the address the PROXY connects from — read it off any request line in logs/admin-http.log, which prints the peer. Leave this blank behind a proxy and every login arrives from that one address, so the 5-attempts-per-15-min limit becomes a single global bucket: five failures from anywhere on the internet lock YOU out for the window. Blank is safe and correct when clients reach the panel directly — the header is then ignored entirely, so nobody can forge a source IP. Only declared peers are believed, and the client is taken as the rightmost X-Forwarded-For entry that is not itself declared.",
+      "env_variable": "DUNE_ADMIN_UI_TRUSTED_PROXIES",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:255"
+      ],
+      "sort": 46
+    },
+    {
       "name": "Admin Web UI — Login Password",
       "description": "Password required to log into the admin UI. REQUIRED when the UI is enabled. Treat as a secret. If left blank while enabled, prestart.sh auto-generates one and writes the value to the container log (look for 'admin-ui generated password').",
       "env_variable": "DUNE_ADMIN_UI_PASSWORD",
@@ -679,7 +693,7 @@
         "min:8",
         "max:128"
       ],
-      "sort": 46
+      "sort": 47
     },
     {
       "name": "Steam Web API Key (optional)",
@@ -693,7 +707,7 @@
         "string",
         "max:64"
       ],
-      "sort": 47
+      "sort": 48
     },
     {
       "name": "Pelican Panel URL (scheduler auto-restart)",
@@ -707,7 +721,7 @@
         "string",
         "max:255"
       ],
-      "sort": 48
+      "sort": 49
     },
     {
       "name": "Pelican Client API Key (scheduler auto-restart)",
@@ -721,7 +735,7 @@
         "string",
         "max:128"
       ],
-      "sort": 49
+      "sort": 50
     },
     {
       "name": "Pelican Server ID (scheduler auto-restart)",
@@ -735,7 +749,7 @@
         "string",
         "max:64"
       ],
-      "sort": 50
+      "sort": 51
     },
     {
       "name": "Pelican Panel Resolve IP (scheduler auto-restart, optional)",
@@ -749,7 +763,7 @@
         "string",
         "max:64"
       ],
-      "sort": 51
+      "sort": 52
     },
     {
       "name": "DB Backup Retention",
@@ -763,7 +777,7 @@
         "integer",
         "between:1,365"
       ],
-      "sort": 52
+      "sort": 53
     }
   ]
 }
