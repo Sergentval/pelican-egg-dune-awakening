@@ -332,9 +332,19 @@ dispatch logs but the renderer drops the banner.
 admin shutdown <Restart|Maintenance|Update|cancel> [lead_secs=600] [freq_secs=60]
 ```
 
-Broadcasts a countdown notice every `freq_secs` and triggers a server
-shutdown of the given type after `lead_secs`. The `cancel` form aborts
-a pending shutdown (no other args needed).
+Broadcasts a countdown notice to players and **nothing else** — it does
+not stop, restart or shut down anything. Verified: a 90-second `Restart`
+notice left the container up with every UE5 instance alive. The game
+banners every `freq_secs` until `lead_secs` has elapsed, then the notice
+simply expires. The `cancel` form withdraws it (no other args needed).
+
+To actually restart the server, use the admin panel's **Scheduled
+restart** card (Server → Shutdown & Restart) or the Scheduler tab: both
+arm the scheduler's pending restart, which calls the panel's power API
+when the countdown runs out. Note that the game re-shows the banner every
+`freq_secs` for the whole countdown, so a long `lead_secs` with a short
+`freq_secs` is hundreds of banners — the panel card arms the announcement
+to open shortly before the restart instead of running the whole time.
 
 ```text
 admin shutdown Restart 300 30      # restart in 5 min, ping every 30 s
