@@ -38,10 +38,11 @@ import secrets
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -68,6 +69,35 @@ SHARED_AUTH = os.environ.get("DUNE_ADMIN_HTTP_AUTH", "")
 BASE_DIR = os.environ.get("DUNE_BASE_DIR", "/home/container")
 SCRIPTS_DIR = BASE_DIR + "/scripts"
 LOGS_DIR = BASE_DIR + "/logs"
+
+# Listener hardening (issue #89). In UI mode this socket is bound to
+# 0.0.0.0 and reachable from the whole internet, so it is scanned within
+# hours of coming up.
+#
+#   CONNECTION_TIMEOUT_SECONDS  Per-connection socket timeout. Without it
+#       a peer that connects and never finishes a request line parks a
+#       worker forever — on the previous single-threaded HTTPServer that
+#       was the entire panel, permanently, until the container restarted.
+#       Responses are HTTP/1.0 (no keep-alive), so this only ever bounds
+#       how long we wait on a client that owes us bytes.
+#   MAX_CONNECTIONS  Ceiling on connections being served at once. Threads
+#       are what keeps one slow peer from starving the others, so a flood
+#       must not be able to spawn them without bound.
+CONNECTION_TIMEOUT_SECONDS = float(os.environ.get("DUNE_ADMIN_HTTP_TIMEOUT_SECS", "30"))
+MAX_CONNECTIONS = int(os.environ.get("DUNE_ADMIN_HTTP_MAX_CONNS", "64"))
+
+# The listener is threaded, but the helper scripts behind the run_*()
+# wrappers below were written against the old serialised server: several
+# read-modify-write JSON/INI state files with no locking of their own, so
+# two overlapping invocations would silently lose an update. Serialising
+# every out-of-process command here preserves the invariant they assume.
+COMMAND_LOCK = threading.Lock()
+
+# Guards the in-process auth state (REVOCATIONS, LOGIN_ATTEMPTS). Held
+# only for dict/deque surgery and the small atomic revocation write, so
+# contention is irrelevant. Reentrant because revoke_token() persists
+# while holding it.
+AUTH_STATE_LOCK = threading.RLock()
 # mock-k8s instance primitives + constants now live in admin_instances.py (shared
 # with the scheduler's scale-instance task); re-exported here so the routes below
 # stay unchanged. SCALABLE_MAPS = on-demand maps only — never the always-warm
@@ -134,8 +164,8 @@ CSRF_COOKIE_NAME = "dune_csrf"
 # allocate gigabytes via a forged Content-Length.
 MAX_BODY_BYTES = 64 * 1024
 
-# Login rate-limit. Sliding window per source IP: when N failed attempts
-# land within W seconds, subsequent /api/login requests from that IP get
+# Login rate-limit. Sliding window per source IP: when N attempts land
+# within W seconds, subsequent /api/login requests from that IP get
 # 429 + Retry-After until the oldest attempt ages out. The deque has a
 # fixed maxlen — older entries auto-evict, so we never grow unbounded
 # per-IP. A successful login clears the bucket.
@@ -144,6 +174,11 @@ LOGIN_WINDOW_SECONDS = int(os.environ.get("DUNE_ADMIN_UI_LOGIN_WINDOW_SECS", "90
 LOGIN_ATTEMPTS: dict[str, collections.deque] = collections.defaultdict(
     lambda: collections.deque(maxlen=LOGIN_MAX_ATTEMPTS)
 )
+# Buckets are pruned when their IP comes back, which never happens for the
+# one-shot source addresses of a distributed scan. Once the table passes
+# this many entries, sweep the expired ones so a day of being scanned
+# can't grow it without bound.
+LOGIN_BUCKET_SWEEP_AT = int(os.environ.get("DUNE_ADMIN_UI_LOGIN_SWEEP_AT", "1024"))
 
 # In-memory ring buffer of recent command invocations. Surfaced via
 # GET /api/history. Each entry: {ts, source, argv, ok, exit_code,
@@ -163,39 +198,46 @@ REVOCATIONS: dict[str, int] = {}
 
 def _load_revocations() -> None:
     """Read REVOCATIONS from disk and drop expired entries."""
-    REVOCATIONS.clear()
-    try:
-        with open(REVOCATION_FILE) as fh:
-            raw = json.load(fh)
-    except FileNotFoundError:
-        return
-    except (OSError, json.JSONDecodeError) as exc:
-        log(f"WARN failed to load {REVOCATION_FILE}: {exc} — starting with empty revocation list")
-        return
-    if not isinstance(raw, dict):
-        log(f"WARN {REVOCATION_FILE} has unexpected shape; resetting")
-        return
-    now = int(time.time())
-    for jti, exp in raw.items():
+    with AUTH_STATE_LOCK:
+        REVOCATIONS.clear()
         try:
-            exp_int = int(exp)
-        except (TypeError, ValueError):
-            continue
-        if exp_int > now:
-            REVOCATIONS[str(jti)] = exp_int
+            with open(REVOCATION_FILE) as fh:
+                raw = json.load(fh)
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            log(f"WARN failed to load {REVOCATION_FILE}: {exc} — starting with empty revocation list")
+            return
+        if not isinstance(raw, dict):
+            log(f"WARN {REVOCATION_FILE} has unexpected shape; resetting")
+            return
+        now = int(time.time())
+        for jti, exp in raw.items():
+            try:
+                exp_int = int(exp)
+            except (TypeError, ValueError):
+                continue
+            if exp_int > now:
+                REVOCATIONS[str(jti)] = exp_int
 
 
 def _save_revocations() -> None:
     """Atomic write of REVOCATIONS to disk. Best-effort — failures only
-    log; in-memory revocations still apply for the current process."""
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        tmp = REVOCATION_FILE + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(REVOCATIONS, fh, separators=(",", ":"))
-        os.replace(tmp, REVOCATION_FILE)
-    except OSError as exc:
-        log(f"WARN failed to persist {REVOCATION_FILE}: {exc}")
+    log; in-memory revocations still apply for the current process.
+
+    Callers hold AUTH_STATE_LOCK: json.dump iterates the dict, and a
+    concurrent logout inserting into it mid-iteration raises RuntimeError
+    ("dictionary changed size during iteration"). The fixed .tmp name is
+    equally a shared resource between writers."""
+    with AUTH_STATE_LOCK:
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            tmp = REVOCATION_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(REVOCATIONS, fh, separators=(",", ":"))
+            os.replace(tmp, REVOCATION_FILE)
+        except OSError as exc:
+            log(f"WARN failed to persist {REVOCATION_FILE}: {exc}")
 
 
 def log(msg: str) -> None:
@@ -278,9 +320,60 @@ def revoke_token(payload: dict) -> bool:
     exp = payload.get("exp")
     if not isinstance(jti, str) or not isinstance(exp, int):
         return False
-    REVOCATIONS[jti] = exp
-    _save_revocations()
+    with AUTH_STATE_LOCK:
+        REVOCATIONS[jti] = exp
+        _save_revocations()
     return True
+
+
+# --------------------------------------------------------------------------
+# Login rate-limit gate. One atomic check-and-consume rather than the
+# separate "am I over quota?" / "record a failure" pair it replaced: the
+# listener is threaded now, and a burst of concurrent guesses all read the
+# old bucket before any of them wrote to it, so the quota could be
+# overrun by however many requests an attacker managed to land at once.
+# --------------------------------------------------------------------------
+def _sweep_login_attempts(now: float) -> None:
+    """Drop buckets whose newest attempt has aged out. Caller holds the lock."""
+    cutoff = now - LOGIN_WINDOW_SECONDS
+    stale = [ip for ip, bucket in LOGIN_ATTEMPTS.items() if not bucket or bucket[-1] < cutoff]
+    for ip in stale:
+        LOGIN_ATTEMPTS.pop(ip, None)
+    if stale:
+        log(f"swept {len(stale)} expired login-attempt bucket(s); {len(LOGIN_ATTEMPTS)} left")
+
+
+def login_attempt_gate(ip: str) -> int:
+    """Consume one login attempt for `ip`. Returns 0 when the attempt may
+    proceed, else the Retry-After seconds until the window frees a slot.
+
+    The attempt is charged up front, so concurrent requests can never
+    exceed the quota. clear_login_attempts() refunds the whole bucket on
+    a successful login, which keeps an operator who fat-fingered their
+    password a few times from being locked out for the rest of the window."""
+    with AUTH_STATE_LOCK:
+        now = time.time()
+        if len(LOGIN_ATTEMPTS) > LOGIN_BUCKET_SWEEP_AT:
+            _sweep_login_attempts(now)
+        bucket = LOGIN_ATTEMPTS[ip]
+        cutoff = now - LOGIN_WINDOW_SECONDS
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= LOGIN_MAX_ATTEMPTS:
+            return max(int(bucket[0] + LOGIN_WINDOW_SECONDS - now) + 1, 1)
+        bucket.append(now)
+        return 0
+
+
+def login_attempts_in_window(ip: str) -> int:
+    """How many attempts are currently charged against `ip` (for logging)."""
+    with AUTH_STATE_LOCK:
+        return len(LOGIN_ATTEMPTS.get(ip, ()))
+
+
+def clear_login_attempts(ip: str) -> None:
+    with AUTH_STATE_LOCK:
+        LOGIN_ATTEMPTS.pop(ip, None)
 
 
 # --------------------------------------------------------------------------
@@ -366,13 +459,28 @@ def build_argv(sub: str, body: dict) -> list[str]:
     raise ValueError(f"unknown subcommand: {sub}")
 
 
+def _run_command(cmd: list[str], timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run one helper out-of-process, serialised against every other
+    command via COMMAND_LOCK. Every run_*() below goes through here so a
+    future runner cannot silently opt out of that serialisation."""
+    with COMMAND_LOCK:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _run_helper(script: str, argv: list[str], timeout: int, env: dict | None = None) -> dict:
+    """Run scripts/<script> and shape its JSON stdout into
+    {ok, exit_code, data, stderr}. Non-JSON output lands in data.raw."""
+    res = _run_command([sys.executable, os.path.join(SCRIPTS_DIR, script), *argv], timeout, env)
+    try:
+        data = json.loads(res.stdout) if res.stdout.strip() else {}
+    except json.JSONDecodeError:
+        data = {"raw": res.stdout[:500]}
+    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
+    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+
+
 def run_publish(argv: list[str], timeout: int = 30) -> dict:
-    result = subprocess.run(
-        [PUBLISH_SH, *argv],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    result = _run_command([PUBLISH_SH, *argv], timeout)
     ok = result.returncode == 0 and (
         "publish=ok" in result.stdout
         or "publish=db-delete" in result.stdout
@@ -400,46 +508,24 @@ def run_welcome(sub: str, timeout: int = 60) -> dict:
     """Run scripts/admin_welcome.py <sub> <BASE_DIR> out-of-process (it shells to
     give-item, so keep it isolated + timeout-bounded). Returns {ok, data, ...}
     where `data` is the script's parsed JSON output."""
-    res = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_welcome.py"), sub, BASE_DIR],
-        capture_output=True, text=True, timeout=timeout)
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else {}
-    except json.JSONDecodeError:
-        data = {"raw": res.stdout[:500]}
-    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
-    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+    return _run_helper("admin_welcome.py", [sub, BASE_DIR], timeout)
 
 
 def run_schedule(sub: str, *args: str, timeout: int = 60) -> dict:
     """Run scripts/admin_schedule.py <sub> <BASE_DIR> [args] out-of-process
     (it shells to admin-publish for backups/broadcast). Returns {ok, data, ...}
     where `data` is the script's parsed JSON output."""
-    res = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_schedule.py"), sub, BASE_DIR, *args],
-        capture_output=True, text=True, timeout=timeout)
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else {}
-    except json.JSONDecodeError:
-        data = {"raw": res.stdout[:500]}
-    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
-    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+    return _run_helper("admin_schedule.py", [sub, BASE_DIR, *args], timeout)
 
 
 def run_sietch(sub: str, *args: str, timeout: int = 20) -> dict:
     """Run scripts/admin_sietch.py <sub> [args] out-of-process (per-sietch config
     I/O; no DB/network). BASE via env so file/dir args aren't mistaken for it.
     Returns {ok, data, ...} where `data` is the script's parsed JSON output."""
-    res = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_sietch.py"), sub, *args],
-        capture_output=True, text=True, timeout=timeout,
-        env={**os.environ, "DUNE_BASE_DIR": BASE_DIR})
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else {}
-    except json.JSONDecodeError:
-        data = {"raw": res.stdout[:500]}
-    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
-    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+    return _run_helper(
+        "admin_sietch.py", [sub, *args], timeout,
+        env={**os.environ, "DUNE_BASE_DIR": BASE_DIR},
+    )
 
 
 def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
@@ -447,30 +533,14 @@ def run_market(sub: str, *args: str, timeout: int = 20) -> dict:
     Returns {ok, data, ...} where `data` is the script's parsed JSON output.
     Mostly read-only (pricing + market summary); the 7b-3 buy-tick/set-config
     subcommands shell admin-publish.sh for the actual exchange writes."""
-    res = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_market.py"), sub, *args, BASE_DIR],
-        capture_output=True, text=True, timeout=timeout)
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else {}
-    except json.JSONDecodeError:
-        data = {"raw": res.stdout[:500]}
-    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
-    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+    return _run_helper("admin_market.py", [sub, *args, BASE_DIR], timeout)
 
 
 def run_autoscaler(sub: str, *args: str, timeout: int = 30) -> dict:
     """Run scripts/admin_autoscaler.py <sub> <BASE_DIR> [args] out-of-process.
     Returns {ok, data, ...} where `data` is the script's parsed JSON output. The
     tick/status subcommands reach mock-k8s + server-status, so keep it timeout-bounded."""
-    res = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS_DIR, "admin_autoscaler.py"), sub, BASE_DIR, *args],
-        capture_output=True, text=True, timeout=timeout)
-    try:
-        data = json.loads(res.stdout) if res.stdout.strip() else {}
-    except json.JSONDecodeError:
-        data = {"raw": res.stdout[:500]}
-    ok = res.returncode == 0 and (data.get("ok", True) if isinstance(data, dict) else True)
-    return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
+    return _run_helper("admin_autoscaler.py", [sub, BASE_DIR, *args], timeout)
 
 
 # CA-pinned mock-k8s transport — defined in admin_instances.py, re-exported so the
@@ -551,14 +621,18 @@ def write_setting(st: dict, value) -> None:
     path = INI_FILES.get(st.get("file") or "")
     if not path or not os.path.isfile(path):
         raise ValueError(f"target INI sink {st.get('file')!r} is missing")
-    text = _read_ini_text(path) or ""
-    section = st.get("section")
-    if section is None:
-        new = admin_ini_merge.upsert_flat(text, st["key"], rendered)
-    else:
-        new = admin_ini_merge.upsert_keyed(text, section, st["key"], rendered)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(new)
+    # Read-modify-write of a file two operators can be editing at once —
+    # take COMMAND_LOCK so the second save can't be computed from the text
+    # the first one is already replacing.
+    with COMMAND_LOCK:
+        text = _read_ini_text(path) or ""
+        section = st.get("section")
+        if section is None:
+            new = admin_ini_merge.upsert_flat(text, st["key"], rendered)
+        else:
+            new = admin_ini_merge.upsert_keyed(text, section, st["key"], rendered)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
 
 
 # --------------------------------------------------------------------------
@@ -782,8 +856,20 @@ USAGE_PLAIN = (
 )
 
 
+# C0/C1 control characters and DEL. The request line reaches the log
+# verbatim, so a probe can otherwise plant terminal escape sequences in
+# admin-http.log — which the operator reads with tail, and the SPA's log
+# viewer renders. Printable Unicode is left alone (player names in URLs).
+_LOG_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "DuneAdminHTTP/1.1"
+
+    # socketserver.StreamRequestHandler applies this to the connection.
+    # Without it a peer that connects and then says nothing owns its
+    # worker until the container restarts (issue #89).
+    timeout = CONNECTION_TIMEOUT_SECONDS
 
     # ------ low-level write helpers --------------------------------------
     def _cors_headers(self) -> None:
@@ -865,7 +951,26 @@ class Handler(BaseHTTPRequestHandler):
             )
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        log(f"{self.command} {self.path} -> {format % args}")
+        """Every log line the base class emits funnels through here —
+        including log_error() from inside send_error(), which runs BEFORE
+        the response is written.
+
+        So this must not raise. `command` and `path` only exist once
+        parse_request() has accepted the request line; a malformed one
+        (scanner junk, a TLS ClientHello onto the plaintext port, a read
+        timeout) reaches send_error() while they are still unset, and
+        dereferencing them there aborted the 400 the client should have
+        received and dumped a traceback into admin-http.log for every
+        probe. Hence getattr fallbacks, a guarded %-format, and the peer
+        address so the operator can see who is knocking."""
+        command = getattr(self, "command", None) or "-"
+        path = getattr(self, "path", None) or "-"
+        peer = self.client_address[0] if getattr(self, "client_address", None) else "-"
+        try:
+            detail = format % args
+        except (TypeError, ValueError):
+            detail = f"{format} {args}"
+        log(_LOG_CONTROL_CHARS.sub("?", f"{peer} {command} {path} -> {detail}"))
 
     # ------ auth ---------------------------------------------------------
     def _bearer(self) -> str:
@@ -950,31 +1055,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.client_address[0]
         except (AttributeError, IndexError):
             return "unknown"
-
-    def _login_rate_limited(self, ip: str) -> int:
-        """Return Retry-After seconds if the IP is over its login quota,
-        else 0. Drops attempts older than LOGIN_WINDOW_SECONDS from the
-        bucket first so the window slides correctly."""
-        now = time.time()
-        bucket = LOGIN_ATTEMPTS.get(ip)
-        if not bucket:
-            return 0
-        cutoff = now - LOGIN_WINDOW_SECONDS
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if not bucket:
-            # Bucket is empty after pruning — clear the dict entry so
-            # we don't leak memory on transient IPs.
-            LOGIN_ATTEMPTS.pop(ip, None)
-            return 0
-        if len(bucket) < LOGIN_MAX_ATTEMPTS:
-            return 0
-        # Bucket is full and oldest entry is still within window: throttled.
-        retry_after = int(bucket[0] + LOGIN_WINDOW_SECONDS - now) + 1
-        return max(retry_after, 1)
-
-    def _record_login_failure(self, ip: str) -> None:
-        LOGIN_ATTEMPTS[ip].append(time.time())
 
     def _cookie_flags(self) -> str:
         """Cookie attribute string shared by session + csrf cookies."""
@@ -2636,7 +2716,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(503, {"error": "DUNE_ADMIN_UI_PASSWORD not set on the server"})
                 return
             client_ip = self._client_ip()
-            retry_after = self._login_rate_limited(client_ip)
+            # Charges the attempt before checking the password, so a burst
+            # of parallel guesses can't all slip through on the same
+            # pre-burst bucket reading. A correct password refunds it.
+            retry_after = login_attempt_gate(client_ip)
             if retry_after:
                 log(f"WARN login rate-limited for {client_ip} (retry_after={retry_after}s)")
                 self._write(
@@ -2650,19 +2733,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             supplied = str(body.get("password", ""))
             if not hmac.compare_digest(supplied, UI_PASSWORD):
-                self._record_login_failure(client_ip)
                 # Small fixed delay to slow down brute-force guessing.
                 time.sleep(0.3)
                 log(
                     f"WARN failed login from {client_ip} "
-                    f"({len(LOGIN_ATTEMPTS.get(client_ip, ()))}/{LOGIN_MAX_ATTEMPTS} in window)"
+                    f"({login_attempts_in_window(client_ip)}/{LOGIN_MAX_ATTEMPTS} in window)"
                 )
                 self._write(401, {"error": "invalid password"})
                 return
-            # Successful login — clear any prior failure history for this
-            # IP so a legitimate operator who fat-fingered a few times
-            # isn't punished for the next 15 minutes.
-            LOGIN_ATTEMPTS.pop(client_ip, None)
+            # Successful login — refund this attempt and clear any prior
+            # failure history for this IP so a legitimate operator who
+            # fat-fingered a few times isn't punished for the next 15 minutes.
+            clear_login_attempts(client_ip)
             token, csrf = issue_session_token()
             self._write(
                 200,
@@ -2747,9 +2829,63 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # --------------------------------------------------------------------------
-# Main.
+# Listener.
 # --------------------------------------------------------------------------
 _LOOPBACK_ADDRS = {"127.0.0.1", "::1", "localhost"}
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threaded so that one slow or silent peer cannot stall the panel for
+    everyone else, capped so that a flood of them cannot spawn threads
+    without bound. Excess connections are closed immediately — a scanner
+    gets a dropped socket, and the operator's next click still lands."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, server_address, handler_cls, bind_and_activate: bool = True,
+                 max_connections: int = MAX_CONNECTIONS) -> None:
+        super().__init__(server_address, handler_cls, bind_and_activate)
+        self.max_connections = max_connections
+        self._slots = threading.BoundedSemaphore(max_connections)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._slots.acquire(blocking=False):
+            log(
+                f"WARN refused connection from {client_address[0]} — "
+                f"{self.max_connections} concurrent connections already in flight"
+            )
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            # The worker thread never started, so it will never release.
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def handle_error(self, request, client_address) -> None:
+        """A peer hanging up mid-response is routine on a public bind, not
+        a defect — a scanner does it on every probe. Log one line for those
+        and keep the full traceback for anything that is actually our bug,
+        so admin-http.log stays readable enough to spot the real one."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            log(f"connection from {client_address[0]} dropped: {type(exc).__name__}")
+            return
+        super().handle_error(request, client_address)
+
+
+def build_server(address: tuple[str, int] | None = None, **kwargs) -> BoundedThreadingHTTPServer:
+    """Single construction point for the listener, so tests exercise the
+    same wiring production runs."""
+    return BoundedThreadingHTTPServer(address or (LISTEN_ADDR, LISTEN_PORT), Handler, **kwargs)
 
 
 def main() -> None:
@@ -2792,11 +2928,12 @@ def main() -> None:
         log(f"  domain  : {UI_DOMAIN or '(none — using IP+port directly)'}")
         log(f"  data    : vehicles={len(_DATA['vehicles'])} items={len(_DATA['items'])} skills={len(_DATA['skills'])}")
         log(f"  steam   : {'STEAM_API_KEY set — persona lookups enabled' if STEAM_API_KEY else 'STEAM_API_KEY blank — persona lookups disabled'}")
-        log(f"  ratelim : {LOGIN_MAX_ATTEMPTS} failed /api/login per {LOGIN_WINDOW_SECONDS}s per-IP")
+        log(f"  ratelim : {LOGIN_MAX_ATTEMPTS} /api/login attempts per {LOGIN_WINDOW_SECONDS}s per-IP")
         log(f"  revoked : {len(REVOCATIONS)} session token(s) on the revocation list")
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")
-    HTTPServer((LISTEN_ADDR, LISTEN_PORT), Handler).serve_forever()
+    log(f"  sockets : {MAX_CONNECTIONS} concurrent max, {CONNECTION_TIMEOUT_SECONDS:g}s per-connection timeout")
+    build_server().serve_forever()
 
 
 if __name__ == "__main__":
