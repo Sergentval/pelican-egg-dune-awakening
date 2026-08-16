@@ -90,6 +90,34 @@ source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
 before the password is checked and refunded when it turns out to be
 correct, so parallel guesses cannot overrun the quota.
 
+#### The command audit survives restarts
+
+`GET /api/history` — the **Command audit** view in the Events tab — is
+persisted to `server/state/admin-history.db`, not held in memory. That
+matters because the panel restarts with the server: the scheduler's
+unattended restart, `panel restart`, a reinstall. The trail you want
+precisely when something went wrong used to be the first thing lost.
+
+`server/state/` is also what a reinstall does not touch, so the audit
+survives an egg update along with your world and database.
+
+Two things shape what you see there:
+
+- **Read-only traffic is not recorded.** The Live Map polls
+  `/api/map/markers` every 4 seconds, and every poll used to land in the
+  buffer — 200 slots of `map-markers` evicted every real action inside a
+  quarter of an hour. Queries (`players`, `db-sample`, `db-sql`, status
+  reads…) are skipped; anything that changes the world is kept, including
+  subcommands added later, which are recorded unless deliberately
+  classified as read-only.
+- **Each boot is an entry.** A restart reads as `(admin panel started)`
+  in the trail rather than as an unexplained gap in it.
+
+Retention is the newest 500 entries, and each entry's stdout/stderr is
+clipped so a database dump cannot bloat the file. Scheduler-driven
+actions run `admin-publish.sh` directly rather than through the panel, so
+they appear in the Scheduler tab's own run history instead.
+
 #### Serving without TLS: `DUNE_ADMIN_UI_TLS`
 
 The session cookies carry `Secure` when the panel believes TLS terminates
