@@ -84,8 +84,23 @@ class TestSettingsSchema(unittest.TestCase):
                 self.assertFalse(s.get("env"),
                                  f"{s['id']} advanced struct/array must not be env/boot-applied")
 
+    def test_every_env_is_a_real_egg_variable(self):
+        """A setting's `env` is what apply-config.sh reapplies at boot and
+        what /api/settings pins so a restart stops reverting the change.
+        An `env` with no matching egg variable is therefore a setting the
+        operator can never set — the panel would answer HTTP 400, "the
+        environment variable you are trying to edit does not exist". Both
+        eggs must carry it, since they are shipped as one variable set."""
+        for egg_name in ("egg-dune-awakening.json", "egg-dune-awakening-pterodactyl.json"):
+            with open(os.path.join(ROOT, egg_name), encoding="utf-8") as f:
+                egg_vars = {v["env_variable"] for v in json.load(f)["variables"]}
+            for s in self.settings:
+                if s.get("env"):
+                    self.assertIn(s["env"], egg_vars,
+                                  f"{s['id']} declares env {s['env']} but {egg_name} has no such variable")
+
     def test_catalogue_size(self):
-        # 51 original (24 env + 27 cvar) + 144 verified UClass knobs
+        # 51 original (25 env + 26 cvar) + 144 verified UClass knobs
         self.assertEqual(len(self.settings), 195)
         # the 144 API-managed UClass knobs sink to UserOverrides, no env var
         uclass = [s for s in self.settings if s["file"] == "UserOverrides"]
