@@ -598,8 +598,20 @@ def run_tick(base, ledger, now=None, cfg=None):
                       f"{int(overdue)}s overdue, too stale to act on")
             ledger.record("restart", "skipped", detail)
             return [("restart", False, detail)]
+        # Record the attempt BEFORE the call, for the same reason the state
+        # is cleared before it: this process rarely outlives the restart it
+        # asks for, so a row written afterwards usually never lands. Without
+        # this the run history shows a restart being armed and announced and
+        # then simply stops, which reads as though it never happened.
+        #
+        # Logged as "ok" deliberately: anything else renders as a red error
+        # pill in the Scheduler tab, and a restart that worked must not look
+        # like a failure. A failure adds its own row below, which does land
+        # precisely because the container is then still up.
+        ledger.record("restart", "ok", f"triggered; armed for {_iso(pend)}")
         ok, detail = pelican_restart()
-        ledger.record("restart", "ok" if ok else "error", detail)
+        if not ok:
+            ledger.record("restart", "error", detail)
         return [("restart", ok, detail)]  # container is restarting — stop here
 
     # 2) arm from the recurring schedule, if a slot is due
