@@ -498,6 +498,60 @@ class TestQuietThenWarn(unittest.TestCase):
         self.assertEqual(led.get_state(sch.PENDING_KEY), sch._iso(WED_0830 + timedelta(seconds=300)))
 
 
+class TestRestartFiresAtMostOnce(unittest.TestCase):
+    """The restart call kills the process that is supposed to clean up
+    after it. Clearing the intent afterwards produced four restarts in 78
+    seconds on a live server: each boot read a still-armed, past-due
+    restart and fired again."""
+
+    def setUp(self):
+        self._orig = (sch.pelican_restart, sch.restart_configured)
+        self.fired = []
+        sch.restart_configured = lambda: True
+        sch.pelican_restart = lambda: (self.fired.append(1) or (True, "power restart HTTP 204"))
+
+    def tearDown(self):
+        sch.pelican_restart, sch.restart_configured = self._orig
+
+    QUIET = {"restart": {"enabled": False}, "backup": {"enabled": False}}
+
+    def test_intent_is_consumed_before_the_call(self):
+        """If the process dies inside pelican_restart(), the state must
+        already be gone — so the next boot does not fire again."""
+        led = mem_ledger()
+        seen = {}
+        sch.pelican_restart = lambda: (
+            seen.update(pending=led.get_state(sch.PENDING_KEY)) or (True, "ok"))
+        sch.arm_restart(led, WED_0830, 60, 60)
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        self.assertIsNone(seen["pending"], "state still armed while the restart was being fired")
+
+    def test_a_crashed_tick_cannot_loop(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830, 60, 60)
+        # First tick fires; the process would then die mid-restart.
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        self.assertEqual(len(self.fired), 1)
+        # The container comes back a minute later and ticks again.
+        sch.run_tick("/b", led, now=WED_0830 + timedelta(minutes=1), cfg=self.QUIET)
+        self.assertEqual(len(self.fired), 1, "fired a second time — this is the loop")
+
+    def test_a_stale_intent_is_discarded_not_acted_on(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830, 60, 60)
+        acts = sch.run_tick("/b", led, now=WED_0830 + timedelta(hours=2), cfg=self.QUIET)
+        self.assertEqual(self.fired, [], "restarted the server on a two-hour-old intent")
+        self.assertEqual(acts[0][0], "restart")
+        self.assertIn("too stale", acts[0][2])
+        self.assertIsNone(led.get_state(sch.PENDING_KEY))
+
+    def test_a_normally_late_tick_still_restarts(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830, 60, 60)
+        sch.run_tick("/b", led, now=WED_0830 + timedelta(seconds=45), cfg=self.QUIET)
+        self.assertEqual(len(self.fired), 1, "a normally-late tick must still restart")
+
+
 class TestCancelRestart(unittest.TestCase):
     def setUp(self):
         self.calls = []
