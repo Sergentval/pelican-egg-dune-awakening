@@ -526,17 +526,62 @@ def _open_power_conn(scheme, host, port, resolve_ip, timeout):
     return http.client.HTTPConnection(resolve_ip or host, port=port, timeout=timeout)
 
 
+def _clean_setting(raw):
+    """Panel variables arrive as typed/pasted. Strip surrounding whitespace
+    and quotes: a value wrapped in quotes reaches the API as part of the
+    credential and comes back 401, which reads as "my key is wrong"."""
+    value = (raw or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value
+
+
+# Header values cannot contain control characters. A key pasted with a
+# trailing newline used to raise ValueError out of conn.request() — which
+# nothing caught, and whose message quotes the whole Authorization header,
+# so the API key landed in logs/scheduler.log in cleartext (readable from
+# the panel file manager and rendered by the log viewer).
+_HEADER_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _restart_hint(code):
+    """What an operator should actually check, per status. Measured against
+    a live Pelican panel rather than guessed — the codes are not
+    interchangeable and each points somewhere different."""
+    if code == 401:
+        return ("the panel rejected the credential: DUNE_PELICAN_CLIENT_KEY is not a valid "
+                "client key. Check it was not truncated or revoked, and that you pasted the "
+                "key itself rather than its description")
+    if code == 403:
+        return ("authenticated, but that key may not act on this server — an Application "
+                "(admin) API key cannot drive the client API. Create an Account API key "
+                "from the panel user that owns the server")
+    if code == 404:
+        return ("the credential is fine but the panel has no such server: check "
+                "DUNE_PELICAN_SERVER_ID (the short id from the server's URL)")
+    if code == 409:
+        return "the panel refused the power action — the server is probably already restarting"
+    if code == 422:
+        return "the panel rejected the request body — report this, the egg built it wrong"
+    return ""
+
+
 def pelican_restart():
     """POST the Pelican client-API power:restart. Needs DUNE_PELICAN_URL +
     DUNE_PELICAN_CLIENT_KEY + DUNE_PELICAN_SERVER_ID env. Optional
     DUNE_PELICAN_RESOLVE pins the TCP target to a given IP (curl --resolve
     style) so an in-container restart can bypass a CDN in front of the panel."""
-    url = os.environ.get("DUNE_PELICAN_URL", "").rstrip("/")
-    key = os.environ.get("DUNE_PELICAN_CLIENT_KEY", "")
-    sid = os.environ.get("DUNE_PELICAN_SERVER_ID", "")
+    url = _clean_setting(os.environ.get("DUNE_PELICAN_URL")).rstrip("/")
+    key = _clean_setting(os.environ.get("DUNE_PELICAN_CLIENT_KEY"))
+    sid = _clean_setting(os.environ.get("DUNE_PELICAN_SERVER_ID"))
     if not (url and key and sid):
         return False, "restart skipped: DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID} not set"
-    resolve_ip = os.environ.get("DUNE_PELICAN_RESOLVE", "").strip() or None
+    if _HEADER_UNSAFE.search(key):
+        # Deliberately does not echo the value: this message is printed
+        # into a log the operator's whole panel can read.
+        return False, ("restart failed: DUNE_PELICAN_CLIENT_KEY contains a control character "
+                       "(a stray newline from copy-paste?) — re-paste it as a single line")
+    resolve_ip = _clean_setting(os.environ.get("DUNE_PELICAN_RESOLVE")) or None
     scheme, host, port, path = _power_endpoint(url, sid)
     if not host:
         return False, "restart skipped: DUNE_PELICAN_URL has no host"
@@ -551,12 +596,23 @@ def pelican_restart():
         code = resp.status
         resp.read()
         via = f" via {resolve_ip}" if resolve_ip else ""
-        return 200 <= code < 300, f"power restart HTTP {code}{via}"
+        hint = _restart_hint(code)
+        detail = f"power restart HTTP {code}{via}"
+        return 200 <= code < 300, detail + (f" — {hint}" if hint else "")
+    except ValueError as e:
+        # Anything that made the request unbuildable. str(e) can quote the
+        # header, so it is never included.
+        return False, f"power restart failed to build the request ({type(e).__name__})"
     except (OSError, http.client.HTTPException, ssl.SSLError) as e:
-        return False, f"power restart error: {e}"[:200]
+        return False, _redact(f"power restart error: {e}", key)[:200]
     finally:
         if conn is not None:
             conn.close()
+
+
+def _redact(message, secret):
+    """Last line of defence: no path may put the API key into a log."""
+    return message.replace(secret, "<redacted>") if secret else message
 
 
 def run_tick(base, ledger, now=None, cfg=None):

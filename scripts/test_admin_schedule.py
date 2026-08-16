@@ -193,6 +193,114 @@ class TestResolvingConnection(unittest.TestCase):
         self.assertNotIsInstance(conn, http.client.HTTPSConnection)
 
 
+class TestSettingHygiene(unittest.TestCase):
+    """Panel variables are typed and pasted by hand."""
+
+    def test_strips_whitespace(self):
+        self.assertEqual(sch._clean_setting("  abc  "), "abc")
+
+    def test_strips_surrounding_quotes(self):
+        # Measured: a quoted key reaches the panel as part of the
+        # credential and comes back 401, which reads as "wrong key".
+        for raw in ('"abc"', "'abc'", '  "abc"  ', '"  abc  "'):
+            with self.subTest(raw=raw):
+                self.assertEqual(sch._clean_setting(raw), "abc")
+
+    def test_leaves_inner_quotes_alone(self):
+        self.assertEqual(sch._clean_setting('ab"cd'), 'ab"cd')
+
+    def test_handles_none_and_empty(self):
+        self.assertEqual(sch._clean_setting(None), "")
+        self.assertEqual(sch._clean_setting(""), "")
+        self.assertEqual(sch._clean_setting('""'), "")
+
+
+class TestRestartDiagnostics(unittest.TestCase):
+    """Each status points somewhere different; verified against a live panel."""
+
+    def test_401_points_at_the_credential(self):
+        self.assertIn("not a valid client key", sch._restart_hint(401))
+
+    def test_403_points_at_the_key_type(self):
+        hint = sch._restart_hint(403)
+        self.assertIn("Application", hint)
+        self.assertIn("Account API key", hint)
+
+    def test_404_points_at_the_server_id(self):
+        self.assertIn("DUNE_PELICAN_SERVER_ID", sch._restart_hint(404))
+
+    def test_success_codes_carry_no_hint(self):
+        for code in (200, 204):
+            self.assertEqual(sch._restart_hint(code), "")
+
+    def test_redact_removes_the_key(self):
+        msg = sch._redact("boom Bearer pacc_secret123 boom", "pacc_secret123")
+        self.assertNotIn("pacc_secret123", msg)
+        self.assertIn("<redacted>", msg)
+
+    def test_redact_is_a_noop_without_a_secret(self):
+        self.assertEqual(sch._redact("plain", ""), "plain")
+
+
+class TestKeyNeverReachesTheLog(unittest.TestCase):
+    """logs/scheduler.log is readable from the panel file manager and is
+    rendered by the admin UI's log viewer, so nothing here may echo the
+    credential. A key pasted with a trailing newline used to raise
+    ValueError whose message quotes the whole Authorization header, and
+    the scan-loop's `except Exception` printed it verbatim."""
+
+    KEY = "pacc_verysecretvalue0000"
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in
+                       ("DUNE_PELICAN_URL", "DUNE_PELICAN_CLIENT_KEY",
+                        "DUNE_PELICAN_SERVER_ID", "DUNE_PELICAN_RESOLVE")}
+        os.environ["DUNE_PELICAN_URL"] = "https://panel.example.com"
+        os.environ["DUNE_PELICAN_SERVER_ID"] = "abc12345"
+        os.environ.pop("DUNE_PELICAN_RESOLVE", None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_trailing_newline_no_longer_explodes(self):
+        """The original defect: this raised ValueError out of
+        conn.request(), uncaught, and the scan-loop printed a message
+        quoting the whole Authorization header. Stripping handles it now,
+        so the request proceeds normally."""
+        os.environ["DUNE_PELICAN_CLIENT_KEY"] = self.KEY + "\n"
+        ok, detail = sch.pelican_restart()   # must not raise
+        self.assertFalse(ok)                 # no such host — the network stage
+        self.assertNotIn("control character", detail)
+        self.assertNotIn(self.KEY, detail)
+
+    def test_embedded_control_character_is_refused_without_echoing_it(self):
+        # Only reachable in the middle of the value; strip() takes the ends.
+        for bad in (f"pacc_ab\ncd{self.KEY}", f"{self.KEY}\x1fmore", f"pa\x08cc{self.KEY}"):
+            with self.subTest(value=repr(bad)):
+                os.environ["DUNE_PELICAN_CLIENT_KEY"] = bad
+                ok, detail = sch.pelican_restart()
+                self.assertFalse(ok)
+                self.assertIn("control character", detail)
+                self.assertNotIn(self.KEY, detail)
+
+    def test_a_nul_byte_cannot_even_reach_us(self):
+        with self.assertRaises(ValueError):
+            os.environ["DUNE_PELICAN_CLIENT_KEY"] = self.KEY + "\x00"
+
+    def test_a_clean_key_is_not_refused_for_hygiene(self):
+        # Reaches the network stage and fails there (no such host), which
+        # is the point: hygiene must not reject a legitimate key.
+        os.environ["DUNE_PELICAN_CLIENT_KEY"] = f'  "{self.KEY}"  '
+        ok, detail = sch.pelican_restart()
+        self.assertFalse(ok)
+        self.assertNotIn("control character", detail)
+        self.assertNotIn(self.KEY, detail)
+
+
 class TestPelicanRestartSkips(unittest.TestCase):
     def setUp(self):
         self._saved = {k: os.environ.get(k) for k in
