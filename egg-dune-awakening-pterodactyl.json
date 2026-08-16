@@ -481,6 +481,16 @@
       "field_type": "text"
     },
     {
+      "name": "Admin Web UI — TLS In Front",
+      "description": "auto (default), on, or off. Decides whether the session cookies carry Secure. A browser DISCARDS a Secure cookie that arrives over plain HTTP, and the admin SPA authenticates by that cookie alone — so getting this wrong means /api/login returns 200 and you land back on the login screen with no error. auto: a proxy declared in DUNE_ADMIN_UI_TRUSTED_PROXIES decides via X-Forwarded-Proto, otherwise it falls back to assuming TLS whenever a domain is set and the bind is not loopback. off: the escape hatch when you have a domain but nothing terminating TLS — without it that combination has no working URL at all, since http drops the cookie and nothing serves https. on: force it. Note that off sends the session in the clear: fine on a trusted LAN, not fine on anything the internet can reach.",
+      "env_variable": "DUNE_ADMIN_UI_TLS",
+      "default_value": "auto",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:auto,on,off",
+      "field_type": "text"
+    },
+    {
       "name": "Admin Web UI — Trusted Proxies",
       "description": "Optional, but set it if a reverse proxy fronts the panel. Comma or space separated IPs/CIDRs that admin-http should believe X-Forwarded-For from (e.g. 10.99.0.1 or 172.20.0.0/16). Use the address the PROXY connects from — read it off any request line in logs/admin-http.log, which prints the peer. Leave this blank behind a proxy and every login arrives from that one address, so the 5-attempts-per-15-min limit becomes a single global bucket: five failures from anywhere on the internet lock YOU out for the window. Blank is safe and correct when clients reach the panel directly — the header is then ignored entirely, so nobody can forge a source IP. Only declared peers are believed, and the client is taken as the rightmost X-Forwarded-For entry that is not itself declared.",
       "env_variable": "DUNE_ADMIN_UI_TRUSTED_PROXIES",

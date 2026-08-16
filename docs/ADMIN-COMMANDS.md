@@ -90,6 +90,41 @@ source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
 before the password is checked and refunded when it turns out to be
 correct, so parallel guesses cannot overrun the quota.
 
+#### Serving without TLS: `DUNE_ADMIN_UI_TLS`
+
+The session cookies carry `Secure` when the panel believes TLS terminates
+in front of it. A browser **discards a `Secure` cookie arriving over plain
+HTTP**, and the SPA authenticates by that cookie alone — so if the panel
+gets that judgement wrong, `/api/login` answers `200` and you land back on
+the login screen with no error anywhere.
+
+`DUNE_ADMIN_UI_DOMAIN` used to decide it, which conflates the hostname
+browsers use (needed for CORS) with whether TLS is in front (needed for
+this flag). Those coincide behind a reverse proxy and diverge without one:
+point a DNS record straight at an exposed box, fill in the domain, and
+there was **no working URL at all** — `http://` dropped the cookie and
+nothing served `https://`.
+
+| Value | Effect |
+| --- | --- |
+| `auto` (default) | A declared proxy's `X-Forwarded-Proto` decides. With none declared, falls back to the old rule: `Secure` when a domain is set and the bind is not loopback. |
+| `on` | Always `Secure`. |
+| `off` | Never `Secure` — the escape hatch for "I have a domain and no TLS". |
+
+Explicit beats inferred: `on`/`off` override what a proxy reports. The
+boot log states the effective mode, and a login that cannot possibly stick
+is now called out by name:
+
+```text
+WARN login from 203.0.113.9 arrived over plain HTTP with no proxy in front, and
+DUNE_ADMIN_UI_DOMAIN is set — the browser WILL DISCARD the session cookie and the
+login will not stick. Serve the panel over https, or set DUNE_ADMIN_UI_TLS=off if
+this panel is genuinely plain HTTP.
+```
+
+`off` means the session token crosses the network in the clear. That is
+fine on a trusted LAN and not fine on anything the internet can reach.
+
 #### Behind a reverse proxy: declare it, or the rate limit is one bucket
 
 **If you serve the panel through a reverse proxy, set

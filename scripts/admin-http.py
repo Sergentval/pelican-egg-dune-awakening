@@ -400,6 +400,50 @@ def resolve_client_ip(peer: str, forwarded_for: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Should the session cookies carry `Secure`?
+#
+# This used to be inferred from DUNE_ADMIN_UI_DOMAIN, which conflates two
+# independent facts: the hostname browsers will use (needed for CORS) and
+# whether TLS terminates in front of us (needed for this flag). They
+# coincide behind a reverse proxy and diverge without one: an operator who
+# points a DNS record straight at an exposed box and fills in the domain
+# got a Secure cookie over plain HTTP, which the browser discards on
+# arrival — /api/login answers 200, the SPA authenticates purely by that
+# cookie, and the login screen simply reappears with no error. There was
+# no working URL at all in that state: http:// drops the cookie and
+# nothing serves https://.
+#
+# admin-http never speaks TLS itself, so the only truthful signals are an
+# explicit operator statement or a declared proxy reporting the scheme.
+# In precedence order:
+#
+#   1. DUNE_ADMIN_UI_TLS=on|off — explicit beats inferred, always.
+#   2. X-Forwarded-Proto from a proxy the operator declared.
+#   3. The old heuristic (domain set + non-loopback bind), so a
+#      deployment that works today does not silently lose Secure.
+# --------------------------------------------------------------------------
+_UI_TLS_RAW = os.environ.get("DUNE_ADMIN_UI_TLS", "auto").strip().lower() or "auto"
+if _UI_TLS_RAW not in ("auto", "on", "off"):
+    log(f"WARN DUNE_ADMIN_UI_TLS={_UI_TLS_RAW!r} is not auto/on/off — using auto")
+    _UI_TLS_RAW = "auto"
+UI_TLS = _UI_TLS_RAW
+
+
+def cookie_secure(forwarded_proto: str = "") -> bool:
+    """`forwarded_proto` is the scheme a DECLARED proxy reported, or ""
+    when nobody trustworthy said anything."""
+    if UI_TLS == "on":
+        return True
+    if UI_TLS == "off":
+        return False
+    if forwarded_proto == "https":
+        return True
+    if forwarded_proto == "http":
+        return False
+    return bool(UI_DOMAIN) and LISTEN_ADDR not in _LOOPBACK_ADDRS
+
+
+# --------------------------------------------------------------------------
 # Login rate-limit gate. One atomic check-and-consume rather than the
 # separate "am I over quota?" / "record a failure" pair it replaced: the
 # listener is threaded now, and a burst of concurrent guesses all read the
@@ -1123,15 +1167,57 @@ class Handler(BaseHTTPRequestHandler):
             return "unknown"
         return resolve_client_ip(peer, self.headers.get("X-Forwarded-For", ""))
 
+    def _forwarded_proto(self) -> str:
+        """The scheme a DECLARED proxy says the browser used, or "" when
+        nobody we trust has told us. An undeclared peer's header is
+        ignored for the same reason its X-Forwarded-For is."""
+        try:
+            peer = self.client_address[0]
+        except (AttributeError, IndexError):
+            return ""
+        if not _is_trusted_proxy(peer):
+            return ""
+        proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        return proto if proto in ("http", "https") else ""
+
+    def _cookie_secure(self) -> bool:
+        return cookie_secure(self._forwarded_proto())
+
+    def _has_forwarding_headers(self) -> bool:
+        """Whether SOMETHING proxied this request. Used only to tell an
+        undeclared-proxy deployment apart from a browser talking to us
+        directly — the difference between 'declare your proxy' and 'this
+        login cannot possibly work'."""
+        return any(self.headers.get(h) for h in
+                   ("X-Forwarded-Proto", "X-Forwarded-For", "X-Forwarded-Host", "Forwarded"))
+
+    def _warn_if_cookie_will_be_dropped(self) -> None:
+        """A Secure cookie handed to a browser that reached us over plain
+        HTTP is discarded on arrival: /api/login answers 200, the SPA
+        never sees a session, and the operator bounces back to the login
+        screen with no error anywhere. Say so, since the failure is
+        otherwise completely silent."""
+        if not self._cookie_secure() or self._forwarded_proto() == "https":
+            return
+        peer = self._client_ip()
+        if self._has_forwarding_headers():
+            log(f"WARN login from {peer}: issuing a Secure cookie, but no declared proxy "
+                "vouched for https. If a reverse proxy fronts this panel, add its address "
+                "to DUNE_ADMIN_UI_TRUSTED_PROXIES so the scheme can be trusted.")
+        else:
+            log(f"WARN login from {peer} arrived over plain HTTP with no proxy in front, "
+                "and DUNE_ADMIN_UI_DOMAIN is set — the browser WILL DISCARD the session "
+                "cookie and the login will not stick. Serve the panel over https, or set "
+                "DUNE_ADMIN_UI_TLS=off if this panel is genuinely plain HTTP.")
+
     def _cookie_flags(self) -> str:
         """Cookie attribute string shared by session + csrf cookies."""
-        secure = UI_DOMAIN and LISTEN_ADDR not in _LOOPBACK_ADDRS
         bits = [
             "Path=/",
             f"Max-Age={SESSION_TTL_SECONDS}",
             "SameSite=Strict",
         ]
-        if secure:
+        if self._cookie_secure():
             bits.append("Secure")
         return "; ".join(bits)
 
@@ -1144,10 +1230,11 @@ class Handler(BaseHTTPRequestHandler):
         ]
 
     def _clear_session_cookies(self) -> list[tuple[str, str]]:
-        """Set-Cookie headers that expire the session + csrf cookies."""
-        secure = UI_DOMAIN and LISTEN_ADDR not in _LOOPBACK_ADDRS
+        """Set-Cookie headers that expire the session + csrf cookies. The
+        attributes must match the ones the cookie was set with or the
+        browser keeps the original and logout does nothing."""
         bits = ["Path=/", "Max-Age=0", "SameSite=Strict"]
-        if secure:
+        if self._cookie_secure():
             bits.append("Secure")
         common = "; ".join(bits)
         return [
@@ -2812,6 +2899,10 @@ class Handler(BaseHTTPRequestHandler):
             # failure history for this IP so a legitimate operator who
             # fat-fingered a few times isn't punished for the next 15 minutes.
             clear_login_attempts(client_ip)
+            # The password was right; if the cookie is about to be thrown
+            # away by the browser, this is the only place anyone will ever
+            # hear about it.
+            self._warn_if_cookie_will_be_dropped()
             token, csrf = issue_session_token()
             self._write(
                 200,
@@ -3002,6 +3093,14 @@ def main() -> None:
             log("  proxies : none declared — bucketing on the socket peer "
                 "(behind a reverse proxy that is ONE bucket for everyone; "
                 "set DUNE_ADMIN_UI_TRUSTED_PROXIES)")
+        if UI_TLS == "auto":
+            fallback = "Secure" if cookie_secure() else "not Secure"
+            log(f"  cookies : TLS=auto — {fallback} unless a declared proxy reports otherwise"
+                + ("" if TRUSTED_PROXIES else "; nothing declared, so this is a guess from "
+                   "DUNE_ADMIN_UI_DOMAIN. Set DUNE_ADMIN_UI_TLS=off if no TLS fronts this panel"))
+        else:
+            log(f"  cookies : TLS={UI_TLS} (explicit) — session cookies "
+                f"{'are' if cookie_secure() else 'are NOT'} marked Secure")
         log(f"  revoked : {len(REVOCATIONS)} session token(s) on the revocation list")
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")
