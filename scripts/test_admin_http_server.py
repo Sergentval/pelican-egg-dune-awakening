@@ -352,6 +352,83 @@ class ClientIPResolution(unittest.TestCase):
         )
 
 
+class CookieSecureDecision(unittest.TestCase):
+    """Whether session cookies get `Secure`, per hosting topology.
+
+    Wrong in one direction the cookie crosses plain HTTP; wrong in the
+    other the browser discards it on arrival and the login silently never
+    sticks — with no working URL at all, since nothing serves https.
+    """
+
+    def configure(self, *, tls="auto", domain="", listen="0.0.0.0") -> None:
+        for name, value in (("UI_TLS", tls), ("UI_DOMAIN", domain), ("LISTEN_ADDR", listen)):
+            original = getattr(admin_http, name)
+            setattr(admin_http, name, value)
+            self.addCleanup(setattr, admin_http, name, original)
+
+    # --- the topology that was broken ----------------------------------
+    def test_direct_hosting_with_a_domain_and_no_tls(self) -> None:
+        # Operator points a DNS record at an exposed box and fills in the
+        # domain. Nothing terminates TLS. Before DUNE_ADMIN_UI_TLS there
+        # was no way to express this and the login could not be completed.
+        self.configure(tls="off", domain="dune.example.com")
+        self.assertFalse(admin_http.cookie_secure())
+
+    def test_that_topology_without_the_escape_hatch_still_breaks(self) -> None:
+        # Documents precisely what `auto` cannot know on its own.
+        self.configure(tls="auto", domain="dune.example.com")
+        self.assertTrue(admin_http.cookie_secure())
+
+    # --- explicit beats inferred ----------------------------------------
+    def test_explicit_on_overrides_everything(self) -> None:
+        self.configure(tls="on", domain="", listen="127.0.0.1")
+        self.assertTrue(admin_http.cookie_secure())
+        self.assertTrue(admin_http.cookie_secure("http"))
+
+    def test_explicit_off_overrides_a_proxy_claiming_https(self) -> None:
+        self.configure(tls="off", domain="dune.example.com")
+        self.assertFalse(admin_http.cookie_secure("https"))
+
+    # --- auto, informed by a declared proxy ------------------------------
+    def test_declared_proxy_reporting_https(self) -> None:
+        self.configure(tls="auto", domain="", listen="0.0.0.0")
+        self.assertTrue(admin_http.cookie_secure("https"),
+                        "a trusted proxy saying https must win over an unset domain")
+
+    def test_declared_proxy_reporting_http(self) -> None:
+        self.configure(tls="auto", domain="dune.example.com")
+        self.assertFalse(admin_http.cookie_secure("http"),
+                         "a trusted proxy saying http is better evidence than the domain guess")
+
+    # --- auto, no information: the historical heuristic -------------------
+    def test_fallback_matches_previous_behaviour(self) -> None:
+        for domain, listen, expected in (
+            ("dune.example.com", "0.0.0.0", True),
+            ("dune.example.com", "127.0.0.1", False),
+            ("", "0.0.0.0", False),
+            ("", "127.0.0.1", False),
+        ):
+            with self.subTest(domain=domain, listen=listen):
+                self.configure(tls="auto", domain=domain, listen=listen)
+                self.assertEqual(admin_http.cookie_secure(), expected)
+
+    def test_set_and_clear_cookies_agree(self) -> None:
+        # A logout whose attributes differ from the login's leaves the
+        # original cookie in place, so the two must be decided identically.
+        handler = admin_http.Handler.__new__(admin_http.Handler)
+        handler.client_address = ("198.51.100.9", 1234)
+        handler.headers = {}
+        for tls in ("on", "off"):
+            with self.subTest(tls=tls):
+                self.configure(tls=tls, domain="dune.example.com")
+                setters = handler._session_cookies("tok", "csrf")
+                clearers = handler._clear_session_cookies()
+                self.assertEqual(
+                    ["Secure" in v for _, v in setters],
+                    ["Secure" in v for _, v in clearers],
+                )
+
+
 class LoginGateAtomicity(unittest.TestCase):
     """The rate limiter is now reachable from many threads at once."""
 
