@@ -1,5 +1,18 @@
 # Attribution
 
+## acme-tiny (MIT) — ACME client core
+
+`scripts/admin_acme.py` derives its ACME plumbing from
+[acme-tiny](https://github.com/diafygi/acme-tiny) by Daniel Roesler, MIT
+licensed. Reused faithfully: JWS signing through the `openssl` CLI (the
+runtime has no Python asymmetric-crypto library), nonce handling with
+badNonce retry, and the order/finalize/download flow.
+
+Replaced: the challenge half. acme-tiny implements HTTP-01, which
+validates against port 80 — a Pelican server is allocated arbitrary high
+ports, so that is a dead end for most deployments. `admin_acme` implements
+DNS-01 instead, which needs no inbound port at all.
+
 ## CubeCoders Limited - AMP Dune Awakening template
 
 This Pelican egg adapts work originally published by **CubeCoders Limited**

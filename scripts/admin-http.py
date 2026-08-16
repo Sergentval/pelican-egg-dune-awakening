@@ -61,6 +61,7 @@ import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; 
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
+import admin_tls  # noqa: E402  # type: ignore[import-not-found]  (sys.path; direct TLS termination + hot reload)
 
 
 # --------------------------------------------------------------------------
@@ -430,6 +431,10 @@ def resolve_client_ip(peer: str, forwarded_for: str) -> str:
 #   3. The old heuristic (domain set + non-loopback bind), so a
 #      deployment that works today does not silently lose Secure.
 # --------------------------------------------------------------------------
+# Set by build_server() once it knows whether a usable certificate was found.
+# Not a config value: it states what the socket is actually doing.
+SERVING_TLS = False
+
 _UI_TLS_RAW = os.environ.get("DUNE_ADMIN_UI_TLS", "auto").strip().lower() or "auto"
 if _UI_TLS_RAW not in ("auto", "on", "off"):
     log(f"WARN DUNE_ADMIN_UI_TLS={_UI_TLS_RAW!r} is not auto/on/off — using auto")
@@ -440,6 +445,12 @@ UI_TLS = _UI_TLS_RAW
 def cookie_secure(forwarded_proto: str = "") -> bool:
     """`forwarded_proto` is the scheme a DECLARED proxy reported, or ""
     when nobody trustworthy said anything."""
+    # Serving TLS ourselves is not an inference: the browser reached us over
+    # https or it did not reach us at all. It therefore outranks even an
+    # explicit `off`, which would otherwise hand out a non-Secure cookie on
+    # a connection that is demonstrably encrypted.
+    if SERVING_TLS:
+        return True
     if UI_TLS == "on":
         return True
     if UI_TLS == "off":
@@ -3122,10 +3133,25 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def build_server(address: tuple[str, int] | None = None, **kwargs) -> BoundedThreadingHTTPServer:
+def build_server(address: tuple[str, int] | None = None, tls: bool = True,
+                 **kwargs) -> BoundedThreadingHTTPServer:
     """Single construction point for the listener, so tests exercise the
-    same wiring production runs."""
-    return BoundedThreadingHTTPServer(address or (LISTEN_ADDR, LISTEN_PORT), Handler, **kwargs)
+    same wiring production runs.
+
+    Serves TLS directly when a usable certificate is on disk — for the
+    operator with a domain and nothing in front of the panel, who
+    otherwise has no https:// to reach at all. `tls=False` is for tests
+    that want a plain socket regardless of what the host has lying around."""
+    global SERVING_TLS
+    srv = BoundedThreadingHTTPServer(address or (LISTEN_ADDR, LISTEN_PORT), Handler, **kwargs)
+    ctx = admin_tls.build_context(BASE_DIR, log=log) if tls else None
+    if ctx is not None:
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        SERVING_TLS = True
+        # Reload on renewal: automating renewal is pointless if it still
+        # needs someone to restart the panel afterwards.
+        admin_tls.watch(BASE_DIR, ctx, log=log)
+    return srv
 
 
 def main() -> None:
@@ -3189,11 +3215,21 @@ def main() -> None:
     log(f"  sockets : {MAX_CONNECTIONS} concurrent max, {CONNECTION_TIMEOUT_SECONDS:g}s per-connection timeout")
     _, carried = admin_history.recent(BASE_DIR, 1)
     log(f"  audit   : {carried} entr{'y' if carried == 1 else 'ies'} carried over from previous runs")
+    # Built before the TLS line is logged, because whether we terminate TLS
+    # is decided here and it is the one thing the operator must not have to
+    # guess about.
+    server = build_server()
+    if SERVING_TLS:
+        log(f"  tls     : {admin_tls.describe(BASE_DIR)}")
+    else:
+        cert, _ = admin_tls.cert_paths(BASE_DIR)
+        log(f"  tls     : plain HTTP — no certificate at {cert}"
+            f"{'; something in front must terminate TLS' if UI_DOMAIN else ''}")
     # Mark the boot in the trail itself: a restart should read as an event,
     # not as an unexplained gap between two commands.
     admin_history.note(BASE_DIR, "(admin panel started)",
-                       f"mode={mode} bind={LISTEN_ADDR}:{LISTEN_PORT}")
-    build_server().serve_forever()
+                       f"mode={mode} bind={LISTEN_ADDR}:{LISTEN_PORT} tls={'on' if SERVING_TLS else 'off'}")
+    server.serve_forever()
 
 
 if __name__ == "__main__":

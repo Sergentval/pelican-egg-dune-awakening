@@ -17,6 +17,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -569,6 +570,94 @@ def cancel_restart(base, ledger):
                 else f"disarmed, but the cancel broadcast failed: {(r.stderr or r.stdout).strip()[:200]}")
 
 
+# ACME renewal. Certificates last 90 days; renewing below 30 leaves four
+# weeks to notice a failure, which is the margin every ACME client uses.
+CERT_RENEW_BELOW_DAYS = int(os.environ.get("DUNE_ACME_RENEW_BELOW_DAYS", "30"))
+CERT_CHECK_EVERY_SECS = 12 * 3600
+_cert_run_lock = threading.Lock()
+
+
+def certificate_paths(base):
+    tls = os.path.join(base, "server", "state", "tls")
+    return (os.path.join(tls, "fullchain.pem"), os.path.join(tls, "privkey.pem"),
+            os.path.join(tls, "account.key"), os.path.join(tls, "panel.csr"))
+
+
+def certificate_due(base, last_check_iso, now=None):
+    """Should we look at the certificate on this tick?
+
+    True immediately when ACME is configured and there is no certificate at
+    all — a first boot should not wait twelve hours for HTTPS."""
+    if not (os.environ.get("DUNE_ACME_DNS_BACKEND") or "").strip():
+        return False
+    cert, _key, _acct, _csr = certificate_paths(base)
+    if not os.path.isfile(cert):
+        return True
+    last = _parse_iso(last_check_iso)
+    if last is None:
+        return True
+    return ((now or _now_dt()) - last).total_seconds() >= CERT_CHECK_EVERY_SECS
+
+
+def renew_certificate(base):
+    """Issue or renew, in the caller's thread. Returns (ok, detail).
+
+    Left importable and synchronous so it can be driven from the CLI; the
+    tick calls it on a thread because a DNS-01 order can take minutes and
+    blocking the loop that long would delay an armed restart past the
+    staleness guard, which would then discard it."""
+    import admin_acme
+    import admin_acme_dns
+    cert_path, key_path, account_path, csr_path = certificate_paths(base)
+    domain = (os.environ.get("DUNE_ACME_DOMAIN")
+              or os.environ.get("DUNE_ADMIN_UI_DOMAIN") or "").strip()
+    if not domain:
+        return False, ("no domain to certify: set DUNE_ADMIN_UI_DOMAIN "
+                       "(or DUNE_ACME_DOMAIN) to the hostname browsers use")
+    remaining = admin_acme.days_remaining(cert_path)
+    if remaining is not None and remaining > CERT_RENEW_BELOW_DAYS:
+        return True, f"certificate for {domain} still valid for {remaining} days"
+    try:
+        publisher = admin_acme_dns.from_env(base)
+        if publisher is None:
+            return False, "DUNE_ACME_DNS_BACKEND is not set"
+        os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+        admin_acme.generate_account_key(account_path)
+        admin_acme.generate_csr(key_path, domain, csr_path)
+        staging = (os.environ.get("DUNE_ACME_STAGING") or "").strip().lower() in ("1", "true", "yes", "on")
+        chain = admin_acme.issue(
+            domain, account_path, csr_path, publisher,
+            directory_url=admin_acme.STAGING_DIRECTORY if staging else admin_acme.DEFAULT_DIRECTORY,
+            contact=(os.environ.get("DUNE_ACME_EMAIL") or "").strip() or None,
+            log=lambda m: print(f"[scheduler] acme: {m}", flush=True))
+    except Exception as exc:  # noqa: BLE001 — every failure is the operator's to read
+        return False, f"certificate renewal failed: {exc}"[:400]
+    # Written last and atomically: admin-http watches this path and reloads
+    # on change, so a half-written file would be picked up mid-write.
+    tmp = cert_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(chain)
+    os.replace(tmp, cert_path)
+    note = " (STAGING — not trusted by browsers)" if staging else ""
+    return True, f"certificate issued for {domain}{note}"
+
+
+def _renew_in_background(base, ledger_path_str):
+    """One at a time, and never inside the tick."""
+    if not _cert_run_lock.acquire(blocking=False):
+        return
+    def work():
+        try:
+            ok, detail = renew_certificate(base)
+            led = SchedulerLedger(ledger_path_str)
+            led.record("certificate", "ok" if ok else "error", detail)
+            led.close()
+            print(f"[scheduler] certificate ok={ok} {detail}", flush=True)
+        finally:
+            _cert_run_lock.release()
+    threading.Thread(target=work, daemon=True, name="acme-renew").start()
+
+
 def run_tick(base, ledger, now=None, cfg=None):
     """One scheduler tick. Returns a list of (task, ok, detail) actions taken."""
     now = now or _now_dt()
@@ -651,6 +740,16 @@ def run_tick(base, ledger, now=None, cfg=None):
         ok, detail = run_backup(base)
         ledger.record("backup", "ok" if ok else "error", detail)
         actions.append(("backup", ok, detail))
+
+    # 3b) TLS certificate, if ACME is configured and it is time to look.
+    # Dispatched to a thread: a DNS-01 order waits on DNS propagation and can
+    # take minutes, and blocking the loop that long would push an armed
+    # restart past STALE_RESTART_SECS, where it would be discarded instead of
+    # fired. The thread records its own result.
+    if certificate_due(base, ledger.last("certificate"), now):
+        ledger.record("certificate", "skipped", "checking")
+        _renew_in_background(base, ledger_path(base))
+        actions.append(("certificate", True, "renewal check started"))
 
     # 4) generic scheduled tasks (broadcast, scale-instance, ...). One bad task
     # never kills the rest. Dedupe keys off last_settled (ok/skipped) so a
