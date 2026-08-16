@@ -391,6 +391,16 @@
       "field_type": "text"
     },
     {
+      "name": "Player Hard Cap",
+      "description": "Optional. Hard ceiling on players connected to the battlegroup (UE5 console variable Bgd.ServerPlayerHardCap). Leave blank to let the server use its own default and to keep the value editable from the admin panel alone — a blank variable is skipped at boot, so panel edits survive. Set it here and the value is reapplied on every boot, which is what you want if this is a setting you never intend to change from the panel.",
+      "env_variable": "DUNE_PLAYER_HARD_CAP",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|min:1|max:1000",
+      "field_type": "text"
+    },
+    {
       "name": "Deep Desert — Dimensional Partitions",
       "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely.",
       "env_variable": "DUNE_DD_DIMENSIONS",
