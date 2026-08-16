@@ -545,6 +545,39 @@ class TestRestartFiresAtMostOnce(unittest.TestCase):
         self.assertIn("too stale", acts[0][2])
         self.assertIsNone(led.get_state(sch.PENDING_KEY))
 
+    def test_the_trail_shows_the_restart_even_though_the_process_dies(self):
+        """The outcome row is written after a call that kills this process,
+        so it usually never lands. Without a row before the call the run
+        history stops at the announcement, as if nothing happened."""
+        led = mem_ledger()
+        rows = {}
+        sch.pelican_restart = lambda: (
+            rows.update(during=led.list_runs(10)) or (True, "power restart HTTP 204"))
+        sch.arm_restart(led, WED_0830, 60, 60)
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        trail = [(r["task"], r["status"]) for r in rows["during"]]
+        self.assertIn(("restart", "ok"), trail,
+                      "nothing in the trail at the moment the process can die")
+
+    def test_a_successful_restart_leaves_one_row_not_two(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830, 60, 60)
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        restarts = [r for r in led.list_runs(10) if r["task"] == "restart"]
+        self.assertEqual(len(restarts), 1)
+        self.assertEqual(restarts[0]["status"], "ok",
+                         "any other status renders as a red error pill in the panel")
+
+    def test_a_failed_restart_adds_a_visible_error_row(self):
+        led = mem_ledger()
+        sch.pelican_restart = lambda: (False, "power restart HTTP 401 — bad key")
+        sch.arm_restart(led, WED_0830, 60, 60)
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        restarts = [(r["status"], r["detail"]) for r in led.list_runs(10) if r["task"] == "restart"]
+        self.assertEqual(len(restarts), 2)
+        self.assertEqual(restarts[0][0], "error", "the failure must be the newest row")
+        self.assertIn("401", restarts[0][1])
+
     def test_a_normally_late_tick_still_restarts(self):
         led = mem_ledger()
         sch.arm_restart(led, WED_0830, 60, 60)
