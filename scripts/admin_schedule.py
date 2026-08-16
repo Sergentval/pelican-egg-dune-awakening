@@ -40,6 +40,10 @@ PENDING_KEY = "pending_restart_at"
 # silence until the warning window opens. See arm_restart().
 PENDING_WARN_KEY = "pending_warn_at"
 PENDING_WARN_SPEC = "pending_warn_spec"
+# A pending restart older than this is treated as debris (a crash, a clock
+# jump) and discarded rather than acted on. One tick is 30s; a container
+# that was down for an hour should not restart itself on the way up.
+STALE_RESTART_SECS = int(os.environ.get("DUNE_SCHEDULER_STALE_RESTART_SECS", "600"))
 
 # Generic scheduled-task framework (Phase 1). Tasks live in an array alongside
 # the special-cased restart/backup, each: {id, type, enabled, schedule, params}.
@@ -571,14 +575,31 @@ def run_tick(base, ledger, now=None, cfg=None):
     cfg = cfg or load_config(base)
     actions = []
 
-    # 1) fire a pending restart whose countdown has elapsed
+    # 1) fire a pending restart whose countdown has elapsed.
+    #
+    # CONSUME THE INTENT FIRST. The call below asks the panel to restart
+    # this very container, and Wings has been observed completing that in
+    # five seconds — so anything written afterwards may never land. Clearing
+    # after firing produced four restarts in 78 seconds on a live server:
+    # each new boot read a still-armed, past-due restart and fired again.
+    # At-most-once is the only safe semantics for an action this
+    # destructive; losing one restart is recoverable, a loop is not.
     pend = _parse_iso(ledger.get_state(PENDING_KEY))
     if pend is not None and now >= pend:
-        ok, detail = pelican_restart()
-        ledger.record("restart", "ok" if ok else "error", detail)
+        overdue = (now - pend).total_seconds()
         ledger.clear_state(PENDING_KEY)
         ledger.clear_state(PENDING_WARN_KEY)
         ledger.clear_state(PENDING_WARN_SPEC)
+        if overdue > STALE_RESTART_SECS:
+            # Second line of defence: an intent this old is a leftover from
+            # a crash or a clock jump, not something anyone is waiting for.
+            # Restarting the server on it would be a surprise.
+            detail = (f"discarded a restart armed for {_iso(pend)} — "
+                      f"{int(overdue)}s overdue, too stale to act on")
+            ledger.record("restart", "skipped", detail)
+            return [("restart", False, detail)]
+        ok, detail = pelican_restart()
+        ledger.record("restart", "ok" if ok else "error", detail)
         return [("restart", ok, detail)]  # container is restarting — stop here
 
     # 2) arm from the recurring schedule, if a slot is due
