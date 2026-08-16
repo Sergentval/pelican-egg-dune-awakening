@@ -103,14 +103,51 @@ within a quarter of an hour.
 
 ### Exposing the panel
 
-The panel speaks plain HTTP and never terminates TLS itself. Two variables
-decide how it behaves behind a proxy — both optional, both safe left at
-their defaults, and the boot log states which mode is in effect:
+The panel serves plain HTTP by default, expecting something in front to
+terminate TLS — or it can terminate TLS itself, see **Automatic HTTPS**
+below. These variables decide how it behaves behind a proxy; both are
+optional, both are safe left at their defaults, and the boot log states
+which mode is in effect:
 
 | Variable | What it is for |
 |---|---|
 | `DUNE_ADMIN_UI_TLS` | `auto` (default), `on`, `off`. Session cookies carry `Secure` when TLS is believed to be in front. A browser **discards** a `Secure` cookie arriving over plain HTTP, so a domain pointed straight at an exposed box needs `off` — otherwise login answers 200 and the login screen simply comes back. |
 | `DUNE_ADMIN_UI_TRUSTED_PROXIES` | IPs/CIDRs whose `X-Forwarded-For` is believed. Without it every request behind a proxy arrives from the proxy, so the login rate limit becomes one global bucket and five failures from anywhere lock the operator out. |
+
+### Automatic HTTPS
+
+If nothing fronts the panel, it can obtain and renew its own Let's Encrypt
+certificate. Off unless `DUNE_ACME_DNS_BACKEND` is set; the certificate
+lands in `server/state/tls/` and is picked up **without a restart**.
+
+It uses **DNS-01**, and not by preference: HTTP-01 validates against port 80
+of your domain, and a panel allocates arbitrary high ports — a dead end for
+most servers. TLS-ALPN-01 has the same problem on 443. DNS-01 proves control
+by publishing a TXT record and needs no inbound port at all.
+
+The credential that writes that TXT is the whole security question, so all
+three shapes are supported and the choice is yours:
+
+| `DUNE_ACME_DNS_BACKEND` | The container can | Costs |
+| --- | --- | --- |
+| `acme-dns` + `DUNE_ACME_DNS_URL` (your own instance) | write **one TXT** in a throwaway zone, nothing else | one more service to run |
+| `acme-dns` (public instance, the default) | the same one TXT | a third party sees every validation |
+| `cloudflare` | **rewrite every record in the zone** — Cloudflare tokens cannot be scoped to a single record | nothing to set up |
+
+The first two rest on CNAME delegation, which Let's Encrypt supports: you
+create `_acme-challenge.<panel domain>  CNAME  <validation zone>` once, and
+the container never holds a credential for your real domain. The boot log
+prints the exact record to create.
+
+Set `DUNE_ACME_STAGING=1` while getting the delegation right — staging
+certificates are not browser-trusted, but a failed production order costs a
+rate-limit attempt. Set `DUNE_ACME_EMAIL` too: it is where Let's Encrypt
+sends expiry warnings, and without it a silently failed renewal is only
+noticed when the panel stops being reachable.
+
+A self-signed certificate is not an alternative. Browsers validate against
+their own trust store, so one produces `net::ERR_CERT_AUTHORITY_INVALID` and
+a full-page interstitial — nothing a server says can change that.
 
 The listener is threaded, capped (`DUNE_ADMIN_HTTP_MAX_CONNS`, default 64)
 and has a per-connection timeout (`DUNE_ADMIN_HTTP_TIMEOUT_SECS`, default
@@ -177,13 +214,13 @@ Protocol reverse-engineering credit:
 The egg has been running a production world end-to-end (real players,
 characters created, persistent save). The current code path:
 
-- `egg-dune-awakening.json` — **Pelican** egg (`PLCN_v1` format), 55 panel
+- `egg-dune-awakening.json` — **Pelican** egg (`PLCN_v1` format), 61 panel
   variables (FLS token + game-side tunables + infrastructure ports). Install
   script fetches our repo tarball from GitHub, no upstream race.
 - `egg-dune-awakening-pterodactyl.json` — same egg in **Pterodactyl**
   `PTDL_v2` format (pipe-string rules + `field_type`, single `startup`
   string). Import this one on Pterodactyl panels; the `PLCN_v1` file above
-  also imports on Pelican. Both expose the identical 55 variables.
+  also imports on Pelican. Both expose the identical 61 variables.
 - `docker/Dockerfile` — Debian Bookworm-slim runtime with required apt
   deps, tini as PID 1, K8s ServiceAccount mount declared as VOLUME.
   Published to
@@ -227,8 +264,11 @@ pelican-egg-dune-awakening/
     ├── admin_schedule.py        ← unattended restart/backup scheduler
     ├── admin_pelican.py         ← Pelican/Pterodactyl client-API access
     ├── admin_history.py         ← persisted command audit
-    ├── admin_*.py               ← 22 modules total, one per admin domain
-    ├── test_*.py                ← 25 suites, run with plain python3
+    ├── admin_tls.py             ← direct TLS termination + hot reload
+    ├── admin_acme.py            ← ACME DNS-01 client (derived from acme-tiny)
+    ├── admin_acme_dns.py        ← the three DNS backends
+    ├── admin_*.py               ← 25 modules total, one per admin domain
+    ├── test_*.py                ← 27 suites, run with plain python3
     └── templates/director.ini
 ```
 
