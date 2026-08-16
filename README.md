@@ -11,9 +11,10 @@ AMP product and published as MIT-licensed scripts at
 forked their scripts, ported the model to Pelican Wings, rewrote
 `mock-k8s-go` as an open-source Go binary (their original was closed and
 refused to run outside AMP), and added a panel-driven config-applier for
-22 game-side tunables (loot multipliers, sandstorms, sandworms, PvP zones,
-building limits, on-demand pool tuning). See [`ATTRIBUTION.md`](./ATTRIBUTION.md)
-for the full credit + license discussion.
+25 game-side tunables (loot multipliers, sandstorms, sandworms, PvP zones,
+building limits, player hard cap, on-demand pool tuning) on top of a
+195-setting catalogue driven from the admin UI. See
+[`ATTRIBUTION.md`](./ATTRIBUTION.md) for the full credit + license discussion.
 
 ## How it works
 
@@ -78,12 +79,44 @@ single click.</td>
 rarity filters, single grants, bundles and a new-player kit.</td>
 <td><b>Server settings</b> — 195 tunables mapped to their real INI keys, with
 Funcom's defaults shown. Values are written to the server INI and take effect
-on the next restart.</td>
+on the next restart. The 25 that are backed by a panel variable have that
+variable updated too, so the restart no longer reverts what you just changed.</td>
 </tr>
 </table>
 
 > Screenshots are from a freshly-booted battlegroup, which is why the player
 > lists are empty.
+
+**Scheduled restart** — pick a delay (presets from 5 min to 16 h, or type a
+value in seconds/minutes/hours), and the panel restarts the server through
+the Pelican/Pterodactyl power API when it runs out. The in-game countdown
+only starts a window you choose before the restart, so a restart hours away
+does not banner players the whole time — the game re-shows the notice every
+interval until the deadline, which at a 60-second interval over 8 hours is
+480 banners. The card shows how many players will actually see.
+
+**Command audit** — every admin action that changed something is kept in
+`server/state/admin-history.db`, so it survives a restart, a `panel restart`
+and an egg reinstall. Read-only polling is not recorded: the live map polls
+every 4 seconds, and that used to evict every real action from the buffer
+within a quarter of an hour.
+
+### Exposing the panel
+
+The panel speaks plain HTTP and never terminates TLS itself. Two variables
+decide how it behaves behind a proxy — both optional, both safe left at
+their defaults, and the boot log states which mode is in effect:
+
+| Variable | What it is for |
+|---|---|
+| `DUNE_ADMIN_UI_TLS` | `auto` (default), `on`, `off`. Session cookies carry `Secure` when TLS is believed to be in front. A browser **discards** a `Secure` cookie arriving over plain HTTP, so a domain pointed straight at an exposed box needs `off` — otherwise login answers 200 and the login screen simply comes back. |
+| `DUNE_ADMIN_UI_TRUSTED_PROXIES` | IPs/CIDRs whose `X-Forwarded-For` is believed. Without it every request behind a proxy arrives from the proxy, so the login rate limit becomes one global bucket and five failures from anywhere lock the operator out. |
+
+The listener is threaded, capped (`DUNE_ADMIN_HTTP_MAX_CONNS`, default 64)
+and has a per-connection timeout (`DUNE_ADMIN_HTTP_TIMEOUT_SECS`, default
+30). Before that, a single connection that opened and said nothing wedged
+the whole panel until the container was restarted — which is what internet
+scanners do to a `0.0.0.0` bind within hours.
 
 ## Admin commands
 
@@ -97,8 +130,19 @@ admin broadcast "Maintenance" "Restart in 5 min" 20 # server-wide banner
 admin give me AAR1_Spice 100                        # 'me' = single online account
 admin xp steam:76561198041278656 10000              # resolve from Steam id
 admin teleport DE0BCCAA2501BF22 101000 285000 4300  # canonical FLS id
-admin shutdown Restart 300 60                       # 5-min restart with countdown
+admin shutdown Restart 300 60                       # countdown banner — announces only
 ```
+
+`admin shutdown` **announces and nothing else** — it shows players a
+countdown banner but stops, restarts and shuts down nothing. To actually
+restart, use the panel's **Scheduled restart** card or the Scheduler tab;
+both arm a restart that calls the panel's power API when the countdown ends.
+
+The same console also takes `panel <status|restart|stop>`, which acts on the
+admin panel process rather than the game — useful if the panel becomes
+unreachable while the server is fine. The restart re-reads the password and
+session secret from `server/state/`, so browser sessions survive it, and no
+player is disconnected.
 
 In-game character names (`Sergentval`, etc.) cannot be used — Funcom
 stores them encrypted. Use the FLS id (from `admin players`),
@@ -133,13 +177,13 @@ Protocol reverse-engineering credit:
 The egg has been running a production world end-to-end (real players,
 characters created, persistent save). The current code path:
 
-- `egg-dune-awakening.json` — **Pelican** egg (`PLCN_v1` format), 52 panel
+- `egg-dune-awakening.json` — **Pelican** egg (`PLCN_v1` format), 55 panel
   variables (FLS token + game-side tunables + infrastructure ports). Install
   script fetches our repo tarball from GitHub, no upstream race.
 - `egg-dune-awakening-pterodactyl.json` — same egg in **Pterodactyl**
   `PTDL_v2` format (pipe-string rules + `field_type`, single `startup`
   string). Import this one on Pterodactyl panels; the `PLCN_v1` file above
-  also imports on Pelican. Both expose the identical 52 variables.
+  also imports on Pelican. Both expose the identical 55 variables.
 - `docker/Dockerfile` — Debian Bookworm-slim runtime with required apt
   deps, tini as PID 1, K8s ServiceAccount mount declared as VOLUME.
   Published to
@@ -172,11 +216,19 @@ pelican-egg-dune-awakening/
 │   ├── cmd/mock-k8s/main.go
 │   ├── go.mod, go.sum
 │   └── internal/...
+├── web/                         ← admin panel SPA (React + Vite)
+│   └── src/                     ← built into data/web/dist, served by admin-http
 └── scripts/                     ← vendored from CubeCoders, modified
     ├── UPSTREAM-README.md       ← historical CubeCoders README
     ├── pelican-entrypoint.sh    ← our foreground orchestrator
     ├── apply-config.sh          ← our panel-variable INI applier
-    ├── install.sh, console.sh, prestart.sh, lib.sh, ...  (14 .sh files)
+    ├── install.sh, console.sh, prestart.sh, lib.sh, ...  (27 .sh files)
+    ├── admin-http.py            ← admin API + SPA host
+    ├── admin_schedule.py        ← unattended restart/backup scheduler
+    ├── admin_pelican.py         ← Pelican/Pterodactyl client-API access
+    ├── admin_history.py         ← persisted command audit
+    ├── admin_*.py               ← 22 modules total, one per admin domain
+    ├── test_*.py                ← 25 suites, run with plain python3
     └── templates/director.ini
 ```
 
@@ -264,6 +316,25 @@ the IGW port pool (7950+), and the internal admin HTTP wrapper (8089).
 The install fetches scripts + Go source from this repo's `main` branch by
 default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for
 reproducible installs.
+
+### Updating
+
+Run **Reinstall** on the server. It re-fetches `scripts/`, `mock-k8s/` and
+`data/` from the repo — and **does not touch your data**. Everything
+persistent lives under `server/state/`, which the install never writes to:
+
+| Kept | Where |
+|---|---|
+| Characters, bases, inventories, the whole game DB | `server/state/pg/data` |
+| World saves and world identity | `server/state/ue5-saved`, `server/state/world-name` |
+| `UserEngine.ini` / `UserGame.ini` / `director_config.ini` edits | `server/state/…` |
+| Admin panel config, ledgers, command audit | `server/state/admin/`, `server/state/*.db` |
+
+Two things a reinstall does **not** do. It does not update the egg
+definition in your panel, so a release that adds a variable needs an
+**egg re-import** (Admin → Eggs) before that variable appears — importing
+over the existing egg matches it by UUID and keeps every value your server
+already has. And it leaves the server stopped, so start it afterwards.
 
 ## Credits
 
