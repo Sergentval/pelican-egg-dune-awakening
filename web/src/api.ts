@@ -313,6 +313,18 @@ export const triggerTask = (task: "backup" | "restart") =>
 export const triggerTaskById = (id: string) =>
   api<TriggerResult>("POST", `/api/tasks/trigger/${encodeURIComponent(id)}`);
 
+// Ad-hoc restart. `admin shutdown` only banners players — it stops nothing —
+// so this arms the scheduler's pending restart, which is what actually calls
+// the panel's power API. warn_window_secs is how long BEFORE the restart the
+// in-game countdown starts, so a restart hours out stays silent until then.
+export interface ArmRestartResult { ok: boolean; restart_at?: string; warn_at?: string; error?: string }
+export const armRestart = (delaySecs: number, warnWindowSecs: number, warnFreqSecs: number) =>
+  api<ArmRestartResult>("POST", "/api/schedule/restart-in", {
+    delay_secs: delaySecs, warn_window_secs: warnWindowSecs, warn_freq_secs: warnFreqSecs,
+  });
+export const cancelArmedRestart = () =>
+  api<TriggerResult>("POST", "/api/schedule/cancel-restart");
+
 export interface BackupTable { headers: string[]; rows: string[][] }
 export const fetchBackups = () => api<BackupTable>("GET", "/api/database/backups");
 

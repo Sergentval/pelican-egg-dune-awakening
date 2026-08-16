@@ -408,6 +408,131 @@ class TestTaskDue(unittest.TestCase):
         self.assertFalse(sch.task_due(t, WED_0830, None))
 
 
+class TestQuietThenWarn(unittest.TestCase):
+    """A restart armed hours ahead must stay silent until its warning
+    window opens.
+
+    The game banners every BroadcastFrequency from the moment it receives
+    the envelope until ShutdownTimestamp, so announcing an 8-hour restart
+    up front is eight hours of banners — 480 of them at the old 60s
+    default. The announcement is therefore armed and published later.
+    """
+
+    def setUp(self):
+        self._orig = (sch.broadcast_restart, sch.pelican_restart, sch.restart_configured)
+        self.published = []
+        sch.restart_configured = lambda: True
+        sch.broadcast_restart = lambda base, lead, freq: (
+            self.published.append({"lead": lead, "freq": freq}) or (True, "publish=ok"))
+        sch.pelican_restart = lambda: (True, "power restart HTTP 204")
+
+    def tearDown(self):
+        sch.broadcast_restart, sch.pelican_restart, sch.restart_configured = self._orig
+
+    QUIET = {"restart": {"enabled": False}, "backup": {"enabled": False}}
+
+    def test_arming_records_both_halves(self):
+        led = mem_ledger()
+        at = WED_0830 + timedelta(hours=8)
+        sch.arm_restart(led, at, warn_window_secs=3600, warn_freq_secs=900)
+        self.assertEqual(led.get_state(sch.PENDING_KEY), sch._iso(at))
+        self.assertEqual(led.get_state(sch.PENDING_WARN_KEY),
+                         sch._iso(at - timedelta(hours=1)), "warning armed one hour before")
+        self.assertEqual(json.loads(led.get_state(sch.PENDING_WARN_SPEC))["freq_secs"], 900)
+
+    def test_silent_until_the_window_opens(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830 + timedelta(hours=8), 3600, 900)
+        for offset in (timedelta(0), timedelta(hours=3), timedelta(hours=6, minutes=59)):
+            acts = sch.run_tick("/b", led, now=WED_0830 + offset, cfg=self.QUIET)
+            self.assertEqual(self.published, [], f"players warned {offset} in — far too early")
+            self.assertEqual(acts, [])
+
+    def test_announces_when_the_window_opens_with_the_time_remaining(self):
+        led = mem_ledger()
+        at = WED_0830 + timedelta(hours=8)
+        sch.arm_restart(led, at, warn_window_secs=3600, warn_freq_secs=900)
+        # 30 minutes into the window: the countdown must land on the
+        # restart, so the lead is what is LEFT, not the original hour.
+        sch.run_tick("/b", led, now=at - timedelta(minutes=30), cfg=self.QUIET)
+        self.assertEqual(len(self.published), 1)
+        self.assertEqual(self.published[0], {"lead": 1800, "freq": 900})
+
+    def test_announces_only_once(self):
+        led = mem_ledger()
+        at = WED_0830 + timedelta(hours=8)
+        sch.arm_restart(led, at, 3600, 900)
+        for m in (59, 40, 20, 1):
+            sch.run_tick("/b", led, now=at - timedelta(minutes=m), cfg=self.QUIET)
+        self.assertEqual(len(self.published), 1, "one envelope, not one per tick")
+
+    def test_the_restart_fires_and_clears_everything(self):
+        led = mem_ledger()
+        at = WED_0830 + timedelta(hours=8)
+        sch.arm_restart(led, at, 3600, 900)
+        sch.run_tick("/b", led, now=at - timedelta(minutes=30), cfg=self.QUIET)
+        acts = sch.run_tick("/b", led, now=at, cfg=self.QUIET)
+        self.assertEqual(acts, [("restart", True, "power restart HTTP 204")])
+        for key in (sch.PENDING_KEY, sch.PENDING_WARN_KEY, sch.PENDING_WARN_SPEC):
+            self.assertIsNone(led.get_state(key), f"{key} left behind")
+
+    def test_window_wider_than_the_delay_announces_immediately(self):
+        # "restart in 5 min, warn 1 h ahead" — the window already opened.
+        led = mem_ledger()
+        at = WED_0830 + timedelta(minutes=5)
+        sch.arm_restart(led, at, warn_window_secs=3600, warn_freq_secs=60)
+        sch.run_tick("/b", led, now=WED_0830, cfg=self.QUIET)
+        self.assertEqual(self.published, [{"lead": 300, "freq": 60}])
+
+    def test_recurring_schedule_still_announces_immediately(self):
+        """Regression: the recurring path now goes through the same
+        mechanism with window == lead, and must behave exactly as before."""
+        led = mem_ledger()
+        cfg = {"restart": {"enabled": True, "time": "08:00", "days": list(sch.DAYS),
+                           "warn_lead_secs": 300, "warn_freq_secs": 60,
+                           "catch_up_grace_secs": 3600},
+               "backup": {"enabled": False}}
+        sch.run_tick("/b", led, now=WED_0830, cfg=cfg)
+        self.assertEqual(self.published, [{"lead": 300, "freq": 60}],
+                         "the daily slot must warn on the same tick it arms")
+        self.assertEqual(led.get_state(sch.PENDING_KEY), sch._iso(WED_0830 + timedelta(seconds=300)))
+
+
+class TestCancelRestart(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self._orig = sch.subprocess.run
+
+        class R:
+            returncode = 0
+            stdout = "publish=ok"
+            stderr = ""
+        sch.subprocess.run = lambda *a, **k: (self.calls.append(a[0]) or R())
+
+    def tearDown(self):
+        sch.subprocess.run = self._orig
+
+    def test_cancelling_before_the_announcement_does_not_bother_players(self):
+        led = mem_ledger()
+        sch.arm_restart(led, WED_0830 + timedelta(hours=8), 3600, 900)
+        ok, detail = sch.cancel_restart("/b", led)
+        self.assertTrue(ok)
+        self.assertEqual(self.calls, [], "nothing was announced, so nothing to withdraw")
+        self.assertIn("no announcement", detail)
+        self.assertIsNone(led.get_state(sch.PENDING_KEY))
+
+    def test_cancelling_after_the_announcement_withdraws_it(self):
+        led = mem_ledger()
+        led.set_state(sch.PENDING_KEY, sch._iso(WED_0830 + timedelta(minutes=10)))
+        # warn key already cleared => the envelope went out
+        ok, detail = sch.cancel_restart("/b", led)
+        self.assertTrue(ok)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][2:4], ["shutdown", "cancel"],
+                         "players counting down must be told it is off")
+        self.assertIsNone(led.get_state(sch.PENDING_KEY))
+
+
 class TestRunTickTasks(unittest.TestCase):
     def setUp(self):
         self._orig = sch.run_task
