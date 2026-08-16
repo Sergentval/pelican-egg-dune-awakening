@@ -63,9 +63,27 @@ curl -sS -b jar.txt -H "X-CSRF-Token: $CSRF" \
 Bearer auth still works in UI mode (the JSON response from `/api/login`
 includes `token` for legacy callers), but the browser SPA uses cookies
 exclusively. Mutating cookie-auth requests without `X-CSRF-Token`
-return 403. Failed logins are rate-limited to 5 per 15 min per
+return 403. Logins are rate-limited to 5 attempts per 15 min per
 source IP (`DUNE_ADMIN_UI_LOGIN_MAX_ATTEMPTS` /
-`DUNE_ADMIN_UI_LOGIN_WINDOW_SECS` to tune).
+`DUNE_ADMIN_UI_LOGIN_WINDOW_SECS` to tune); an attempt is charged
+before the password is checked and refunded when it turns out to be
+correct, so parallel guesses cannot overrun the quota.
+
+#### Listener limits
+
+UI mode binds `0.0.0.0`, so the socket is scanned from the open
+internet within hours. Two knobs bound what that costs, and the
+defaults suit any normal panel:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DUNE_ADMIN_HTTP_TIMEOUT_SECS` | `30` | Per-connection socket timeout. A peer that connects and never finishes its request line is dropped after this. |
+| `DUNE_ADMIN_HTTP_MAX_CONNS` | `64` | Connections served at once. Beyond this, new connections are closed immediately rather than queued. |
+
+Requests are served on threads, but every command that shells out to
+`admin-publish.sh` or an `admin_*.py` helper is serialised behind a
+single lock — those helpers read-modify-write shared JSON/INI state and
+are not safe to overlap.
 
 ### 3. Direct shell (for ops / debugging)
 
