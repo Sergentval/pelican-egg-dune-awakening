@@ -345,7 +345,7 @@ lineage. Short version:
   reverse-engineered the architecture and published the launch scripts
   under MIT. This egg would not exist without that work.
 - **Funcom** ships the actual server binaries via Steam.
-- This Pelican port — `valentin95150@hotmail.fr`.
+- This Pelican port — **sergent_val** on Discord.
 
 ## References
 
