@@ -11,17 +11,13 @@ stop, which console.sh makes data-safe). Backup runs admin-publish db-backup.
 Pure due-logic (restart_due/backup_due/_slot_today/load_config) is unit-tested;
 the I/O (subprocess, HTTP, sqlite) is thin and isolated for monkeypatching.
 """
-import http.client
 import json
 import os
 import re
-import socket
 import sqlite3
-import ssl
 import subprocess
 import sys
 import time
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 # Sibling import (resolves whether run as a script, via importlib in tests, or -m),
@@ -35,6 +31,7 @@ from admin_instances import (  # noqa: E402
     mock_k8s_request,
     resolve_scale_key,
 )
+import admin_pelican  # noqa: E402  (sys.path; shared Pelican client-API access)
 
 DEFAULT_TICK_SECS = 30
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -484,86 +481,30 @@ def broadcast_restart(base, lead, freq):
     return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())[:300]
 
 
-class _ResolvingHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS connection that TCP-connects to a fixed IP while keeping TLS SNI,
-    certificate validation, and the Host header pinned to the original hostname
-    — the Python equivalent of `curl --resolve host:port:ip`.
-
-    Used so the in-container scheduler can reach the Pelican panel straight over
-    the wg tunnel (e.g. 10.99.0.1) instead of via public DNS, bypassing a CDN/
-    proxy such as Cloudflare that may challenge the container's egress IP. The
-    cert still has to be valid for the real hostname, so this is not a
-    verification downgrade — only a routing override."""
-
-    def __init__(self, host, resolve_ip, *, context=None, **kw):
-        context = context or ssl.create_default_context()
-        super().__init__(host, context=context, **kw)
-        self._resolve_ip = resolve_ip
-        self._ssl_ctx = context
-
-    def connect(self):
-        sock = socket.create_connection((self._resolve_ip, self.port), self.timeout)
-        self.sock = self._ssl_ctx.wrap_socket(sock, server_hostname=self.host)
+# --------------------------------------------------------------------------
+# Panel access lives in admin_pelican now — the admin panel needs the same
+# connection handling (including the `curl --resolve` override) to keep a
+# setting's egg variable in step, and two copies of that would drift.
+# The private names below are kept as aliases so this module's callers and
+# tests are unaffected by the move.
+# --------------------------------------------------------------------------
+_ResolvingHTTPSConnection = admin_pelican.ResolvingHTTPSConnection
+_clean_setting = admin_pelican.clean_setting
+_restart_hint = admin_pelican.restart_hint
+_redact = admin_pelican.redact
+_HEADER_UNSAFE = admin_pelican._HEADER_UNSAFE
 
 
 def _power_endpoint(url, sid):
     """Pure: parse (scheme, host, port, path) for a server's power endpoint."""
-    p = urllib.parse.urlsplit(url)
-    scheme = p.scheme or "https"
-    host = p.hostname or ""
-    port = p.port or (443 if scheme == "https" else 80)
+    scheme, host, port = admin_pelican.split_url(url)
     return scheme, host, port, f"/api/client/servers/{sid}/power"
 
 
 def _open_power_conn(scheme, host, port, resolve_ip, timeout):
     """Build the HTTP(S) connection for the power POST. When resolve_ip is set
     the TCP target is overridden to that IP (SNI/cert/Host stay `host`)."""
-    if scheme == "https":
-        ctx = ssl.create_default_context()
-        if resolve_ip:
-            return _ResolvingHTTPSConnection(host, resolve_ip, port=port, timeout=timeout, context=ctx)
-        return http.client.HTTPSConnection(host, port=port, timeout=timeout, context=ctx)
-    return http.client.HTTPConnection(resolve_ip or host, port=port, timeout=timeout)
-
-
-def _clean_setting(raw):
-    """Panel variables arrive as typed/pasted. Strip surrounding whitespace
-    and quotes: a value wrapped in quotes reaches the API as part of the
-    credential and comes back 401, which reads as "my key is wrong"."""
-    value = (raw or "").strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-        value = value[1:-1].strip()
-    return value
-
-
-# Header values cannot contain control characters. A key pasted with a
-# trailing newline used to raise ValueError out of conn.request() — which
-# nothing caught, and whose message quotes the whole Authorization header,
-# so the API key landed in logs/scheduler.log in cleartext (readable from
-# the panel file manager and rendered by the log viewer).
-_HEADER_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _restart_hint(code):
-    """What an operator should actually check, per status. Measured against
-    a live Pelican panel rather than guessed — the codes are not
-    interchangeable and each points somewhere different."""
-    if code == 401:
-        return ("the panel rejected the credential: DUNE_PELICAN_CLIENT_KEY is not a valid "
-                "client key. Check it was not truncated or revoked, and that you pasted the "
-                "key itself rather than its description")
-    if code == 403:
-        return ("authenticated, but that key may not act on this server — an Application "
-                "(admin) API key cannot drive the client API. Create an Account API key "
-                "from the panel user that owns the server")
-    if code == 404:
-        return ("the credential is fine but the panel has no such server: check "
-                "DUNE_PELICAN_SERVER_ID (the short id from the server's URL)")
-    if code == 409:
-        return "the panel refused the power action — the server is probably already restarting"
-    if code == 422:
-        return "the panel rejected the request body — report this, the egg built it wrong"
-    return ""
+    return admin_pelican.open_conn(scheme, host, port, resolve_ip, timeout)
 
 
 def pelican_restart():
@@ -571,48 +512,7 @@ def pelican_restart():
     DUNE_PELICAN_CLIENT_KEY + DUNE_PELICAN_SERVER_ID env. Optional
     DUNE_PELICAN_RESOLVE pins the TCP target to a given IP (curl --resolve
     style) so an in-container restart can bypass a CDN in front of the panel."""
-    url = _clean_setting(os.environ.get("DUNE_PELICAN_URL")).rstrip("/")
-    key = _clean_setting(os.environ.get("DUNE_PELICAN_CLIENT_KEY"))
-    sid = _clean_setting(os.environ.get("DUNE_PELICAN_SERVER_ID"))
-    if not (url and key and sid):
-        return False, "restart skipped: DUNE_PELICAN_{URL,CLIENT_KEY,SERVER_ID} not set"
-    if _HEADER_UNSAFE.search(key):
-        # Deliberately does not echo the value: this message is printed
-        # into a log the operator's whole panel can read.
-        return False, ("restart failed: DUNE_PELICAN_CLIENT_KEY contains a control character "
-                       "(a stray newline from copy-paste?) — re-paste it as a single line")
-    resolve_ip = _clean_setting(os.environ.get("DUNE_PELICAN_RESOLVE")) or None
-    scheme, host, port, path = _power_endpoint(url, sid)
-    if not host:
-        return False, "restart skipped: DUNE_PELICAN_URL has no host"
-    body = json.dumps({"signal": "restart"}).encode()
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-               "Accept": "application/json", "Host": host}
-    conn = None
-    try:
-        conn = _open_power_conn(scheme, host, port, resolve_ip, timeout=20)
-        conn.request("POST", path, body=body, headers=headers)
-        resp = conn.getresponse()
-        code = resp.status
-        resp.read()
-        via = f" via {resolve_ip}" if resolve_ip else ""
-        hint = _restart_hint(code)
-        detail = f"power restart HTTP {code}{via}"
-        return 200 <= code < 300, detail + (f" — {hint}" if hint else "")
-    except ValueError as e:
-        # Anything that made the request unbuildable. str(e) can quote the
-        # header, so it is never included.
-        return False, f"power restart failed to build the request ({type(e).__name__})"
-    except (OSError, http.client.HTTPException, ssl.SSLError) as e:
-        return False, _redact(f"power restart error: {e}", key)[:200]
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def _redact(message, secret):
-    """Last line of defence: no path may put the API key into a log."""
-    return message.replace(secret, "<redacted>") if secret else message
+    return admin_pelican.restart()
 
 
 def run_tick(base, ledger, now=None, cfg=None):

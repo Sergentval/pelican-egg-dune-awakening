@@ -22,6 +22,7 @@ Run: python3 scripts/test_admin_http_server.py
 import contextlib
 import importlib.util
 import io
+import os
 import pathlib
 import socket
 import sys
@@ -427,6 +428,60 @@ class CookieSecureDecision(unittest.TestCase):
                     ["Secure" in v for _, v in setters],
                     ["Secure" in v for _, v in clearers],
                 )
+
+
+class SettingsPinnedToTheEgg(unittest.TestCase):
+    """apply-config.sh rewrites every env-backed setting from its egg
+    variable at boot, so a panel edit that only touched the INI was undone
+    by the next restart — including the scheduler's unattended one. The
+    variable has to move with it, or the change must be refused."""
+
+    ENV_KEYS = ("DUNE_PELICAN_URL", "DUNE_PELICAN_CLIENT_KEY",
+                "DUNE_PELICAN_SERVER_ID", "DUNE_PELICAN_RESOLVE")
+
+    def setUp(self) -> None:
+        saved = {k: os.environ.get(k) for k in self.ENV_KEYS}
+
+        def restore():
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.addCleanup(restore)
+        for k in self.ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def test_panel_only_settings_are_untouched(self):
+        # 171 of the 195 carry no `env`; those always survive a boot and
+        # must not be made to depend on panel credentials.
+        self.assertIsNone(admin_http.pin_setting_to_egg(
+            {"type": "bool", "key": "m_bSomething"}, True))
+
+    def test_env_backed_setting_is_refused_when_the_panel_is_unreachable(self):
+        result = admin_http.pin_setting_to_egg(
+            {"env": "DUNE_MINING_OUTPUT", "type": "float", "key": "x"}, 5)
+        self.assertIsNotNone(result)
+        ok, detail = result
+        self.assertFalse(ok, "a change that cannot be pinned must not be reported as applied")
+        self.assertIn("DUNE_PELICAN_", detail)
+
+    def test_the_value_sent_is_the_normalised_one(self):
+        sent = {}
+
+        def fake(key, value):
+            sent["key"], sent["value"] = key, value
+            return True, "ok"
+        original = admin_http.admin_pelican.set_variable
+        admin_http.admin_pelican.set_variable = fake
+        self.addCleanup(setattr, admin_http.admin_pelican, "set_variable", original)
+
+        admin_http.pin_setting_to_egg({"env": "DUNE_SANDWORMS_ENABLED", "type": "bool",
+                                       "key": "sandworm.dune.Enabled"}, True)
+        # The egg rule is in:True,False — the INI rendering and the panel
+        # rule have to agree or every boolean write would be rejected.
+        self.assertEqual(sent, {"key": "DUNE_SANDWORMS_ENABLED", "value": "True"})
+
+        admin_http.pin_setting_to_egg({"env": "DUNE_MINING_OUTPUT", "type": "float",
+                                       "key": "Dune.GlobalMiningOutputMultiplier"}, 5)
+        self.assertEqual(sent["value"], "5.0")
 
 
 class LoginGateAtomicity(unittest.TestCase):
