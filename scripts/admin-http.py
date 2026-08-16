@@ -59,6 +59,7 @@ import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pu
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
+import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 
 
 # --------------------------------------------------------------------------
@@ -141,7 +142,9 @@ STEAM_API_KEY = os.environ.get("STEAM_API_KEY", "")
 STEAM_CACHE_TTL_SECONDS = 3600
 
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 1 week; renew on each /api/me hit
-HISTORY_BUFFER_SIZE = 200
+# Ceiling on ?limit= for the audit trail. The store's own retention is
+# admin_history.DEFAULT_KEEP.
+HISTORY_PAGE_MAX = 200
 
 # Cookie names + flags. We emit two cookies on login:
 #   SESSION_COOKIE_NAME — HttpOnly so JS (and any XSS) can't read it.
@@ -181,10 +184,14 @@ LOGIN_ATTEMPTS: dict[str, collections.deque] = collections.defaultdict(
 # can't grow it without bound.
 LOGIN_BUCKET_SWEEP_AT = int(os.environ.get("DUNE_ADMIN_UI_LOGIN_SWEEP_AT", "1024"))
 
-# In-memory ring buffer of recent command invocations. Surfaced via
-# GET /api/history. Each entry: {ts, source, argv, ok, exit_code,
-# stdout, stderr}.
-HISTORY: collections.deque = collections.deque(maxlen=HISTORY_BUFFER_SIZE)
+# The command audit (GET /api/history) lives in admin_history now — a
+# SQLite table under server/state/. It used to be an in-memory deque,
+# which died with the process; since the panel restarts with the server
+# (scheduler auto-restart, `panel restart`, reinstall), the trail an
+# operator wants precisely when something went wrong was the first thing
+# lost. admin_history also drops read-only traffic: MapTab polls
+# /api/map/markers every 4s through run_publish, and 200 buffer slots of
+# `map-markers` evicted every real action inside quarter of an hour.
 
 # Steam personaname/avatar cache. {steam_id: (cached_at_ts, info_dict)}.
 STEAM_CACHE: dict[str, tuple[float, dict]] = {}
@@ -617,7 +624,8 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
-    HISTORY.append(entry)
+    # Best-effort and read-only-filtered; never fails the command it audits.
+    admin_history.record(BASE_DIR, entry)
     return entry
 
 
@@ -1543,9 +1551,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/history":
-            limit = max(1, min(HISTORY_BUFFER_SIZE, int(query.get("limit", ["50"])[0])))
-            entries = list(HISTORY)[-limit:]
-            self._write(200, {"entries": entries, "total": len(HISTORY)})
+            try:
+                requested = int(query.get("limit", ["50"])[0])
+            except ValueError:
+                requested = 50
+            limit = max(1, min(HISTORY_PAGE_MAX, requested))
+            entries, total = admin_history.recent(BASE_DIR, limit)
+            self._write(200, {"entries": entries, "total": total})
             return
 
         # List the log sources the SPA may tail (fixed services + globbed ue5-*).
@@ -3105,6 +3117,12 @@ def main() -> None:
     else:
         log(f"  auth    : {'shared-secret' if SHARED_AUTH else 'open (loopback only)'}")
     log(f"  sockets : {MAX_CONNECTIONS} concurrent max, {CONNECTION_TIMEOUT_SECONDS:g}s per-connection timeout")
+    _, carried = admin_history.recent(BASE_DIR, 1)
+    log(f"  audit   : {carried} entr{'y' if carried == 1 else 'ies'} carried over from previous runs")
+    # Mark the boot in the trail itself: a restart should read as an event,
+    # not as an unexplained gap between two commands.
+    admin_history.note(BASE_DIR, "(admin panel started)",
+                       f"mode={mode} bind={LISTEN_ADDR}:{LISTEN_PORT}")
     build_server().serve_forever()
 
 
