@@ -16,7 +16,10 @@
 # previous inline implementation).
 #
 # Behaviour:
-#   - Empty/unset env var ⇒ skip the row entirely (operator hand-edits survive).
+#   - Unset env var        ⇒ skip the row entirely (operator hand-edits survive).
+#   - Empty env var        ⇒ same, unless the setting declares empty_ok in the
+#                            schema — then the blank is applied (issue #107:
+#                            a cleared join password means a public server).
 #   - Section missing      ⇒ append a fresh `[section]` and the key/value.
 #   - Key present          ⇒ rewrite in place under the matching section.
 #   - Key missing          ⇒ append the key at the end of the section.
@@ -86,8 +89,11 @@ for st in settings:
     env_name = st.get("env")
     if not env_name:
         continue  # API-managed only (no panel variable) — not applied at boot
-    raw = os.environ.get(env_name, "")
-    if not raw:
+    # Skip unset variables so hand-edits survive a panel-less run; a
+    # present-but-EMPTY variable is applied when the setting declares
+    # empty_ok (issue #107: blank join password = public server).
+    raw = ini.env_value_to_apply(os.environ, env_name, bool(st.get("empty_ok")))
+    if raw is None:
         skipped_unset += 1
         continue
     path = FILES.get(st.get("file"))

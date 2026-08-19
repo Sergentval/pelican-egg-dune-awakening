@@ -9,6 +9,7 @@ import unittest
 
 from admin_ini_merge import (
     coerce_decimal_comma,
+    env_value_to_apply,
     normalize_value,
     read_flat,
     read_keyed,
@@ -224,6 +225,56 @@ class TestCoerceDecimalComma(unittest.TestCase):
         self.assertEqual(coerce_decimal_comma("", "float"), "")
         self.assertEqual(coerce_decimal_comma(",5", "float"), ",5")
         self.assertEqual(coerce_decimal_comma("5,", "float"), "5,")
+
+
+class TestBlankQuotedValue(unittest.TestCase):
+    """Issue #107: a blank Server Join Password must mean "no password".
+
+    Both known-good passwordless forms are a BARE empty value
+    (`Bgd.ServerLoginPassword=`): AMP's automap writes that when the field is
+    left blank ("Leave blank to disable"), and install.sh seeds the same form
+    into the UserEngine.ini template. `""` has never been observed against
+    UE5's cvar parser, so a blank quoted setting renders bare.
+    """
+
+    def test_blank_quoted_renders_bare(self):
+        self.assertEqual(render_value("", True), "")
+
+    def test_blank_unquoted_still_passes_through(self):
+        self.assertEqual(render_value("", False), "")
+
+    def test_nonblank_quoted_still_wrapped(self):
+        self.assertEqual(render_value("Sandworm", True), '"Sandworm"')
+
+    def test_upsert_blank_password_yields_bare_key(self):
+        text = '[ConsoleVariables]\nBgd.ServerLoginPassword="Sandworm"\n'
+        out = upsert_keyed(text, "ConsoleVariables", "Bgd.ServerLoginPassword",
+                           render_value("", True))
+        self.assertEqual(out, "[ConsoleVariables]\nBgd.ServerLoginPassword=\n")
+
+
+class TestEnvValueToApply(unittest.TestCase):
+    """Boot-path decision for one env-backed setting (issue #107).
+
+    Absent variable => skip (a TESTING.md Path A run without panel variables
+    must leave hand-edited INIs alone). Present-but-empty => skip too, UNLESS
+    the setting declares empty_ok - then the blank is an explicit operator
+    choice (public passwordless server) and must be applied.
+    """
+
+    def test_absent_is_skipped(self):
+        self.assertIsNone(env_value_to_apply({}, "DUNE_X", empty_ok=True))
+
+    def test_present_but_empty_is_skipped_by_default(self):
+        self.assertIsNone(env_value_to_apply({"DUNE_X": ""}, "DUNE_X", empty_ok=False))
+
+    def test_present_but_empty_applies_with_empty_ok(self):
+        self.assertEqual(env_value_to_apply({"DUNE_X": ""}, "DUNE_X", empty_ok=True), "")
+
+    def test_nonempty_applies_either_way(self):
+        for empty_ok in (False, True):
+            self.assertEqual(
+                env_value_to_apply({"DUNE_X": "v"}, "DUNE_X", empty_ok=empty_ok), "v")
 
 
 if __name__ == "__main__":

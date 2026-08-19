@@ -10,6 +10,7 @@
       "key": "Bgd.ServerLoginPassword",
       "type": "string",
       "quoted": true,
+      "empty_ok": true,
       "default": "",
       "enum": null,
       "category": "World Identity",

@@ -152,12 +152,12 @@
     },
     {
       "name": "Server Join Password",
-      "description": "Password players must enter to join any sietch in this battlegroup. Default 'Sandworm' comes from Funcom's template — change it to keep your server private. Special characters: avoid double quotes (they break the INI parser).",
+      "description": "Password players must enter to join any sietch in this battlegroup. Default 'Sandworm' comes from Funcom's template — change it to keep your server private, or clear it to run a public server with no password. Special characters: avoid double quotes (they break the INI parser).",
       "env_variable": "DUNE_SERVER_PASSWORD",
       "default_value": "Sandworm",
       "user_viewable": true,
       "user_editable": true,
-      "rules": "required|string|max:64",
+      "rules": "nullable|string|max:64",
       "field_type": "text"
     },
     {
