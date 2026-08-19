@@ -126,6 +126,13 @@ for st in settings:
             skipped_reject += 1
             continue
         vals = [p for p in norm.split(",") if p]
+        # Ecosystem-verified interplay (DST v12.19.8, Red-Blink, dapdsm all
+        # guard this): the per-partition list is IGNORED by the game while
+        # m_bShouldForceEnablePvpOnAllPartitions is True.
+        if vals and os.environ.get("DUNE_FORCE_PVP_EVERYWHERE", "").strip().lower() in ("true", "1"):
+            log(f"WARN {env_name} is set but DUNE_FORCE_PVP_EVERYWHERE=True — "
+                "the game ignores the per-partition list while the global force "
+                "is on. Set Force PvP Everywhere to False to use the list.")
         try:
             if apply_repeated(path, st["section"], st["key"], vals):
                 applied += 1

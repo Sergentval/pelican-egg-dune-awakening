@@ -642,7 +642,7 @@
     },
     {
       "name": "PvP-Enabled Partitions",
-      "description": "Comma-separated world partition ids that run as PvP instances — Funcom's per-instance PvP mechanism (one +m_PvpEnabledPartitions line per id in the shared UserGame.ini). 8 = the always-warm Deep Desert, 101-103 = the Deep Desert sandstorm tunnels (see the Instances tab for your ids). Empty = everything stays PvE. Restart required.",
+      "description": "Comma-separated world partition ids that run as PvP instances — Funcom's per-instance PvP mechanism (one +m_PvpEnabledPartitions line per id in the shared UserGame.ini). 8 = the always-warm Deep Desert, 101-103 = the Deep Desert sandstorm tunnels (see the Instances tab for your ids). Empty = everything stays PvE. Restart required. Ignored while 'Force PvP On All Partitions' is True.",
       "env_variable": "DUNE_PVP_PARTITIONS",
       "default_value": "",
       "user_viewable": true,
