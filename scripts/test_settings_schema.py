@@ -114,6 +114,39 @@ class TestSettingsSchema(unittest.TestCase):
         self.assertEqual(byid["inventorysystemsettings_playerinventorystartingvolumecapacity"]["client_gated"], "yes",
                          "inventory volume was live-confirmed client-gated")
 
+    def test_blank_password_contract(self):
+        """Issue #107: server_password declares empty_ok so a cleared panel
+        variable is applied at boot (passwordless public server) instead of
+        being skipped as "not configured"."""
+        pw = next(s for s in self.settings if s["id"] == "server_password")
+        self.assertIs(pw.get("empty_ok"), True)
+
+    def test_empty_ok_only_on_env_backed_strings(self):
+        for s in self.settings:
+            if "empty_ok" in s:
+                self.assertIsInstance(s["empty_ok"], bool, s["id"])
+                self.assertTrue(s.get("env"),
+                                f"{s['id']}: empty_ok is a boot-path (env) semantic")
+                self.assertEqual(s["type"], "string",
+                                 f"{s['id']}: only strings can mean something by being blank")
+
+    def test_empty_ok_variables_accept_blank_in_both_eggs(self):
+        """The egg rule is what the panel enforces: `required` makes a blank
+        unsaveable in the startup tab (issue #107's first symptom), and
+        pin_setting_to_egg then surfaces Pelican's rejection in the admin UI
+        (the second symptom). Every empty_ok variable must be nullable."""
+        empty_ok_envs = {s["env"] for s in self.settings if s.get("empty_ok")}
+        self.assertTrue(empty_ok_envs, "at least server_password is empty_ok")
+        for egg_name in ("egg-dune-awakening.json", "egg-dune-awakening-pterodactyl.json"):
+            with open(os.path.join(ROOT, egg_name), encoding="utf-8") as f:
+                for v in json.load(f)["variables"]:
+                    if v["env_variable"] not in empty_ok_envs:
+                        continue
+                    rules = v["rules"]
+                    rules = rules.split("|") if isinstance(rules, str) else rules
+                    self.assertNotIn("required", rules, f"{egg_name}:{v['env_variable']}")
+                    self.assertIn("nullable", rules, f"{egg_name}:{v['env_variable']}")
+
 
 if __name__ == "__main__":
     unittest.main()

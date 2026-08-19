@@ -49,11 +49,36 @@ def coerce_decimal_comma(raw: str, vtype: str) -> str:
 def render_value(raw: str, quoted: bool) -> str | None:
     """Render a value for an INI line. When quoted, wrap in double quotes;
     return None to REJECT a quoted value that itself contains a double quote
-    (UE5 won't parse it). Unquoted values pass through unchanged."""
+    (UE5 won't parse it). Unquoted values pass through unchanged.
+
+    A BLANK value renders bare (`key=`) even for quoted settings: that is the
+    form AMP's automap writes for a blank field ("Leave blank to disable" on
+    the join password) and the form install.sh seeds into the UserEngine.ini
+    template — `""` has never been observed against UE5's cvar parser.
+    Issue #107."""
     if quoted:
         if '"' in raw:
             return None
+        if raw == "":
+            return ""
         return f'"{raw}"'
+    return raw
+
+
+def env_value_to_apply(environ, env_name: str, empty_ok: bool) -> str | None:
+    """Value of one panel variable to apply at boot, or None to skip the row.
+
+    Absent variable ⇒ None: a run without panel variables (TESTING.md Path A,
+    plain docker) must leave hand-edited INIs alone. Present-but-empty ⇒ None
+    too, UNLESS the setting declares empty_ok in settings-schema.json — for
+    those the blank is an explicit operator choice (issue #107: a cleared
+    join password means a public passwordless server), not "unconfigured".
+    """
+    raw = environ.get(env_name)
+    if raw is None:
+        return None
+    if raw == "" and not empty_ok:
+        return None
     return raw
 
 

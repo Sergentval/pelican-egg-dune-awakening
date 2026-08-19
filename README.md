@@ -353,6 +353,13 @@ the IGW port pool (7950+), and the internal admin HTTP wrapper (8089).
    Pelican-only format that Pterodactyl rejects with "The JSON file provided
    is not in a format that can be recognized."
 
+The join password defaults to Funcom's template value `Sandworm`. Change it
+to keep the server private, or **clear `DUNE_SERVER_PASSWORD` to run a public
+passwordless server** — a blank is applied as `Bgd.ServerLoginPassword=`, the
+same form AMP writes for its "leave blank to disable" field. If your panel
+imported the egg before the password rule became `nullable`, the startup tab
+still refuses a blank: re-import the egg (see [Updating](#updating)) first.
+
 The install fetches scripts + Go source from this repo's `main` branch by
 default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for
 reproducible installs.

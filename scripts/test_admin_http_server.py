@@ -569,5 +569,36 @@ class RevocationConcurrency(unittest.TestCase):
         self.assertEqual(len(admin_http.REVOCATIONS), 8 * 300)
 
 
+class BlankSubmissionGuard(unittest.TestCase):
+    """Issue #107 follow-up (review finding): normalize_value strips, so a
+    whitespace-only submission collapses to blank — and for an empty_ok
+    setting blank means a PUBLIC passwordless server. The old `required` egg
+    rule caught that by accident; now the API accepts only the literal empty
+    string as the explicit "clear the password" gesture."""
+
+    PW = {"id": "server_password", "type": "string", "empty_ok": True}
+    NAME = {"id": "server_display_name", "type": "string"}
+
+    def test_whitespace_only_is_refused_on_empty_ok(self):
+        msg = admin_http.blank_submission_error(self.PW, "   ")
+        self.assertIsNotNone(msg)
+        self.assertIn("empty", msg)
+
+    def test_literal_empty_is_the_explicit_clear(self):
+        self.assertIsNone(admin_http.blank_submission_error(self.PW, ""))
+
+    def test_none_counts_as_the_explicit_clear_too(self):
+        # JSON null from the UI is the same gesture as an empty field.
+        self.assertIsNone(admin_http.blank_submission_error(self.PW, None))
+
+    def test_real_password_passes(self):
+        self.assertIsNone(admin_http.blank_submission_error(self.PW, "Sandworm"))
+
+    def test_non_empty_ok_settings_keep_old_behaviour(self):
+        # server_display_name has no empty_ok: whitespace still collapses to
+        # blank via normalize_value, as it always has.
+        self.assertIsNone(admin_http.blank_submission_error(self.NAME, "   "))
+
+
 if __name__ == "__main__":
     unittest.main()

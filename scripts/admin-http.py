@@ -764,6 +764,24 @@ def pin_setting_to_egg(st: dict, value):
     return admin_pelican.set_variable(env, rendered)
 
 
+def blank_submission_error(st: dict, value) -> "str | None":
+    """Refuse a whitespace-only value for a setting where blank is meaningful.
+
+    normalize_value strips, so "   " collapses to "" — and for an empty_ok
+    setting (issue #107: blank join password = PUBLIC server) that silent
+    collapse would drop the password on a stray-space paste. The old
+    `required` egg rule caught this by accident; now the API accepts only
+    the literal empty field as the explicit "clear" gesture. Returns the
+    refusal message, or None when the value is fine."""
+    if not st.get("empty_ok"):
+        return None
+    s = "" if value is None else str(value)
+    if s and not s.strip():
+        return ("whitespace-only value — submit an empty field to "
+                "intentionally clear it")
+    return None
+
+
 def write_setting(st: dict, value) -> None:
     """Validate + write one setting to its INI sink. Raises ValueError on an
     invalid value or a missing target file."""
@@ -2011,6 +2029,10 @@ class Handler(BaseHTTPRequestHandler):
                 st = schema.get(sid)
                 if st is None:
                     errors.append({"id": sid, "error": "unknown setting id"})
+                    continue
+                refusal = blank_submission_error(st, value)
+                if refusal:
+                    errors.append({"id": sid, "error": refusal})
                     continue
                 # A setting backed by an egg variable is rewritten from that
                 # variable by apply-config.sh on EVERY boot. Writing only the
