@@ -228,6 +228,24 @@
       "verified": true
     },
     {
+      "id": "pvp_enabled_partitions",
+      "env": "DUNE_PVP_PARTITIONS",
+      "file": "UserGame",
+      "section": "/Script/DuneSandbox.PvpPveSettings",
+      "key": "m_PvpEnabledPartitions",
+      "type": "intlist",
+      "quoted": false,
+      "repeated": true,
+      "empty_ok": true,
+      "default": "",
+      "enum": null,
+      "category": "PvP / Safety",
+      "label": "PvP-enabled partitions (ids)",
+      "client_gated": "no",
+      "advanced": false,
+      "verified": false
+    },
+    {
       "id": "security_zones_enabled",
       "env": "DUNE_SECURITY_ZONES_ENABLED",
       "file": "UserGame",

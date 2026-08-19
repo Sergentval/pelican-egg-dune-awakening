@@ -53,8 +53,10 @@ def load_schema(base):
 
 def is_per_sietch(st):
     """A setting is per-sietch-capable iff it lives in a UE5-process config a
-    single instance reads (so a per-instance copy can override it)."""
-    return st.get("file") in _FILE_TO_INI
+    single instance reads (so a per-instance copy can override it). Repeated
+    (UE array) settings are battlegroup-wide designations every instance must
+    agree on — e.g. m_PvpEnabledPartitions (issue #106) — never per-sietch."""
+    return st.get("file") in _FILE_TO_INI and not st.get("repeated")
 
 
 def capable(base):

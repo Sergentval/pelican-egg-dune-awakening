@@ -557,7 +557,7 @@
     },
     {
       "name": "Deep Desert — Dimensional Partitions",
-      "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely.",
+      "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely. Lowering the count later does NOT remove already-seeded tunnels (partition rows are append-only) — remove one with the admin panel's dimension-down instead.",
       "env_variable": "DUNE_DD_DIMENSIONS",
       "default_value": "3",
       "user_viewable": true,
@@ -890,6 +890,20 @@
         "between:1,365"
       ],
       "sort": 61
+    },
+    {
+      "name": "PvP-Enabled Partitions",
+      "description": "Comma-separated world partition ids that run as PvP instances — Funcom's per-instance PvP mechanism (one +m_PvpEnabledPartitions line per id in the shared UserGame.ini). 8 = the always-warm Deep Desert, 101-103 = the Deep Desert sandstorm tunnels (see the Instances tab for your ids). Empty = everything stays PvE. Restart required.",
+      "env_variable": "DUNE_PVP_PARTITIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:128"
+      ],
+      "sort": 62
     }
   ]
 }

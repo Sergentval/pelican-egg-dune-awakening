@@ -13,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = os.path.join(ROOT, "data", "admin", "settings-schema.json")
 
-VALID_TYPES = {"string", "float", "int", "bool", "cvarbool", "struct", "array"}
+VALID_TYPES = {"string", "float", "int", "bool", "cvarbool", "intlist", "struct", "array"}
 VALID_FILES = {"UserEngine", "UserGame", "UserOverrides", "ondemand"}
 SECTIONED_FILES = {"UserGame", "UserOverrides"}
 VALID_CLIENT_GATED = {"yes", "no", "unknown"}
@@ -101,7 +101,8 @@ class TestSettingsSchema(unittest.TestCase):
 
     def test_catalogue_size(self):
         # 51 original (25 env + 26 cvar) + 144 verified UClass knobs
-        self.assertEqual(len(self.settings), 195)
+        # + pvp_enabled_partitions (issue #106)
+        self.assertEqual(len(self.settings), 196)
         # the 144 API-managed UClass knobs sink to UserOverrides, no env var
         uclass = [s for s in self.settings if s["file"] == "UserOverrides"]
         self.assertEqual(len(uclass), 144)
@@ -127,8 +128,8 @@ class TestSettingsSchema(unittest.TestCase):
                 self.assertIsInstance(s["empty_ok"], bool, s["id"])
                 self.assertTrue(s.get("env"),
                                 f"{s['id']}: empty_ok is a boot-path (env) semantic")
-                self.assertEqual(s["type"], "string",
-                                 f"{s['id']}: only strings can mean something by being blank")
+                self.assertIn(s["type"], ("string", "intlist"),
+                              f"{s['id']}: blank is only meaningful for strings and lists")
 
     def test_empty_ok_variables_accept_blank_in_both_eggs(self):
         """The egg rule is what the panel enforces: `required` makes a blank
@@ -146,6 +147,40 @@ class TestSettingsSchema(unittest.TestCase):
                     rules = rules.split("|") if isinstance(rules, str) else rules
                     self.assertNotIn("required", rules, f"{egg_name}:{v['env_variable']}")
                     self.assertIn("nullable", rules, f"{egg_name}:{v['env_variable']}")
+
+    def test_pvp_partitions_contract(self):
+        """Issue #106: Funcom's per-instance PvP is `+m_PvpEnabledPartitions=<id>`
+        lines (one per partition) in the SHARED UserGame.ini — documented as a
+        commented example in Funcom's own template. Exposed as an intlist panel
+        variable; verified stays False until a game client confirms the badge."""
+        st = next(s for s in self.settings if s["id"] == "pvp_enabled_partitions")
+        self.assertEqual(st["env"], "DUNE_PVP_PARTITIONS")
+        self.assertEqual(st["file"], "UserGame")
+        self.assertEqual(st["section"], "/Script/DuneSandbox.PvpPveSettings")
+        self.assertEqual(st["key"], "m_PvpEnabledPartitions")
+        self.assertEqual(st["type"], "intlist")
+        self.assertIs(st.get("repeated"), True)
+        self.assertIs(st.get("empty_ok"), True)
+        self.assertIs(st["verified"], False)
+        self.assertFalse(st["advanced"])
+
+    def test_repeated_only_on_sectioned_intlists(self):
+        """`repeated` renders one +key= line per element — that only makes sense
+        for an intlist sinking into a sectioned UE INI file."""
+        for s in self.settings:
+            if s.get("repeated"):
+                self.assertEqual(s["type"], "intlist", s["id"])
+                self.assertTrue(s.get("section"), f"{s['id']}: repeated needs a [section]")
+                self.assertNotEqual(s["file"], "ondemand", s["id"])
+
+    def test_repeated_settings_are_not_per_sietch(self):
+        """m_PvpEnabledPartitions is a battlegroup-wide designation every UE5
+        process must agree on; a per-sietch copy would silently desync it."""
+        import admin_sietch
+        capable_ids = {c["id"] for c in admin_sietch.capable(ROOT)}
+        for s in self.settings:
+            if s.get("repeated"):
+                self.assertNotIn(s["id"], capable_ids)
 
 
 if __name__ == "__main__":

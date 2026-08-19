@@ -360,6 +360,18 @@ same form AMP writes for its "leave blank to disable" field. If your panel
 imported the egg before the password rule became `nullable`, the startup tab
 still refuses a blank: re-import the egg (see [Updating](#updating)) first.
 
+### Deep Desert PvP instances
+
+Since Funcom split the Deep Desert into PvE and PvP instances, the
+designation is **per world partition**. Set the **PvP-Enabled Partitions**
+variable (`DUNE_PVP_PARTITIONS`) to a comma-separated list of partition ids —
+`8` is the always-warm Deep Desert, `101`–`103` the sandstorm tunnels — and
+restart. The boot pipeline writes one `+m_PvpEnabledPartitions=<id>` line per
+id into the shared `UserGame.ini`, which is Funcom's own mechanism (their
+template ships it as a commented example). Clearing the variable reverts
+everything to PvE. Also editable live in the admin panel under
+**Settings → PvP / Safety**.
+
 The install fetches scripts + Go source from this repo's `main` branch by
 default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for
 reproducible installs.

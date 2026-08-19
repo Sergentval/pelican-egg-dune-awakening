@@ -55,6 +55,21 @@ def log(msg):
     print(f"[apply-config] {msg}", flush=True)
 
 
+def apply_repeated(path, section, key, vals):
+    """UE array key (issue #106): one +key= line per element, every previous
+    live line replaced. Empty vals removes the lines (reverts to defaults)."""
+    if not os.path.isfile(path):
+        log(f"WARN target {path} missing — [{section}] {key} skipped")
+        return False
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    new = ini.upsert_repeated(text, section, key, vals)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new)
+    log(f"  {os.path.basename(path)} [{section}] {key} = {','.join(vals) if vals else '<cleared>'} ({len(vals)} +line(s))")
+    return True
+
+
 def apply_one(path, section, key, rendered):
     """Read → upsert (flat if section is None, else section-scoped) → write.
     Returns True if (re)written, False on a missing target file."""
@@ -100,6 +115,26 @@ for st in settings:
     if path is None:
         log(f"WARN unknown file sink {st.get('file')!r} for {env_name} — skipped")
         skipped_reject += 1
+        continue
+    if st.get("repeated"):
+        # UE array key: validate the id list ("8,101") then write one +key=
+        # line per element via the engine (issue #106).
+        try:
+            norm = ini.normalize_value(raw, st.get("type", "intlist"), st.get("enum"))
+        except ValueError as exc:
+            log(f"WARN {env_name}: {exc}. Skipped.")
+            skipped_reject += 1
+            continue
+        vals = [p for p in norm.split(",") if p]
+        try:
+            if apply_repeated(path, st["section"], st["key"], vals):
+                applied += 1
+            else:
+                skipped_reject += 1
+        except Exception:
+            errored += 1
+            log(f"ERROR while applying {env_name} → {st['key']}:")
+            traceback.print_exc(file=sys.stdout)
         continue
     # Issue #82: a panel variable typed on a German/French system arrives as
     # "2,5". UE5's atof stops at the comma and applies 2 without complaining,

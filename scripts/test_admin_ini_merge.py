@@ -10,6 +10,8 @@ import unittest
 from admin_ini_merge import (
     coerce_decimal_comma,
     env_value_to_apply,
+    read_repeated,
+    upsert_repeated,
     normalize_value,
     read_flat,
     read_keyed,
@@ -275,6 +277,96 @@ class TestEnvValueToApply(unittest.TestCase):
         for empty_ok in (False, True):
             self.assertEqual(
                 env_value_to_apply({"DUNE_X": "v"}, "DUNE_X", empty_ok=empty_ok), "v")
+
+
+class TestRepeatedKeys(unittest.TestCase):
+    """UE5 config arrays (issue #106): a TArray property is set with one
+    `+key=value` line PER element. upsert_repeated replaces every live
+    occurrence (bare `key=`, `+key=`, `.key=`, `!key=`) with the new `+` lines,
+    while `;+key=` commented examples — Funcom ships them in its template —
+    are preserved untouched.
+    """
+
+    SEC = "/Script/DuneSandbox.PvpPveSettings"
+
+    def test_appends_into_existing_section(self):
+        text = f"[{self.SEC}]\nm_bShouldForceEnablePvpOnAllPartitions=False\n"
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", ["8", "101"])
+        self.assertEqual(out,
+                         f"[{self.SEC}]\nm_bShouldForceEnablePvpOnAllPartitions=False\n"
+                         "+m_PvpEnabledPartitions=8\n+m_PvpEnabledPartitions=101\n")
+
+    def test_replaces_existing_plus_lines_in_place(self):
+        text = (f"[{self.SEC}]\n+m_PvpEnabledPartitions=1\n+m_PvpEnabledPartitions=2\n"
+                "m_bShouldForceEnablePvpOnAllPartitions=False\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", ["8"])
+        self.assertEqual(out,
+                         f"[{self.SEC}]\n+m_PvpEnabledPartitions=8\n"
+                         "m_bShouldForceEnablePvpOnAllPartitions=False\n")
+
+    def test_preserves_funcom_commented_examples(self):
+        text = (f"[{self.SEC}]\n; Example:\n;+m_PvpEnabledPartitions=1\n"
+                ";+m_PvpEnabledPartitions=2\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", ["8"])
+        self.assertIn(";+m_PvpEnabledPartitions=1\n", out)
+        self.assertIn(";+m_PvpEnabledPartitions=2\n", out)
+        self.assertIn("+m_PvpEnabledPartitions=8\n", out)
+
+    def test_bare_and_bang_lines_are_replaced_too(self):
+        # UE treats a bare `key=` as set-to-one-element and `!key=` as clear —
+        # leaving either behind would fight the `+` lines we write.
+        text = (f"[{self.SEC}]\nm_PvpEnabledPartitions=5\n"
+                "!m_PvpEnabledPartitions=ClearArray\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", ["8"])
+        self.assertNotIn("m_PvpEnabledPartitions=5", out)
+        self.assertNotIn("!m_PvpEnabledPartitions", out)
+        self.assertIn("+m_PvpEnabledPartitions=8\n", out)
+
+    def test_empty_values_removes_all_live_lines(self):
+        text = (f"[{self.SEC}]\n+m_PvpEnabledPartitions=8\n"
+                ";+m_PvpEnabledPartitions=1\nOther=1\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", [])
+        self.assertEqual(out, f"[{self.SEC}]\n;+m_PvpEnabledPartitions=1\nOther=1\n")
+
+    def test_empty_values_without_section_is_a_noop(self):
+        text = "[/Other]\nFoo=1\n"
+        self.assertEqual(upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", []), text)
+
+    def test_missing_section_is_created(self):
+        out = upsert_repeated("[/Other]\nFoo=1\n", self.SEC, "m_PvpEnabledPartitions", ["8"])
+        self.assertIn(f"[{self.SEC}]\n+m_PvpEnabledPartitions=8\n", out)
+
+    def test_does_not_touch_same_key_in_other_sections(self):
+        text = ("[/Other]\n+m_PvpEnabledPartitions=99\n"
+                f"[{self.SEC}]\n+m_PvpEnabledPartitions=1\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions", ["8"])
+        self.assertIn("[/Other]\n+m_PvpEnabledPartitions=99\n", out)
+        self.assertNotIn("+m_PvpEnabledPartitions=1\n", out)
+
+    def test_read_repeated_joins_live_values(self):
+        text = (f"[{self.SEC}]\n;+m_PvpEnabledPartitions=1\n"
+                "+m_PvpEnabledPartitions=8\n+m_PvpEnabledPartitions=101\n")
+        self.assertEqual(read_repeated(text, self.SEC, "m_PvpEnabledPartitions"), "8,101")
+
+    def test_read_repeated_none_when_only_comments(self):
+        text = f"[{self.SEC}]\n;+m_PvpEnabledPartitions=1\n"
+        self.assertIsNone(read_repeated(text, self.SEC, "m_PvpEnabledPartitions"))
+
+    def test_block_stays_contiguous_before_next_section(self):
+        # Regression: with a blank separator before the next header, the
+        # insert index must not drift as the list grows — all + lines land
+        # as ONE block before the blank, not scattered around it.
+        text = (f"[{self.SEC}]\n;+m_PvpEnabledPartitions=1\n\n"
+                "[/Script/Other]\nFoo=1\n")
+        out = upsert_repeated(text, self.SEC, "m_PvpEnabledPartitions",
+                              ["8", "101", "102", "103"])
+        self.assertIn("+m_PvpEnabledPartitions=8\n+m_PvpEnabledPartitions=101\n"
+                      "+m_PvpEnabledPartitions=102\n+m_PvpEnabledPartitions=103\n\n"
+                      "[/Script/Other]", out)
+
+    def test_write_read_roundtrip(self):
+        out = upsert_repeated("", self.SEC, "m_PvpEnabledPartitions", ["8", "101", "102"])
+        self.assertEqual(read_repeated(out, self.SEC, "m_PvpEnabledPartitions"), "8,101,102")
 
 
 if __name__ == "__main__":
