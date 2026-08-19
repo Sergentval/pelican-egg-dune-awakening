@@ -763,7 +763,13 @@ def pin_setting_to_egg(st: dict, value):
     env = st.get("env")
     if not env:
         return None
-    rendered = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    try:
+        rendered = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    except ValueError as exc:
+        # A malformed value must be a refusal, not an exception: do_POST's
+        # per-setting try only wraps write_setting, so a raise here would
+        # drop the HTTP connection instead of returning a scoped error.
+        return False, f"invalid value: {exc}"
     return admin_pelican.set_variable(env, rendered)
 
 

@@ -463,6 +463,19 @@ class SettingsPinnedToTheEgg(unittest.TestCase):
         self.assertFalse(ok, "a change that cannot be pinned must not be reported as applied")
         self.assertIn("DUNE_PELICAN_", detail)
 
+    def test_malformed_value_is_refused_not_raised(self):
+        """Review finding on #106: a bad intlist ("8,abc") must surface as
+        (False, detail) — an uncaught ValueError here escapes do_POST's
+        per-setting try (which only wraps write_setting) and drops the HTTP
+        connection instead of returning a scoped {"id", "error"} entry."""
+        result = admin_http.pin_setting_to_egg(
+            {"env": "DUNE_PVP_PARTITIONS", "type": "intlist",
+             "key": "m_PvpEnabledPartitions"}, "8,abc")
+        self.assertIsNotNone(result)
+        ok, detail = result
+        self.assertFalse(ok)
+        self.assertIn("abc", detail)
+
     def test_the_value_sent_is_the_normalised_one(self):
         sent = {}
 
