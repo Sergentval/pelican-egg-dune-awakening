@@ -1228,10 +1228,22 @@ BWR_SQL
             echo "[admin-publish] ERROR base-water-refill: no base with id $bid" >&2
             exit 2
         fi
-        alive=$({ dune_psql_q --set=m="$bmap" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT COUNT(*) FROM dune.farm_state WHERE map = :'m' AND alive;
+        # FAIL CLOSED, twice: (1) any live instance of the base's map refuses
+        # the write — a running map rewrites base state from memory on flush;
+        # (2) a map name farm_state has never seen refuses too — if actors.map
+        # and farm_state.map ever use different namespaces on a build, a naive
+        # "0 alive rows" would wrongly read as "map is down".
+        gate=$({ dune_psql_q --set=m="$bmap" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
 BWR_SQL
 )
+        alive="${gate%%/*}"
+        known="${gate##*/}"
+        if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+            echo "[admin-publish] ERROR base-water-refill: map '$bmap' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+            exit 1
+        fi
         if [ "${alive:-1}" != "0" ]; then
             echo "[admin-publish] ERROR base-water-refill: map $bmap has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
             exit 1
