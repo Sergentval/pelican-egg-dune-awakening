@@ -929,6 +929,20 @@ export interface PlayerSummary {
 export const fetchPlayerSummary = (playerId: string) =>
   api<PlayerSummary>("GET", `/api/players/${encodeURIComponent(playerId)}/summary`);
 
+// ---- Connection doctor --------------------------------------------------
+
+export interface DoctorCheck {
+  id: string;
+  status: "ok" | "warn" | "error" | "skip";
+  summary: string;
+  detail: string;
+  hint: string;
+}
+
+export const fetchDoctor = () =>
+  api<{ ok: boolean; summary: Record<string, number>; checks: DoctorCheck[]; stderr?: string }>(
+    "GET", "/api/doctor");
+
 // ---- Character backups (native transfer subsystem) ---------------------
 
 export interface CharBackup {

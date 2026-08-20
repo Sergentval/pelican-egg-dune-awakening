@@ -1097,6 +1097,32 @@ except Exception:
         echo "[admin-publish] ERROR db-restore: pg_restore failed" >&2; exit 1
         ;;
 
+    doctor)
+        # READ-ONLY connection doctor: gathers the connectivity facts (the
+        # advertised identity, what every live map registers in farm_state,
+        # actual UDP listeners, the freshest server-state heartbeat) and hands
+        # them to admin_doctor.py for typed ok/warn/error verdicts. Catches
+        # the classic "boots fine, nobody can join" family: wrong/private
+        # advertised IP, WAN IP drift, per-map port collisions (2G2), a port
+        # advertised with no listener, stuck READY, registration without a
+        # partition row, silent FLS heartbeat. Diagnose-only — no fixes.
+        # Ported from DST's P34 connection doctor (Apache-2.0) + Red-Blink's
+        # doctor.sh checks (MIT); see ATTRIBUTION.md.
+        ext=$(printf '%s' "${DUNE_EXTERNAL_IP:-}" | tr -cd '0-9a-fA-F:.')
+        real=$({ curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true; } | tr -cd '0-9.')
+        farm=$({ dune_psql -tAc "SELECT COALESCE(json_agg(t), '[]'::json) FROM (SELECT server_id, map, host(game_addr) AS game_addr, game_port, host(igw_addr) AS igw_addr, igw_port, ready, alive, connected_players FROM dune.farm_state) t" 2>/dev/null || true; } | tail -n1)
+        pmaps=$({ dune_psql -tAc "SELECT COALESCE(json_agg(DISTINCT map), '[]'::json) FROM dune.world_partition" 2>/dev/null || true; } | tail -n1)
+        udp=$({ ss -ulnH 2>/dev/null || true; } | awk '{print $5}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
+        hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2)
+        now=$(date -u +%s)
+        python3 "$BASE/scripts/admin_doctor.py" analyze <<DOCTOR_FACTS
+{"external_ip": "$ext", "real_ip": "$real", "farm": ${farm:-[]},
+ "partition_maps": ${pmaps:-[]}, "udp_ports": [${udp:-}],
+ "heartbeat_epoch": ${hb:-null}, "now_epoch": $now}
+DOCTOR_FACTS
+        exit 0
+        ;;
+
     server-status)
         # Phase 4: per-map live player count for the server status grid. Counts
         # online players' BP_DunePlayerCharacter actors grouped by their current
