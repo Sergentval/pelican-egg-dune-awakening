@@ -348,6 +348,39 @@ WHERE (ps.player_controller_id IS NULL
 CS_SQL
 }
 
+# Tear down the CURRENT character of one account: the guild/party/ownership
+# cascades keyed on its controller actor, the player actor trio (hard-scoped
+# to player actor classes — delete_account strips ownership from bases,
+# storage and vehicles but leaves their actor rows alive with the same
+# dangling owner_account_id, so an unscoped delete would destroy all of them;
+# never widen the predicate), then this account's now link-dead player_state
+# rows — whose deletion CASCADE-removes the per-character natural-key rows
+# (player_respawn_locations, markers, …) that character_transfer_import would
+# otherwise collide with: their uuids come from the export verbatim, and
+# delete_account leaves them behind (live-reproduced 2026-08-20).
+char_teardown_account() {
+    dune_psql_q --set=aid="$1" -tA >/dev/null 2>&1 <<'CT_SQL' || true
+SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+DELETE FROM dune.actors
+WHERE owner_account_id = :'aid'::bigint
+  AND (class ILIKE '%PlayerCharacter%'
+    OR class ILIKE '%PlayerController%'
+    OR class ILIKE '%PlayerState%');
+DELETE FROM dune.encrypted_player_state ps
+WHERE ps.account_id = :'aid'::bigint
+  AND (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id));
+CT_SQL
+}
+
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
     dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
@@ -971,10 +1004,32 @@ except Exception:
         # the import — character_transfer_import destroys it via
         # delete_account, after which there is nothing left to look up.
         old_aid=$(dune_account_id "$fls_id")
-        # Pre-flight sweep: a stale duplicate player_state row breaks the
-        # import proc itself (its RespawnLocation subquery expects one row per
-        # account — live-reproduced 2026-08-20 restoring twice in a row).
+        # Patch-checksum guard BEFORE any teardown: the import proc refuses a
+        # backup from a different game patch, and by then the current
+        # character would already be torn down. Refuse first, destroy after.
+        bk_ck=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('patches_checksum', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        cur_ck=$({ dune_psql -tAc "SELECT dune._character_transfer_get_patches_checksum()" 2>/dev/null || true; } | tail -n1 | tr -d '\r\n')
+        if [ -n "$bk_ck" ] && [ -n "$cur_ck" ] && [ "$bk_ck" != "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup was taken on game patch $bk_ck, server is on $cur_ck — restore refused (take a fresh backup after each game update)" >&2
+            exit 1
+        fi
+        # PRE-import teardown of the current character (import is a FULL
+        # replace). The proc's internal delete_account leaves the current
+        # player_state row and its per-character natural-key rows alive
+        # (player_respawn_locations uuids collide on re-import —
+        # live-reproduced 2026-08-20), so the game's own teardown cascades
+        # run here first. NO trio cleanup happens post-import: the import
+        # reuses the account id (also live-observed), so an after-the-fact
+        # trio delete keyed on old_aid would destroy the restored character.
         char_state_sweep
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
         sqltmp=$(mktemp)
         errf=$(mktemp)
         {
@@ -991,26 +1046,9 @@ except Exception:
             exit 1
         fi
         rm -f "$errf"
-        # Post-import orphan cleanup (only after a genuinely successful import).
+        # Post-import: only the conservative global sweep. See the pre-import
+        # comment for why NO account-keyed trio cleanup may run here.
         char_state_sweep
-        if [ -n "$old_aid" ]; then
-            dune_psql_q --set=aid="$old_aid" -tA >/dev/null 2>&1 <<'CR_SQL' || true
-SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-DELETE FROM dune.actors
-WHERE owner_account_id = :'aid'::bigint
-  AND (class ILIKE '%PlayerCharacter%'
-    OR class ILIKE '%PlayerController%'
-    OR class ILIKE '%PlayerState%');
-CR_SQL
-        fi
         echo "[admin-publish] OK char-restore fls=$fls_id file=$file new_controller=$new_id"
         echo "publish=db-write char-restore fls=$fls_id new_controller=$new_id"
         exit 0
@@ -1045,23 +1083,8 @@ CD_SQL
             echo "[admin-publish] ERROR char-delete: dune.delete_account returned '$deleted'" >&2
             exit 1
         fi
+        char_teardown_account "$old_aid"
         char_state_sweep
-        dune_psql_q --set=aid="$old_aid" -tA >/dev/null 2>&1 <<'CD_SQL' || true
-SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
-    SELECT id FROM dune.actors
-    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
-DELETE FROM dune.actors
-WHERE owner_account_id = :'aid'::bigint
-  AND (class ILIKE '%PlayerCharacter%'
-    OR class ILIKE '%PlayerController%'
-    OR class ILIKE '%PlayerState%');
-CD_SQL
         echo "[admin-publish] OK char-delete fls=$fls_id account=$old_aid (backup taken first)"
         echo "publish=db-delete char-delete fls=$fls_id account=$old_aid"
         exit 0
