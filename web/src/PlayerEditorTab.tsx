@@ -399,7 +399,9 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
                           message: `Restore ${b.character_name || b.fls} from ${b.created_at}. This REPLACES the character's entire current state (the player must be offline). Anything done since this backup is lost.`,
                           confirmLabel: "Restore",
                           onConfirm: async () => {
+                            setBusy("char-restore");
                             const res = await charBackupRestore(b.file).catch(() => null);
+                            setBusy("");
                             const rb: unknown = res?.body;
                             const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
                               && "ok" in rb && (rb as { ok?: unknown }).ok === true;
@@ -417,7 +419,9 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
                           message: `Permanently delete backup ${b.file}. The character itself is not touched.`,
                           confirmLabel: "Delete backup",
                           onConfirm: async () => {
+                            setBusy("char-backup-delete");
                             const res = await charBackupDelete(b.file).catch(() => null);
+                            setBusy("");
                             const rb: unknown = res?.body;
                             const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
                               && "ok" in rb && (rb as { ok?: unknown }).ok === true;

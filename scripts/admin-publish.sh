@@ -914,6 +914,14 @@ SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
 FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
 CB_SQL
 )
+        # Defence in depth: fls_id lands in a filesystem path here, and the
+        # steam:/name:/me resolution branches return the DB column verbatim —
+        # re-assert the canonical hex shape before building the path.
+        case "$fls_id" in
+            *[!0-9A-Fa-f]*|"")
+                echo "[admin-publish] ERROR char-backup: resolved FLS id '$fls_id' is not canonical hex — refusing to build a backup path from it" >&2
+                exit 2 ;;
+        esac
         chardir="$BASE/backups/char"
         mkdir -p "$chardir"
         ts=$(date -u +%Y%m%d-%H%M%S)
@@ -1014,7 +1022,20 @@ try:
 except Exception:
     print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
         cur_ck=$({ dune_psql -tAc "SELECT dune._character_transfer_get_patches_checksum()" 2>/dev/null || true; } | tail -n1 | tr -d '\r\n')
-        if [ -n "$bk_ck" ] && [ -n "$cur_ck" ] && [ "$bk_ck" != "$cur_ck" ]; then
+        # FAIL CLOSED: this guard is the only thing standing between a
+        # mismatched backup and a teardown-then-failed-import (= character
+        # destroyed with nothing to replace it). An unreadable current
+        # checksum is a connectivity/build problem, not a "no mismatch"
+        # signal; a sidecar without a checksum is not verifiable.
+        if [ -z "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: cannot read the server's current patch checksum (DB unreachable?) — restore refused rather than risking a teardown the import then rejects" >&2
+            exit 1
+        fi
+        if [ -z "$bk_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup sidecar carries no patches_checksum — cannot verify it matches this game patch; restore refused. (If you are sure, add \"patches_checksum\": \"$cur_ck\" to ${file%.json}.meta.json.)" >&2
+            exit 1
+        fi
+        if [ "$bk_ck" != "$cur_ck" ]; then
             echo "[admin-publish] ERROR char-restore: backup was taken on game patch $bk_ck, server is on $cur_ck — restore refused (take a fresh backup after each game update)" >&2
             exit 1
         fi
