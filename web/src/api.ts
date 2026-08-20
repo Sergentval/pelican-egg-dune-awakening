@@ -929,6 +929,40 @@ export interface PlayerSummary {
 export const fetchPlayerSummary = (playerId: string) =>
   api<PlayerSummary>("GET", `/api/players/${encodeURIComponent(playerId)}/summary`);
 
+// ---- Bases (Red-Blink port) ---------------------------------------------
+
+export interface BaseRow {
+  base_id: string;
+  base_actor_id: string;
+  map: string;
+  pieces: string;
+  placeables: string;
+  owner: string;
+}
+
+export interface BaseWaterRow {
+  water_type: string;
+  devices: string;
+  stored: string;
+  capacity: string;
+  blood_stored: string;
+  blood_capacity: string;
+}
+
+export const fetchBases = (q = "") =>
+  api<{ ok: boolean; bases: BaseRow[] }>(
+    "GET", q ? `/api/bases?q=${encodeURIComponent(q)}` : "/api/bases");
+
+export const fetchBaseWater = (baseId: string) =>
+  api<{ ok: boolean; water: BaseWaterRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/water`);
+
+/** Server-side the refill FAILS CLOSED unless the base's map is fully
+ * stopped; the UI confirms first, so force is always sent here. */
+export const baseWaterRefill = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/water-refill`, { force: true });
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {

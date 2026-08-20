@@ -16,6 +16,7 @@ import { MarketTab } from "./MarketTab";
 import { EventsTab } from "./EventsTab";
 import { SpiceTab } from "./SpiceTab";
 import { InstancesTab } from "./InstancesTab";
+import { BasesTab } from "./BasesTab";
 import { Login, PlayerPickerModal, type ConsoleEntry } from "./components";
 import { ToastStack } from "./ToastStack";
 import { api, logout as apiLogout, me, onUnauthorized, setToken } from "./api";
@@ -28,6 +29,7 @@ import { GlobalRipple } from "./ui";
 import { Icon } from "./icons";
 
 type TabId =
+  | "bases"
   | "overview"
   | "map"
   | "broadcast"
@@ -72,6 +74,7 @@ const TABS: TabDef[] = [
   // Players — everything that acts on a player (or player-spawned content).
   { id: "players", label: "Players", icon: "players", group: "players" },
   { id: "vehicles", label: "Vehicles", icon: "vehicles", group: "players" },
+  { id: "bases", label: "Bases", icon: "layers", group: "players" },
   // Items & Economy — giving items + the in-game economy.
   { id: "give-items", label: "Give Items", icon: "items", group: "economy" },
   { id: "market", label: "Market", icon: "coin", group: "economy" },
@@ -233,6 +236,7 @@ export default function App() {
             {tab === "map" && <MapTab setConsoleEntries={setEntries} />}
             {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
             {tab === "players" && <PlayersWorkspace setConsoleEntries={setEntries} />}
+            {tab === "bases" && <BasesTab setConsoleEntries={setEntries} />}
             {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
             {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
             {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}
