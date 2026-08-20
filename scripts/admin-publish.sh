@@ -381,14 +381,35 @@ WHERE ps.account_id = :'aid'::bigint
 CT_SQL
 }
 
-# Map-down gate shared by every base write (water/fuel refill). Resolves the
-# base's map into $BASE_GATE_MAP and returns 0 only when that map provably has
-# ZERO live instances. FAILS CLOSED twice: any live instance refuses (a
-# running map rewrites base state from memory on flush — the write would
-# silently vanish), and a map name farm_state has never seen refuses too (it
-# cannot be proven down). $1 = numeric base id, $2 = label for messages.
+# Map-level down check: returns 0 only when $1 provably has ZERO live
+# instances. FAILS CLOSED twice: any live instance refuses (a running map
+# rewrites world state from memory on flush — the write would silently
+# vanish), and a map name farm_state has never seen refuses too (it cannot
+# be proven down). $1 = map name, $2 = label for messages.
+map_down_check() {
+    local m="$1" label="$2" gate alive known
+    gate=$({ dune_psql_q --set=m="$m" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
+BG_SQL
+)
+    alive="${gate%%/*}"
+    known="${gate##*/}"
+    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+        echo "[admin-publish] ERROR $label: map '$m' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+        return 1
+    fi
+    if [ "${alive:-1}" != "0" ]; then
+        echo "[admin-publish] ERROR $label: map $m has ${alive:-?} live instance(s) — a running map rewrites world state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Base-scoped wrapper: resolves the base's map into $BASE_GATE_MAP then runs
+# map_down_check. $1 = numeric base id, $2 = label for messages.
 base_map_down_gate() {
-    local bid="$1" label="$2" gate alive known
+    local bid="$1" label="$2"
     BASE_GATE_MAP=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
 SELECT a.map
 FROM dune.buildings b
@@ -402,22 +423,7 @@ BG_SQL
         echo "[admin-publish] ERROR $label: no base with id $bid" >&2
         return 2
     fi
-    gate=$({ dune_psql_q --set=m="$BASE_GATE_MAP" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
-FROM dune.farm_state WHERE map = :'m';
-BG_SQL
-)
-    alive="${gate%%/*}"
-    known="${gate##*/}"
-    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
-        echo "[admin-publish] ERROR $label: map '$BASE_GATE_MAP' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
-        return 1
-    fi
-    if [ "${alive:-1}" != "0" ]; then
-        echo "[admin-publish] ERROR $label: map $BASE_GATE_MAP has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
-        return 1
-    fi
-    return 0
+    map_down_check "$BASE_GATE_MAP" "$label"
 }
 
 # Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
@@ -1250,6 +1256,89 @@ RF_SQL
             exit 2
         fi
         echo "fls=$fls"
+        exit 0
+        ;;
+
+    base-containers)
+        # Everything stored inside ONE base's placeables, flat: one CSV row
+        # per item stack with its container (placeable id + building_type).
+        # Covers chests AND powered devices — the UI groups by container and
+        # the dedicated water/fuel panels stay the levels view. Deleting a
+        # stack goes through the generic item-delete, which now applies the
+        # map-down gate to world inventories. Read-only. Ported from
+        # Red-Blink's bases container feature (MIT).
+        bid="${1:?usage: base-containers <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-containers: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BC_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+)
+SELECT p.id AS placeable_id,
+       lower(p.building_type) AS container_type,
+       inv.id AS inventory_id,
+       COALESCE(inv.max_item_count, 0) AS slots,
+       i.id AS item_id,
+       i.template_id,
+       i.stack_size,
+       i.quality_level,
+       i.position_index
+FROM base_entities be
+JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+JOIN dune.inventories inv ON inv.actor_id = p.id
+LEFT JOIN dune.items i ON i.inventory_id = inv.id
+ORDER BY p.id, inv.id, i.position_index NULLS LAST;
+BC_SQL
+        exit 0
+        ;;
+
+    base-permissions)
+        # Permission roster of ONE base: every (rank, player) pair on the base
+        # actor, with the character name and FLS id. Rank semantics come from
+        # the game (lowest rank = owner); reading an unclaimed base yields an
+        # empty roster — that emptiness IS the diagnosis. Read-only. Ported
+        # from Red-Blink listBasePermissions (MIT); writes deliberately not
+        # ported yet (they mutate shared permission state).
+        bid="${1:?usage: base-permissions <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permissions: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.permission_actor_rank dune.encrypted_player_state \
+            dune.encrypted_accounts || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BP_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+)
+SELECT par.rank,
+       COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '') AS character,
+       COALESCE(ea."user", '') AS fls_id,
+       par.player_id
+FROM base_actor ba
+JOIN dune.permission_actor_rank par ON par.permission_actor_id = ba.actor_id
+-- LEFT: char_teardown_account (account-delete / char-restore) deletes the
+-- player actor trio while leaving permission rows in place — an INNER join
+-- here made the whole roster vanish and falsely read as "unclaimed"
+-- (review-caught). A torn-down holder keeps its rank row, with player_id as
+-- the fallback identifier.
+LEFT JOIN dune.actors player_a ON player_a.id = par.player_id
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = player_a.owner_account_id
+ORDER BY par.rank ASC, character ASC;
+BP_SQL
         exit 0
         ;;
 
@@ -3413,7 +3502,11 @@ SQL
         # Resolve item -> template/stack + owning FLS (via inventory.actor_id ->
         # actor.owner_account_id). Empty result => item (or its inventory) absent.
         row=$(dune_psql_q --set=iid="$item_id" -tAF'|' <<'SQL'
-SELECT i.template_id, i.stack_size, COALESCE(ea."user", '')
+SELECT i.template_id, i.stack_size, COALESCE(ea."user", ''),
+       CASE WHEN ac.class ILIKE '%PlayerCharacter%'
+              OR ac.class ILIKE '%PlayerController%'
+              OR ac.class ILIKE '%PlayerState%' THEN 'player' ELSE 'world' END,
+       COALESCE(ac.map, '')
 FROM dune.items i
 JOIN dune.inventories inv ON inv.id = i.inventory_id
 JOIN dune.actors ac ON ac.id = inv.actor_id
@@ -3425,12 +3518,21 @@ SQL
             echo "[admin-publish] ERROR item-delete: no item with id $item_id (or it has no valid inventory)" >&2
             exit 1
         fi
-        IFS='|' read -r it_template it_stack it_fls <<EOF2
+        IFS='|' read -r it_template it_stack it_fls it_kind it_map <<EOF2
 $row
 EOF2
-        # Offline-gate the owning character when one is resolvable (skip for
-        # container/vehicle inventories with no player owner).
-        if [ -n "$it_fls" ]; then
+        if [ "$it_kind" = "world" ]; then
+            # The inventory hangs off a PLACEABLE (base container, generator,
+            # vehicle...) — world state the RUNNING MAP caches and rewrites on
+            # flush. The owner being offline is NOT enough here: the map-down
+            # gate is (same memory-flush rule as the base refills).
+            if [ -z "$it_map" ]; then
+                echo "[admin-publish] ERROR item-delete: item $item_id sits in a world inventory with no resolvable map — refusing (fail closed)." >&2
+                exit 1
+            fi
+            map_down_check "$it_map" "item-delete" || exit $?
+        elif [ -n "$it_fls" ]; then
+            # Player-carried inventory: the offline gate is the right one.
             assert_player_offline "$it_fls" || exit $?
         fi
         rc=0

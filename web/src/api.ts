@@ -229,8 +229,10 @@ export interface PlayerTable {
 export const fetchInventory = (playerId: string) =>
   api<PlayerTable>("GET", `/api/players/${encodeURIComponent(playerId)}/inventory`);
 
-// DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated on
-// the backend (rejects while the owning character is connected).
+// DESTRUCTIVE: hard-delete one item stack by dune.items.id. Backend-gated by
+// inventory kind: player-carried items reject while the owner is connected;
+// WORLD items (base containers, vehicles) reject unless the map is fully
+// stopped (the running map caches world inventories and rewrites on flush).
 export const deleteItem = (itemId: string) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/delete`);
 
@@ -981,6 +983,33 @@ export const fetchBaseFuel = (baseId: string) =>
 export const baseFuelRefill = (baseId: string) =>
   api<PublishResult & { error?: string }>(
     "POST", `/api/bases/${encodeURIComponent(baseId)}/fuel-refill`, { force: true });
+
+export interface BaseContainerItem {
+  placeable_id: string;
+  container_type: string;
+  inventory_id: string;
+  slots: string;
+  item_id: string;
+  template_id: string;
+  stack_size: string;
+  quality_level: string;
+  position_index: string;
+}
+
+export interface BasePermissionRow {
+  rank: string;
+  character: string;
+  fls_id: string;
+  player_id: string;
+}
+
+export const fetchBaseContainers = (baseId: string) =>
+  api<{ ok: boolean; items: BaseContainerItem[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/containers`);
+
+export const fetchBasePermissions = (baseId: string) =>
+  api<{ ok: boolean; roster: BasePermissionRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/permissions`);
 
 // ---- Connection doctor --------------------------------------------------
 
