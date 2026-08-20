@@ -426,6 +426,79 @@ BG_SQL
     map_down_check "$BASE_GATE_MAP" "$label"
 }
 
+# Effective per-actor permission cap: m_MaxPermissionsPerActor under
+# [/Script/DuneSandbox.PermissionSettings] — operator override first, then the
+# depot default, then the shipped constant 32. The shipped permission
+# procedures never count rows, so this is the only place the game's cap is
+# enforced for our writes (upstream technique).
+permission_cap() {
+    local v f
+    for f in "$BASE/server/state/ue5-saved/UserSettings/UserGame.ini" \
+             "$BASE/extracted/game-server/home/dune/server/DuneSandbox/Config/DefaultGame.ini"; do
+        [ -f "$f" ] || continue
+        v=$(awk '
+            { sub(/\r$/, "") }
+            /^\[/ { s = $0; next }
+            s == "[/Script/DuneSandbox.PermissionSettings]" {
+                eq = index($0, "=")
+                if (eq > 0) {
+                    k = substr($0, 1, eq - 1); val = substr($0, eq + 1)
+                    gsub(/[ \t]/, "", k); gsub(/[ \t]/, "", val)
+                    if (k == "m_MaxPermissionsPerActor") { print val; exit }
+                }
+            }' "$f" 2>/dev/null) || true
+        case "$v" in ''|*[!0-9]*) ;; *) echo "$v"; return 0;; esac
+    done
+    echo 32
+}
+
+# Shared plpgsql preamble for the permission WRITE subcommands: resolves the
+# base's claim actor + numeric map id, row-locks the claim actor, and proves
+# the base is claimed. Emitted as text for inlining inside a DO body ($1 =
+# digits-only base id, $2 = label); callers DECLARE v_actor/v_map/v_map_id.
+#
+# The lock is on dune.actors, not the rank rows — a roster mid-edit may hold
+# zero rank rows and FOR UPDATE over zero rows serializes nothing. The claim
+# check runs AFTER the lock: an unclaimed base has the whole structural chain
+# intact and no permission_actor row, and handing its actor id to
+# permission_set_player_rank dies on the FK with raw constraint text. The
+# game's own claim/pickup paths do not take this lock, so a pickup landing
+# mid-edit can still hit the FK — that residual race is what the constraint
+# is for; the check removes the steady-state case operators actually hit.
+baseperm_guard_sql() {
+    local bid="$1" label="$2"
+    cat <<GUARD_SQL
+    SELECT a.id, COALESCE(a.map, ''), COALESCE(mn.map_name_id, 0)
+      INTO v_actor, v_map, v_map_id
+    FROM dune.buildings b
+    LEFT JOIN dune.building_instances bi ON bi.building_id = b.id
+    LEFT JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    LEFT JOIN dune.actors a ON a.id = afe.actor_id
+    LEFT JOIN dune.map_names mn ON mn.map_name = a.map
+    WHERE b.id = ${bid}::bigint
+    -- A base has several pieces and owner_entity_id is nullable (ON DELETE
+    -- SET NULL): prefer a piece whose link resolves, deterministically.
+    ORDER BY (a.id IS NULL) ASC, bi.instance_id ASC
+    LIMIT 1;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '${label}: no base with id ${bid}';
+    END IF;
+    IF v_actor IS NULL THEN
+        RAISE EXCEPTION '${label}: base ${bid} has no resolvable owner entity, so permission editing is unavailable for it';
+    END IF;
+    IF v_map_id = 0 THEN
+        RAISE EXCEPTION '${label}: map "%" of base ${bid} has no dune.map_names entry, so the running map cannot be notified of the change', v_map;
+    END IF;
+    PERFORM 1 FROM dune.actors WHERE id = v_actor FOR UPDATE;
+    IF NOT EXISTS (SELECT 1 FROM dune.permission_actor pa WHERE pa.actor_id = v_actor) THEN
+        IF EXISTS (SELECT 1 FROM dune.base_backup_linked_actors bbla WHERE bbla.actor_id = v_actor) THEN
+            RAISE EXCEPTION '${label}: base ${bid} is picked up (base-backup) — it must be redeployed in game before its permissions can change';
+        END IF;
+        RAISE EXCEPTION '${label}: base ${bid} is not claimed (no dune.permission_actor row), so the game has nothing to attach permissions to — a player must claim or redeploy it first';
+    END IF;
+GUARD_SQL
+}
+
 # Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
 # subcommands talk to the GAME broker — chat.intercept lives there). Same
 # env recipe as the ServerCommand publish path at the bottom of this file.
@@ -1324,9 +1397,22 @@ WITH base_actor AS (
     WHERE b.id = :'bid'::bigint
 )
 SELECT par.rank,
-       COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '') AS character,
+       -- Reserved system identities carry no readable character row on every
+       -- schema; label them by their stable controller id (Server = the
+       -- custodian base-transfer-custodian installs, GM = Funcom's persona).
+       CASE par.player_id
+           WHEN 900000201 THEN 'Server'
+           WHEN 900000101 THEN 'GM'
+           ELSE COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '')
+       END AS character,
        COALESCE(ea."user", '') AS fls_id,
-       par.player_id
+       par.player_id,
+       -- False = this row names an actor that is NOT the account's
+       -- player_controller_id, so the game ignores it (a rank row written
+       -- against any other actor id of the same account renders fine here
+       -- and does nothing in game — surfaced rather than hidden).
+       EXISTS (SELECT 1 FROM dune.encrypted_player_state ceps
+               WHERE ceps.player_controller_id = par.player_id) AS canonical
 FROM base_actor ba
 JOIN dune.permission_actor_rank par ON par.permission_actor_id = ba.actor_id
 -- LEFT: char_teardown_account (account-delete / char-restore) deletes the
@@ -1339,6 +1425,308 @@ LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_accou
 LEFT JOIN dune.encrypted_accounts ea ON ea.id = player_a.owner_account_id
 ORDER BY par.rank ASC, character ASC;
 BP_SQL
+        exit 0
+        ;;
+
+    base-permission-set)
+        # Set (or add) one player's rank on a base: 1=Owner, 2=Co-Owner,
+        # 3=Associate (the in-game panel decorates these as 5/4/3 — display
+        # only, the rows always hold 1-3). Goes through the game's own stored
+        # procedures: they upsert the rank row, refresh the base marker and
+        # pg_notify('permission_notify_channel', …), which every running map
+        # LISTENs on — the change applies LIVE, no restart and no map-down
+        # gate. Direct DML on permission_actor_rank is the trap here: it
+        # skips the marker + notify and the running map reverts it on flush.
+        # Enforced in this transaction because the procedures do not:
+        #   - exactly one Owner (setting a new Owner demotes the old one to
+        #     Co-Owner first; the Owner row is written LAST because the
+        #     marker refresh resolves rank 1 with LIMIT 1),
+        #   - the roster cap from live server config (permission_cap),
+        #   - player_id must be a player_controller_id — any other actor id
+        #     of the same account is accepted by the procedure, renders fine
+        #     in rosters, and is silently ignored by the game.
+        # Ported from Red-Blink setBasePermissions (MIT), per-operation
+        # instead of their whole-roster PUT.
+        bid="${1:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        pid="${2:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        rank="${3:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-set: base id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-set: player id must be numeric" >&2; exit 2;; esac
+        case "$rank" in 1|2|3) ;; *) echo "[admin-publish] ERROR base-permission-set: rank must be 1 (Owner), 2 (Co-Owner) or 3 (Associate)" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.base_backup_linked_actors || exit 3
+        cap=$(permission_cap)
+        # $bid/$pid/$rank/$cap are digits-only (validated above): safe to
+        # inline into the DO body, where :'var' interpolation does not reach.
+        perm_ok=true
+        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BPS_SQL 2>&1
+BEGIN;
+-- The shipped procedures reference their tables unqualified and carry no
+-- search_path of their own; they resolve today because we connect as the
+-- dune role ("\$user" path). Pinned anyway so the feature survives a
+-- differently-named role.
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cur INT;
+    v_count INT;
+    r RECORD;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-permission-set")
+    IF NOT EXISTS (SELECT 1 FROM dune.encrypted_player_state eps
+                   WHERE eps.player_controller_id = ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-set: ${pid} is not a player_controller_id — the game would silently ignore this permission (pick a player via base-permission-candidates)';
+    END IF;
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = ${pid}::bigint;
+    IF v_cur IS NULL THEN
+        SELECT COUNT(*) INTO v_count FROM dune.permission_actor_rank par
+         WHERE par.permission_actor_id = v_actor;
+        IF v_count >= ${cap} THEN
+            RAISE EXCEPTION 'base-permission-set: base ${bid} already holds % permissions, the configured maximum (m_MaxPermissionsPerActor=${cap})', v_count;
+        END IF;
+    END IF;
+    IF v_cur = ${rank} THEN
+        INSERT INTO _perm_report VALUES ('unchanged', ${pid}, v_cur, ${rank});
+        RETURN;
+    END IF;
+    IF ${rank} = 1 THEN
+        FOR r IN SELECT par.player_id FROM dune.permission_actor_rank par
+                  WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                    AND par.player_id <> ${pid}::bigint
+        LOOP
+            PERFORM dune.permission_set_player_rank(v_actor, r.player_id, 2::smallint, v_map_id::text);
+            INSERT INTO _perm_report VALUES ('demoted', r.player_id, 1, 2);
+        END LOOP;
+    ELSIF v_cur = 1 AND NOT EXISTS (SELECT 1 FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-set: demoting the only Owner would leave base ${bid} ownerless — promote another player to Owner instead (that demotes this one to Co-Owner automatically)';
+    END IF;
+    PERFORM dune.permission_set_player_rank(v_actor, ${pid}::bigint, ${rank}::smallint, v_map_id::text);
+    INSERT INTO _perm_report VALUES (CASE WHEN v_cur IS NULL THEN 'added' ELSE 'reranked' END, ${pid}, v_cur, ${rank});
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BPS_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-permission-set: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-permission-set base=$bid player=$pid rank=$rank"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-permission-set base=$bid player=$pid rank=$rank"
+        exit 0
+        ;;
+
+    base-permission-remove)
+        # Remove one player's permission row from a base, via the shipped
+        # procedure (deletes the rank row + the player's base marker, then
+        # notifies the running map — same live-write contract as
+        # base-permission-set above). Removing the only Owner is refused:
+        # the game expects exactly one rank-1 row per claimed base, and an
+        # ownerless base is exactly the state base-transfer-custodian exists
+        # to resolve. Ported from Red-Blink setBasePermissions (MIT).
+        bid="${1:?usage: base-permission-remove <base_id> <player_controller_id>}"
+        pid="${2:?usage: base-permission-remove <base_id> <player_controller_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-remove: base id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-remove: player id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.base_backup_linked_actors || exit 3
+        perm_ok=true
+        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BPR_SQL 2>&1
+BEGIN;
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cur INT;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-permission-remove")
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = ${pid}::bigint;
+    IF v_cur IS NULL THEN
+        RAISE EXCEPTION 'base-permission-remove: player ${pid} holds no permission on base ${bid}';
+    END IF;
+    IF v_cur = 1 AND NOT EXISTS (SELECT 1 FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-remove: removing the only Owner would leave base ${bid} ownerless — transfer ownership first (base-permission-set rank 1 on another player, or base-transfer-custodian)';
+    END IF;
+    PERFORM dune.permission_remove_player_rank(v_actor, ${pid}::bigint);
+    INSERT INTO _perm_report VALUES ('removed', ${pid}, v_cur, NULL);
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BPR_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-permission-remove: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-permission-remove base=$bid player=$pid"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-permission-remove base=$bid player=$pid"
+        exit 0
+        ;;
+
+    base-transfer-custodian)
+        # Transfer a base's ownership to a reserved SYSTEM identity while
+        # preserving everyone's access: the outgoing Owner is demoted to
+        # Co-Owner and the custodian promoted to Owner LAST, in one locked
+        # transaction (reversible from base-permission-set). Detection
+        # prefers the reserved Server persona (account 9000002, controller
+        # 900000201 — the tuple Red-Blink's Care Packages reserve, kept
+        # identical so the two stacks stay compatible), then Funcom's GM
+        # persona (9000001/900000101); both matched by their full stable
+        # account/controller/state/pawn tuple, never by display name. If
+        # neither exists the Server persona is CREATED here (account + the
+        # controller/state/pawn actor trio + player-state row) — a partial
+        # 9000002xx identity is refused rather than guessed at.
+        # NOTE dune.permission_actor_takeover is NOT a transfer path: it
+        # returns quietly via RAISE NOTICE on any base that already has an
+        # Owner. Ported from Red-Blink transferBaseToSystemCustodian (MIT).
+        bid="${1:?usage: base-transfer-custodian <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-transfer-custodian: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.encrypted_accounts dune.base_backup_linked_actors || exit 3
+        cap=$(permission_cap)
+        perm_ok=true
+        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BTC_SQL 2>&1
+BEGIN;
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cust BIGINT;
+    v_n INT;
+    v_cur INT;
+    v_count INT;
+    v_created BOOLEAN := false;
+    r RECORD;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-transfer-custodian")
+    SELECT COUNT(*), MIN(player_controller_id) INTO v_n, v_cust
+      FROM dune.encrypted_player_state
+     WHERE account_id = 9000002 AND player_controller_id = 900000201
+       AND player_state_id = 900000202 AND player_pawn_id = 900000203;
+    IF v_n > 1 THEN
+        RAISE EXCEPTION 'base-transfer-custodian: more than one canonical Server system identity exists — refusing an ambiguous transfer';
+    END IF;
+    IF v_n = 0 THEN
+        SELECT COUNT(*), MIN(player_controller_id) INTO v_n, v_cust
+          FROM dune.encrypted_player_state
+         WHERE account_id = 9000001 AND player_controller_id = 900000101
+           AND player_state_id = 900000102 AND player_pawn_id = 900000103;
+        IF v_n > 1 THEN
+            RAISE EXCEPTION 'base-transfer-custodian: more than one canonical GM system identity exists — refusing an ambiguous transfer';
+        END IF;
+    END IF;
+    IF v_n = 0 THEN
+        IF EXISTS (SELECT 1 FROM dune.encrypted_player_state WHERE account_id = 9000002)
+           OR EXISTS (SELECT 1 FROM dune.actors WHERE id IN (900000201, 900000202, 900000203)) THEN
+            RAISE EXCEPTION 'base-transfer-custodian: a conflicting partial Server identity (account 9000002 / actors 9000002xx) already exists — refusing to guess; inspect and remove it first';
+        END IF;
+        INSERT INTO dune.encrypted_accounts (id, "user", encrypted_funcom_id, takeoverable, platform_id, platform_name)
+        VALUES (9000002, '5E121CE000000001', dune.encrypt_user_data('Server#4242'), false, 'pelican-egg', 'Pelican Egg Admin')
+        ON CONFLICT (id) DO NOTHING;
+        INSERT INTO dune.actors (id, class, map, partition_id, dimension_index, owner_account_id) VALUES
+            (900000201, '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C', 'HaggaBasin', 1, 0, 9000002),
+            (900000202, '/Script/DuneSandbox.DunePlayerState', 'HaggaBasin', 1, 0, 9000002),
+            (900000203, '/Game/Dune/Characters/Player/BP_DunePlayerCharacter.BP_DunePlayerCharacter_C', 'HaggaBasin', 1, 0, 9000002);
+        INSERT INTO dune.encrypted_player_state
+            (account_id, encrypted_character_name, last_avatar_activity,
+             player_controller_id, player_pawn_id, player_state_id,
+             is_coriolis_processed, previous_server_partition_id,
+             return_dimension_index, home_dimension_index, server_id)
+        VALUES (9000002, dune.encrypt_user_data('Server'), to_timestamp(0),
+                900000201, 900000203, 900000202,
+                false, 1, 0, 0,
+                (SELECT eps.server_id FROM dune.encrypted_player_state eps
+                  WHERE eps.server_id IS NOT NULL LIMIT 1));
+        v_cust := 900000201;
+        v_created := true;
+        INSERT INTO _perm_report VALUES ('persona-created', v_cust, NULL, NULL);
+    END IF;
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = v_cust;
+    IF v_cur = 1 THEN
+        INSERT INTO _perm_report VALUES ('unchanged', v_cust, 1, 1);
+        RETURN;
+    END IF;
+    IF v_cur IS NULL THEN
+        SELECT COUNT(*) INTO v_count FROM dune.permission_actor_rank par
+         WHERE par.permission_actor_id = v_actor;
+        IF v_count >= ${cap} THEN
+            RAISE EXCEPTION 'base-transfer-custodian: base ${bid} already holds % permissions, the configured maximum (m_MaxPermissionsPerActor=${cap})', v_count;
+        END IF;
+    END IF;
+    FOR r IN SELECT par.player_id FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> v_cust
+    LOOP
+        PERFORM dune.permission_set_player_rank(v_actor, r.player_id, 2::smallint, v_map_id::text);
+        INSERT INTO _perm_report VALUES ('demoted', r.player_id, 1, 2);
+    END LOOP;
+    PERFORM dune.permission_set_player_rank(v_actor, v_cust, 1::smallint, v_map_id::text);
+    INSERT INTO _perm_report VALUES (CASE WHEN v_cur IS NULL THEN 'owner-added' ELSE 'owner-promoted' END, v_cust, v_cur, 1);
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BTC_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-transfer-custodian: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-transfer-custodian base=$bid"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-transfer-custodian base=$bid"
+        exit 0
+        ;;
+
+    base-permission-candidates)
+        # Roster picker: real permission holders only, i.e. rows keyed by
+        # player_controller_id — one account owns several actors rows and the
+        # shipped procedure accepts any of them, but the game only honours the
+        # controller id. Reserved system identities (GM/Server/MOTD, accounts
+        # 9000001-3) stay out of ordinary search. Read-only. Ported from
+        # Red-Blink permissionCandidatesQuery (MIT).
+        search="${1:-}"
+        dune_require_tables dune.encrypted_player_state dune.encrypted_accounts || exit 3
+        dune_psql_q --set=q="%${search}%" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BPC_SQL'
+SELECT eps.player_controller_id AS player_id,
+       btrim(convert_from(eps.encrypted_character_name, 'UTF8')) AS character,
+       COALESCE(ea."user", '') AS fls_id
+FROM dune.encrypted_player_state eps
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = eps.account_id
+WHERE COALESCE(eps.player_controller_id, 0) > 0
+  AND eps.account_id NOT IN (9000001, 9000002, 9000003)
+  AND btrim(convert_from(eps.encrypted_character_name, 'UTF8')) <> ''
+  AND (:'q' = '%%'
+       OR btrim(convert_from(eps.encrypted_character_name, 'UTF8')) ILIKE :'q'
+       OR eps.player_controller_id::text = btrim(:'q', '%'))
+ORDER BY character ASC
+LIMIT 25;
+BPC_SQL
         exit 0
         ;;
 

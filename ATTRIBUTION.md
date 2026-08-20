@@ -126,6 +126,18 @@ Red-Blink's bases container feature and listBasePermissions read model (MIT),
 reimplemented as base-containers / base-permissions; the item-delete gate
 split (world inventories → map-down, player inventories → offline) is ours.
 
+Base permission writes (2026-08, C3.4) port, with thanks, Red-Blink's
+setBasePermissions / transferBaseToSystemCustodian / permission-candidates
+model (MIT): the shipped-procedure write path (never direct DML — the procs
+notify the running map), the one-Owner + roster-cap + controller-id-only
+invariants, the removals→ranks→Owner-last write order, the claim-actor row
+lock, the unclaimed/picked-up refusals, and the reserved Server persona
+tuple (account 9000002 / 900000201-3, kept identical to their Care Package
+identity for cross-stack compatibility) with GM fallback and
+create-on-first-use. Reimplemented as per-operation subcommands
+(base-permission-set / -remove / base-transfer-custodian) instead of their
+whole-roster PUT.
+
 Generator fuel (2026-08, C3.2) ports, with thanks, Red-Blink's
 baseGenerators / baseGeneratorFuelLevels / refillBaseGenerators (MIT): the
 generator allowlist + accepted-fuel table with measured burn rates, the

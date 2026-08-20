@@ -617,7 +617,7 @@ Containers + permissions (read):
 
 ```text
 admin base-containers <base_id>    # CSV: one row per stored item stack, with its container
-admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id (lowest rank = owner)
+admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id, canonical
 ```
 
 - Containers covers every placeable holding an inventory (chests AND powered
@@ -626,9 +626,51 @@ admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id (lo
   the running map) requires the map-down gate, a player-carried inventory the
   offline gate.
 - An empty permission roster means the base is unclaimed — that emptiness is
-  the diagnosis. Permission WRITES are deliberately not ported yet.
+  the diagnosis.
+- `canonical=f` flags a rank row whose player id is NOT the account's
+  `player_controller_id`: the console can see it, the game ignores it.
 - HTTP: `GET /api/bases/<id>/containers`, `GET /api/bases/<id>/permissions`.
   UI: 📦 Containers + 🔑 Permissions panels in the Bases tab.
+
+Permission writes (C3.4):
+
+```text
+admin base-permission-set <base_id> <player_controller_id> <rank>  # 1=Owner 2=Co-Owner 3=Associate
+admin base-permission-remove <base_id> <player_controller_id>
+admin base-transfer-custodian <base_id>            # hand ownership to the Server/GM system identity
+admin base-permission-candidates [name-or-id]      # roster picker (controller ids only)
+```
+
+- **These apply LIVE — no map-down gate, on purpose.** Unlike water/fuel, the
+  game ships stored procedures (`permission_set_player_rank` /
+  `permission_remove_player_rank`) that upsert the row, refresh the base
+  marker and `pg_notify` the running map, which adopts the change immediately
+  (upstream verified in-game: the owner's open Permissions panel updates with
+  no relog). Direct DML on `permission_actor_rank` is the trap — it skips the
+  marker + notify and the running map reverts it on flush.
+- Invariants the procedures do NOT enforce, enforced in our transaction:
+  exactly one Owner (a new Owner demotes the old one to Co-Owner first and is
+  written LAST — the marker refresh resolves rank 1 with `LIMIT 1`); the
+  roster cap from `m_MaxPermissionsPerActor` (override → depot → 32); and the
+  player id must be a `player_controller_id` — the procedure happily writes a
+  row for any other actor id of the account, which then renders fine in every
+  roster and does nothing in game (that's what `base-permission-candidates`
+  is for).
+- Removing or demoting the ONLY Owner is refused (an ownerless base is the
+  state `base-transfer-custodian` exists to resolve). Unclaimed and
+  picked-up bases are refused with a plain message instead of an FK error.
+- `base-transfer-custodian` prefers the reserved Server persona (account
+  9000002, controller 900000201 — the same tuple Red-Blink's Care Packages
+  reserve, kept identical for cross-stack compatibility), falls back to
+  Funcom's GM persona (9000001), and CREATES the Server persona on first use.
+  Existing permissions are preserved; the outgoing Owner becomes Co-Owner.
+  Reversible: promote any player back to Owner. A partial/ambiguous
+  9000002xx identity is refused, never guessed at.
+- HTTP: `POST /api/bases/<id>/permission-set` `{player_id, rank}`,
+  `POST /api/bases/<id>/permission-remove` `{player_id}`,
+  `POST /api/bases/<id>/transfer-custodian`,
+  `GET /api/bases/permission-candidates?q=`. UI: the 🔑 panel's rank
+  dropdowns, ✕ remove, add-player picker and "Transfer to custodian…".
 
 Base list + water (recap of the section header commands): picked-up bases
 (unclaimed + base_backup-linked) are excluded from the LIST only — by-id

@@ -8,6 +8,9 @@ import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
   baseFuelRefill,
+  basePermissionRemove,
+  basePermissionSet,
+  baseTransferCustodian,
   baseWaterRefill,
   deleteItem,
   fetchBaseContainers,
@@ -15,13 +18,17 @@ import {
   fetchBasePermissions,
   fetchBases,
   fetchBaseWater,
+  fetchPermissionCandidates,
   type BaseContainerItem,
   type BaseFuelRow,
   type BasePermissionRow,
   type BaseRow,
   type BaseWaterRow,
+  type PermissionCandidate,
   type PublishResult,
 } from "./api";
+
+const RANK_LABELS: Record<string, string> = { "1": "Owner", "2": "Co-Owner", "3": "Associate" };
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 type ConfirmSpec = { title: string; message: string; confirmLabel: string; onConfirm: () => void };
@@ -39,6 +46,10 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   const [itemsLoading, setItemsLoading] = useState(false);
   const [roster, setRoster] = useState<BasePermissionRow[]>([]);
   const [rosterLoading, setRosterLoading] = useState(false);
+  const [candQ, setCandQ] = useState("");
+  // null = no search ran yet (renders nothing); [] = a search found nobody.
+  const [candidates, setCandidates] = useState<PermissionCandidate[] | null>(null);
+  const [candLoading, setCandLoading] = useState(false);
   // Selection token: a slow response for base A must never render under
   // base B's header after a quick re-selection (review-caught display race).
   const selectedIdRef = useRef<string>("");
@@ -65,6 +76,8 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
     setFuel([]);
     setItems([]);
     setRoster([]);
+    setCandidates(null);
+    setCandQ("");
     setWaterLoading(true);
     const res = await fetchBaseWater(base.base_id).catch(() => null);
     if (selectedIdRef.current !== base.base_id) return; // superseded selection
@@ -103,6 +116,34 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
       setRoster((b as { roster: BasePermissionRow[] }).roster ?? []);
     } else {
       setRoster([]);
+    }
+  }
+
+  // One funnel for the three permission mutations: run, log to console,
+  // refresh the roster of the base the write targeted (not whatever is
+  // selected by the time the response lands).
+  async function runPermissionWrite(label: string, run: () => Promise<{ ok: boolean; body: unknown } | null>) {
+    if (!selected) return;
+    const base = selected;
+    setBusy(true);
+    const res = await run().catch(() => null);
+    setBusy(false);
+    const rb: unknown = res?.body;
+    const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+      && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+    pushToConsole(setConsoleEntries, label, typeof rb === "string" ? rb : (rb as PublishResult), ok);
+    void loadRoster(base);
+  }
+
+  async function searchCandidates() {
+    setCandLoading(true);
+    const res = await fetchPermissionCandidates(candQ.trim()).catch(() => null);
+    setCandLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "candidates" in b) {
+      setCandidates((b as { candidates: PermissionCandidate[] }).candidates ?? []);
+    } else {
+      setCandidates([]);
     }
   }
 
@@ -401,15 +442,28 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
             <div>
               <h2 className="card-title">🔑 Permissions — base #{selected.base_id}</h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Who holds access on this base (lowest rank = owner). Read-only — an empty roster
-                means the base is unclaimed.
+                1 = Owner · 2 = Co-Owner · 3 = Associate. Edits go through the game's own
+                procedures and reach the running map immediately — no restart needed.
               </p>
             </div>
+            <button className="btn-ghost text-xs" disabled={busy || rosterLoading || roster.length === 0}
+              onClick={() => setConfirm({
+                title: "Transfer to system custodian?",
+                message: `Hand base #${selected.base_id} to the reserved Server identity. The current Owner is demoted to Co-Owner and keeps access; the Server persona is created on first use. Reversible by promoting a player back to Owner.`,
+                confirmLabel: "Transfer",
+                onConfirm: () => void runPermissionWrite(`base-transfer-custodian ${selected.base_id}`,
+                  () => baseTransferCustodian(selected.base_id)),
+              })}>
+              Transfer to custodian…
+            </button>
           </header>
-          <div className="card-body">
+          <div className="card-body space-y-3">
             {rosterLoading && <p className="text-xs text-slate-500">loading…</p>}
             {!rosterLoading && roster.length === 0 && (
-              <p className="text-sm text-slate-500 italic">No permission holders — this base is unclaimed.</p>
+              <p className="text-sm text-slate-500 italic">
+                No permission holders — this base is unclaimed, so the game has nothing to
+                attach permissions to. A player must claim or redeploy it first.
+              </p>
             )}
             {!rosterLoading && roster.length > 0 && (
               <table className="w-full text-xs">
@@ -418,18 +472,114 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                     <th className="pr-3 py-1">Rank</th>
                     <th className="pr-3">Character</th>
                     <th className="pr-3">FLS id</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
                   {roster.map((r, i) => (
-                    <tr key={`${r.fls_id}-${r.rank}-${i}`} className="border-t border-slate-800">
-                      <td className="pr-3 py-1 font-mono">{r.rank}{r.rank === roster[0].rank ? " 👑" : ""}</td>
-                      <td className="pr-3">{r.character || <span className="text-slate-500 italic">deleted character (actor #{r.player_id})</span>}</td>
+                    <tr key={`${r.player_id}-${i}`} className="border-t border-slate-800">
+                      <td className="pr-3 py-1">
+                        {RANK_LABELS[r.rank] ? (
+                          <select className="input-field text-xs py-0.5" value={r.rank}
+                            disabled={busy || r.canonical === "f"}
+                            onChange={(e) => {
+                              const nr = e.target.value;
+                              if (nr === r.rank || !(nr === "1" || nr === "2" || nr === "3")) return;
+                              const who = r.character || `#${r.player_id}`;
+                              if (nr === "1") {
+                                setConfirm({
+                                  title: "Promote to Owner?",
+                                  message: `Make ${who} the Owner of base #${selected.base_id}. The current Owner is demoted to Co-Owner in the same transaction.`,
+                                  confirmLabel: "Promote",
+                                  onConfirm: () => void runPermissionWrite(
+                                    `base-permission-set ${selected.base_id} ${r.player_id} 1`,
+                                    () => basePermissionSet(selected.base_id, r.player_id, 1)),
+                                });
+                              } else {
+                                void runPermissionWrite(
+                                  `base-permission-set ${selected.base_id} ${r.player_id} ${nr}`,
+                                  () => basePermissionSet(selected.base_id, r.player_id, Number(nr) as 2 | 3));
+                              }
+                            }}>
+                            <option value="1">1 — Owner</option>
+                            <option value="2">2 — Co-Owner</option>
+                            <option value="3">3 — Associate</option>
+                          </select>
+                        ) : (
+                          <span className="font-mono">{r.rank}</span>
+                        )}
+                        {r.rank === "1" ? " 👑" : ""}
+                      </td>
+                      <td className="pr-3">
+                        {r.character || <span className="text-slate-500 italic">deleted character (actor #{r.player_id})</span>}
+                        {r.canonical === "f" && (
+                          <span className="text-amber-400"
+                            title="Not a player_controller_id — the game ignores this row">{" "}⚠</span>
+                        )}
+                      </td>
                       <td className="pr-3 font-mono">{r.fls_id}</td>
+                      <td className="text-right">
+                        {r.rank !== "1" && (
+                          <button className="btn-ghost text-xs text-red-300" disabled={busy}
+                            onClick={() => setConfirm({
+                              title: "Remove permission?",
+                              message: `Remove ${r.character || `#${r.player_id}`} (${RANK_LABELS[r.rank] ?? `rank ${r.rank}`}) from base #${selected.base_id}.`,
+                              confirmLabel: "Remove",
+                              onConfirm: () => void runPermissionWrite(
+                                `base-permission-remove ${selected.base_id} ${r.player_id}`,
+                                () => basePermissionRemove(selected.base_id, r.player_id)),
+                            })}>
+                            ✕
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            )}
+            {!rosterLoading && roster.length > 0 && (
+              <div className="border-t border-slate-800 pt-3">
+                <div className="flex gap-2 items-center">
+                  <input className="input-field text-xs" placeholder="add player — name or controller id…"
+                    value={candQ} onChange={(e) => setCandQ(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void searchCandidates(); }} />
+                  <button className="btn-ghost text-xs" onClick={() => void searchCandidates()}
+                    disabled={candLoading}>
+                    {candLoading ? "…" : "search"}
+                  </button>
+                </div>
+                {candidates !== null && candidates.length === 0 && (
+                  <p className="text-xs text-slate-500 italic mt-2">No matching players.</p>
+                )}
+                {candidates !== null && candidates.length > 0 && (
+                  <table className="w-full text-xs mt-2">
+                    <tbody>
+                      {candidates.map((c) => {
+                        const held = roster.some((r) => r.player_id === c.player_id);
+                        return (
+                          <tr key={c.player_id} className="border-t border-slate-800">
+                            <td className="pr-3 py-1">{c.character}</td>
+                            <td className="pr-3 font-mono">{c.fls_id}</td>
+                            <td className="text-right">
+                              {held ? (
+                                <span className="text-slate-500 italic">already on roster</span>
+                              ) : (
+                                <button className="btn-ghost text-xs" disabled={busy}
+                                  onClick={() => void runPermissionWrite(
+                                    `base-permission-set ${selected.base_id} ${c.player_id} 3`,
+                                    () => basePermissionSet(selected.base_id, c.player_id, 3))}>
+                                  + add as Associate
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             )}
           </div>
         </div>
