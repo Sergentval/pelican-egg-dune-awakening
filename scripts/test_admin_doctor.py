@@ -87,6 +87,13 @@ class TestFarmChecks(unittest.TestCase):
         checks = by_id(analyze(f))
         self.assertEqual(checks["igw-addresses"]["status"], "error")
 
+    def test_loopback_igw_is_ok(self):
+        # Everything lives in ONE container on this stack, so S2S travel over
+        # loopback is the design, not a drift (live-verified).
+        f = facts(farm=[row(igw_addr="127.0.0.1")])
+        checks = by_id(analyze(f))
+        self.assertEqual(checks["igw-addresses"]["status"], "ok")
+
     def test_port_collision_is_error(self):
         f = facts(farm=[row(), row(server_id="s2", map="Overmap", game_port=7777)],
                   udp_ports=[7777])

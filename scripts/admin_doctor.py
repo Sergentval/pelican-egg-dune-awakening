@@ -92,8 +92,15 @@ def analyze(facts: dict) -> "list[dict]":
     else:
         checks.append(_check("advertised-addresses", "ok", "All live maps advertise the external IP"))
 
+    # Loopback IGW is LEGITIMATE on this stack: every instance lives in one
+    # container, so inter-server travel runs over 127.0.0.1 by design
+    # (live-verified — map travel works with igw_addr=127.0.0.1). Only a
+    # non-loopback address that differs from the external IP (a docker
+    # bridge leak, a stale WAN) breaks travel. DST's stricter rule applies
+    # to their multi-pod k3s topology, not here.
     igw_drift = [f"{r.get('map')}={r.get('igw_addr')}" for r in alive
-                 if ext and (r.get("igw_addr") or "") not in ("", ext)]
+                 if ext and (r.get("igw_addr") or "") not in ("", ext)
+                 and not (r.get("igw_addr") or "").startswith("127.")]
     if igw_drift:
         checks.append(_check("igw-addresses", "error",
                              f"{len(igw_drift)} live map(s) advertise a non-external IGW address",
