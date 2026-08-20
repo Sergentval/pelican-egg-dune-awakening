@@ -598,6 +598,36 @@ admin base-water-refill <base_id> # fill every water device to capacity
 - HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
   `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
 
+## Player chat commands (!ping / !kit)
+
+Players trigger actions from in-game chat. OFF by default — flip `enabled`
+in `data/admin/chat-commands.json`, then opt each command in. Ported from
+DST v13.4 (Apache-2.0); see ATTRIBUTION.md.
+
+Mechanism: the game broker's `chat.intercept` TOPIC exchange is catch-all
+bound to Funcom's own consumer; we bind a SECOND bounded queue
+(`admin.chat.commands`, max-length 500, 5-min TTL, drop-head) and get a copy
+of every chat message with zero interference. A daemon
+(`start-chat-commands.sh`, no-op while disabled) drains it every few seconds;
+a disabled tick also DROPS the queue so a switched-off panel never
+accumulates chat.
+
+```text
+admin chat-queue-init          # declare+bind the bounded copy-queue (idempotent)
+admin chat-drain [max]         # base64 MSG: lines, NoAck (at-most-once)
+admin chat-queue-drop          # remove the copy-queue
+admin resolve-funcom <Name#1234>  # chat identity -> FLS id
+```
+
+Commands (all self-targeting, per-player+command cooldown, replies via the
+broadcast banner): `!ping` (liveness pong), `!kit` (grants the configured
+item pack to the sender via give-item; templates from `admin items <search>`).
+
+Live-verified end to end by injecting synthetic TextChat envelopes into
+`chat.intercept`: drain → parse → identity resolution → grant landed in
+`dune.items` → broadcast reply; cooldown blocks repeats; the disabled path
+removes the queue.
+
 ## Connection doctor
 
 Read-only diagnosis of the "boots fine, nobody can join" family. Run it
