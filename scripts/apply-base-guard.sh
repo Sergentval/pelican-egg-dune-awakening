@@ -15,6 +15,16 @@ set -uo pipefail  # deliberately NOT -e — guard trouble must not brick the boo
 
 BASE="${1:-${DUNE_BASE_DIR:-/home/container}}"
 
+# A missing/empty engine module must land in the WARN path, not read as
+# "disabled": `python3 <missing file>` exits non-zero exactly like the
+# legitimate disabled case, and an operator who armed the guard would see
+# a calm "disabled — skipping" on every boot while their backups are NOT
+# wipe-protected (review-caught, reproduced live).
+if [ ! -s "$BASE/scripts/admin_baseguard.py" ]; then
+    echo "[base-guard] [WARN] scripts/admin_baseguard.py is missing or empty — cannot evaluate the boot re-apply; stored base backups are NOT wipe-protected. Reinstall the server to resync scripts."
+    exit 0
+fi
+
 if ! python3 "$BASE/scripts/admin_baseguard.py" enabled "$BASE"; then
     echo "[base-guard] [INFO] boot re-apply disabled (data/admin/base-guard.json) — skipping"
     exit 0

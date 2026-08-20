@@ -57,6 +57,10 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   const [candLoading, setCandLoading] = useState(false);
   const [guard, setGuard] = useState<BaseGuardState | null>(null);
   const [guardLoading, setGuardLoading] = useState(false);
+  // A fetch failure must not make the safety card vanish (the sibling
+  // panels degrade to a visible empty state, review-aligned): keep the
+  // last known state on screen and flag the staleness instead.
+  const [guardError, setGuardError] = useState(false);
   // Selection token: a slow response for base A must never render under
   // base B's header after a quick re-selection (review-caught display race).
   const selectedIdRef = useRef<string>("");
@@ -161,8 +165,9 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
     const b: unknown = res?.body;
     if (res?.ok && typeof b === "object" && b !== null && "available" in b) {
       setGuard(b as BaseGuardState);
+      setGuardError(false);
     } else {
-      setGuard(null);
+      setGuardError(true);
     }
   }
 
@@ -254,7 +259,7 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
         </div>
       </div>
 
-      {guard !== null && guard.available && (
+      {(guardError || (guard !== null && guard.available)) && (
         <div className="card">
           <header className="card-header">
             <div>
@@ -270,7 +275,7 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
               <button className="btn-ghost text-xs" onClick={() => void loadGuard()} disabled={guardLoading}>
                 {guardLoading ? "…" : "reload"}
               </button>
-              {guard.applied ? (
+              {guard?.applied ? (
                 <button className="btn-ghost text-xs text-red-300" disabled={busy || !guard.function_found}
                   onClick={() => setConfirm({
                     title: "Remove the wipe-guard?",
@@ -281,7 +286,7 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                   Remove guard…
                 </button>
               ) : (
-                <button className="btn-primary text-xs" disabled={busy || !guard.function_found}
+                <button className="btn-primary text-xs" disabled={busy || !guard || !guard.function_found}
                   onClick={() => setConfirm({
                     title: "Apply the wipe-guard?",
                     message: "Adds one exclusion to Funcom's season-cleanup function so stored base backups survive the weekly Deep Desert reset. Anchored and verified by re-read; reversible.",
@@ -294,24 +299,31 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
             </div>
           </header>
           <div className="card-body">
-            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs items-center">
-              <span>
-                Status:{" "}
-                {!guard.function_found
-                  ? <span className="text-red-300">cleanup function not found on this build</span>
-                  : guard.applied
-                    ? <span className="text-emerald-400">protected — backups survive the wipe</span>
-                    : <span className="text-amber-400">not protected</span>}
-              </span>
-              <span className="font-mono">{guard.base_backups} stored backup{guard.base_backups === 1 ? "" : "s"}</span>
-              <span className="font-mono">{guard.backup_state_actors} backup actors</span>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="checkbox" checked={guard.boot_reapply} disabled={busy}
-                  onChange={(e) => void runGuardAction(`base-guard-config ${e.target.checked ? "on" : "off"}`,
-                    () => baseGuardConfig(e.target.checked))} />
-                re-apply at every boot
-              </label>
-            </div>
+            {guardError && (
+              <p className="text-xs text-amber-400 mb-2">
+                Could not load the guard state{guard ? " — showing the last known state" : ""}. Reload to retry.
+              </p>
+            )}
+            {guard !== null && (
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs items-center">
+                <span>
+                  Status:{" "}
+                  {!guard.function_found
+                    ? <span className="text-red-300">cleanup function not found on this build</span>
+                    : guard.applied
+                      ? <span className="text-emerald-400">protected — backups survive the wipe</span>
+                      : <span className="text-amber-400">not protected</span>}
+                </span>
+                <span className="font-mono">{guard.base_backups} stored backup{guard.base_backups === 1 ? "" : "s"}</span>
+                <span className="font-mono">{guard.backup_state_actors} backup actors</span>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={guard.boot_reapply} disabled={busy}
+                    onChange={(e) => void runGuardAction(`base-guard-config ${e.target.checked ? "on" : "off"}`,
+                      () => baseGuardConfig(e.target.checked))} />
+                  re-apply at every boot
+                </label>
+              </div>
+            )}
           </div>
         </div>
       )}
