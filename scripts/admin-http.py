@@ -642,7 +642,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
-            "base-containers", "base-permissions",
+            "base-containers", "base-permissions", "base-permission-candidates",
         )
     )
     entry = {
@@ -1430,6 +1430,22 @@ class Handler(BaseHTTPRequestHandler):
                               "facts": data.get("facts", {}),
                               "error": data.get("error", ""),
                               "context": data.get("context", ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Roster picker for permission edits: players keyed by their
+        # player_controller_id (the only id the game honours in
+        # permission_actor_rank). Reserved system identities excluded.
+        if path == "/api/bases/permission-candidates":
+            q = (query.get("q", [""])[0] if isinstance(query, dict) else "") or ""
+            entry = run_publish(["base-permission-candidates", q] if q
+                                else ["base-permission-candidates"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "permission tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "candidates": _csv_rows(entry.get("stdout") or ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
@@ -2277,6 +2293,76 @@ class Handler(BaseHTTPRequestHandler):
                                              "Re-send with force:true."})
                 return
             entry = run_publish(["base-fuel-refill", bid], timeout=30)
+            self._write(200, entry)
+            return
+
+        # Set (or add) one player's rank on a base (1=Owner, 2=Co-Owner,
+        # 3=Associate). Applies LIVE — unlike the refills there is no map-down
+        # gate: the shipped procedures notify the running map, which adopts
+        # the change immediately. Promoting a new Owner demotes the current
+        # one to Co-Owner in the same transaction (server-enforced).
+        # POST /api/bases/<id>/permission-set  body {"player_id", "rank"}
+        if path.startswith("/api/bases/") and path.endswith("/permission-set"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/permission-set")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            pid = str(body.get("player_id", "")) if isinstance(body, dict) else ""
+            rank = str(body.get("rank", "")) if isinstance(body, dict) else ""
+            if not pid.isdigit():
+                self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                return
+            if rank not in ("1", "2", "3"):
+                self._write(400, {"error": "rank must be 1 (Owner), 2 (Co-Owner) or 3 (Associate)"})
+                return
+            entry = run_publish(["base-permission-set", bid, pid, rank], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Remove one player's permission from a base. Removing the only Owner
+        # is refused by the subcommand (transfer ownership first).
+        # POST /api/bases/<id>/permission-remove  body {"player_id"}
+        if path.startswith("/api/bases/") and path.endswith("/permission-remove"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/permission-remove")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            pid = str(body.get("player_id", "")) if isinstance(body, dict) else ""
+            if not pid.isdigit():
+                self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                return
+            entry = run_publish(["base-permission-remove", bid, pid], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Transfer a base's ownership to the reserved system custodian
+        # (Server/GM persona), preserving every existing permission; the
+        # Server persona is created on first use. Reversible from
+        # permission-set. POST /api/bases/<id>/transfer-custodian  body {}
+        if path.startswith("/api/bases/") and path.endswith("/transfer-custodian"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/transfer-custodian")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-transfer-custodian", bid], timeout=20)
             self._write(200, entry)
             return
 

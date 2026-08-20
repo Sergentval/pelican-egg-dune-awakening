@@ -1001,6 +1001,15 @@ export interface BasePermissionRow {
   character: string;
   fls_id: string;
   player_id: string;
+  /** "f" = this row names an actor the game ignores (not the account's
+   *  player_controller_id) — shown, but rank edits are pointless on it. */
+  canonical: string;
+}
+
+export interface PermissionCandidate {
+  player_id: string;
+  character: string;
+  fls_id: string;
 }
 
 export const fetchBaseContainers = (baseId: string) =>
@@ -1010,6 +1019,27 @@ export const fetchBaseContainers = (baseId: string) =>
 export const fetchBasePermissions = (baseId: string) =>
   api<{ ok: boolean; roster: BasePermissionRow[] }>(
     "GET", `/api/bases/${encodeURIComponent(baseId)}/permissions`);
+
+export const fetchPermissionCandidates = (q: string) =>
+  api<{ ok: boolean; candidates: PermissionCandidate[] }>(
+    "GET", `/api/bases/permission-candidates${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+/** Live write: the game's stored procedures notify the running map — no
+ *  map-down gate, the change applies immediately. Promoting a new Owner
+ *  demotes the current one to Co-Owner in the same transaction. */
+export const basePermissionSet = (baseId: string, playerId: string, rank: 1 | 2 | 3) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/permission-set`,
+    { player_id: playerId, rank });
+
+export const basePermissionRemove = (baseId: string, playerId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/permission-remove`,
+    { player_id: playerId });
+
+export const baseTransferCustodian = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/transfer-custodian`, {});
 
 // ---- Connection doctor --------------------------------------------------
 
