@@ -892,6 +892,20 @@
       "sort": 61
     },
     {
+      "name": "Character Backup Retention (per player)",
+      "description": "How many character backups to keep PER PLAYER under backups/char/ (oldest pruned after each new backup). Each backup is a full-character snapshot taken via the game's own transfer subsystem — see the admin panel's Character backups card. Default 10.",
+      "env_variable": "DUNE_CHAR_BACKUP_RETENTION",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "integer",
+        "between:1,100"
+      ],
+      "sort": 62
+    },
+    {
       "name": "PvP-Enabled Partitions",
       "description": "Comma-separated world partition ids that run as PvP instances — Funcom's per-instance PvP mechanism (one +m_PvpEnabledPartitions line per id in the shared UserGame.ini). 8 = the always-warm Deep Desert, 101-103 = the Deep Desert sandstorm tunnels (see the Instances tab for your ids). Empty = everything stays PvE. Restart required. Ignored while 'Force PvP On All Partitions' is True.",
       "env_variable": "DUNE_PVP_PARTITIONS",
@@ -903,7 +917,7 @@
         "string",
         "max:128"
       ],
-      "sort": 62
+      "sort": 63
     },
     {
       "name": "Deep Desert Instance Picker Routing",
@@ -917,7 +931,21 @@
         "string",
         "in:True,False"
       ],
-      "sort": 63
+      "sort": 64
+    },
+    {
+      "name": "Egg Scripts Ref (advanced)",
+      "description": "Git ref (branch, tag or commit SHA) of the egg repo that Reinstall fetches scripts from. Default main. Set to a branch name to test an unreleased fix, then back to main and Reinstall again. The install script always honored this variable — it just was never declared in the egg (issue #106 feedback).",
+      "env_variable": "DUNE_EGG_REF",
+      "default_value": "main",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "required",
+        "string",
+        "max:120"
+      ],
+      "sort": 65
     }
   ]
 }

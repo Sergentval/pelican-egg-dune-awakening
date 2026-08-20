@@ -323,6 +323,123 @@ SQL
 # developer-supplied constants, never user input.
 # --------------------------------------------------------------------------
 
+# Sweep stale dune.encrypted_player_state rows, both known shapes. Safe and
+# idempotent; used PRE-import (a leftover duplicate row breaks
+# character_transfer_import's RespawnLocation subquery — live-reproduced
+# 2026-08-20), post-restore and post-delete.
+#   1. account-orphaned rows (dune-admin v0.46.0's sweep, MIT);
+#   2. link-dead duplicates on a LIVE account (our addition): a self-restore
+#      keeps the account id, so the previous row is not account-orphaned — it
+#      sits next to the fresh one with NULL/dangling actor links. Removed only
+#      when a healthy row for the same account exists; an account's only row
+#      is never touched (a not-yet-spawned character legitimately has NULL links).
+char_state_sweep() {
+    dune_psql_q -tA >/dev/null 2>&1 <<'CS_SQL' || true
+DELETE FROM dune.encrypted_player_state ps
+WHERE NOT EXISTS (SELECT 1 FROM dune.encrypted_accounts a WHERE a.id = ps.account_id);
+DELETE FROM dune.encrypted_player_state ps
+WHERE (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id))
+  AND EXISTS (SELECT 1 FROM dune.encrypted_player_state live
+              WHERE live.account_id = ps.account_id
+                AND live.ctid <> ps.ctid
+                AND live.player_controller_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM dune.actors a2 WHERE a2.id = live.player_controller_id));
+CS_SQL
+}
+
+# Tear down the CURRENT character of one account: the guild/party/ownership
+# cascades keyed on its controller actor, the player actor trio (hard-scoped
+# to player actor classes — delete_account strips ownership from bases,
+# storage and vehicles but leaves their actor rows alive with the same
+# dangling owner_account_id, so an unscoped delete would destroy all of them;
+# never widen the predicate), then this account's now link-dead player_state
+# rows — whose deletion CASCADE-removes the per-character natural-key rows
+# (player_respawn_locations, markers, …) that character_transfer_import would
+# otherwise collide with: their uuids come from the export verbatim, and
+# delete_account leaves them behind (live-reproduced 2026-08-20).
+char_teardown_account() {
+    dune_psql_q --set=aid="$1" -tA >/dev/null 2>&1 <<'CT_SQL' || true
+SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+DELETE FROM dune.actors
+WHERE owner_account_id = :'aid'::bigint
+  AND (class ILIKE '%PlayerCharacter%'
+    OR class ILIKE '%PlayerController%'
+    OR class ILIKE '%PlayerState%');
+DELETE FROM dune.encrypted_player_state ps
+WHERE ps.account_id = :'aid'::bigint
+  AND (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id));
+CT_SQL
+}
+
+# Map-down gate shared by every base write (water/fuel refill). Resolves the
+# base's map into $BASE_GATE_MAP and returns 0 only when that map provably has
+# ZERO live instances. FAILS CLOSED twice: any live instance refuses (a
+# running map rewrites base state from memory on flush — the write would
+# silently vanish), and a map name farm_state has never seen refuses too (it
+# cannot be proven down). $1 = numeric base id, $2 = label for messages.
+base_map_down_gate() {
+    local bid="$1" label="$2" gate alive known
+    BASE_GATE_MAP=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT a.map
+FROM dune.buildings b
+JOIN dune.building_instances bi ON bi.building_id = b.id
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+JOIN dune.actors a ON a.id = afe.actor_id
+WHERE b.id = :'bid'::bigint LIMIT 1;
+BG_SQL
+)
+    if [ -z "$BASE_GATE_MAP" ]; then
+        echo "[admin-publish] ERROR $label: no base with id $bid" >&2
+        return 2
+    fi
+    gate=$({ dune_psql_q --set=m="$BASE_GATE_MAP" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
+BG_SQL
+)
+    alive="${gate%%/*}"
+    known="${gate##*/}"
+    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+        echo "[admin-publish] ERROR $label: map '$BASE_GATE_MAP' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+        return 1
+    fi
+    if [ "${alive:-1}" != "0" ]; then
+        echo "[admin-publish] ERROR $label: map $BASE_GATE_MAP has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
+# subcommands talk to the GAME broker — chat.intercept lives there). Same
+# env recipe as the ServerCommand publish path at the bottom of this file.
+rmq_eval() {
+    local node="$1" erl="$2" home
+    if [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; then
+        echo "[admin-publish] ERROR rabbitmqctl missing at $RMQ_SBIN/rabbitmqctl" >&2
+        return 1
+    fi
+    case "$node" in
+        rabbit-game@*)  home="$BASE/runtime/mq-game-home" ;;
+        *)              home="$BASE/runtime/mq-admin-home" ;;
+    esac
+    PATH="$RMQ_SBIN:$ERL_ROOT/erts-14.2.5.12/bin:$ERL_ROOT/bin:$PATH" \
+    ERL_LIBS="$ERL_ROOT/lib" \
+    LD_LIBRARY_PATH="$MQ_ROOT/usr/lib:$MQ_ROOT/usr/local/lib:${LD_LIBRARY_PATH:-}" \
+    HOME="$home" \
+        "$RMQ_SBIN/rabbitmqctl" --node "$node" eval "$erl" 2>&1
+}
+
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
     dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
@@ -826,6 +943,197 @@ SQL
         exit 0
         ;;
 
+    char-backup)
+        # Native FULL-CHARACTER backup via dune.character_transfer_export —
+        # the game's own server-to-server transfer subsystem (~50-table
+        # footprint: account, actors, inventories, items, vehicles,
+        # progression…, local ids remapped to portable transfer ids). The
+        # proc REQUIRES the player offline (raises 'sbRP2$' otherwise); we
+        # gate first for a clean message. Writes
+        # $BASE/backups/char/char-<fls>-<ts>.json + .meta.json sidecar
+        # (records the '_patches_checksum' a later restore must match), then
+        # prunes to per-player retention. Ported from Icehunter/dune-admin
+        # v0.46.0 (MIT).
+        raw="${1:?usage: char-backup <fls_id|me|steam:<id>|name:<n>> [action] [reason]}"
+        action="${2:-manual}"
+        reason="${3:-}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR char-backup: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR char-backup: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        cname=$({ dune_psql_q --set=aid="$aid" -tA 2>/dev/null <<'CB_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
+FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
+CB_SQL
+)
+        # Defence in depth: fls_id lands in a filesystem path here, and the
+        # steam:/name:/me resolution branches return the DB column verbatim —
+        # re-assert the canonical hex shape before building the path.
+        case "$fls_id" in
+            *[!0-9A-Fa-f]*|"")
+                echo "[admin-publish] ERROR char-backup: resolved FLS id '$fls_id' is not canonical hex — refusing to build a backup path from it" >&2
+                exit 2 ;;
+        esac
+        chardir="$BASE/backups/char"
+        mkdir -p "$chardir"
+        ts=$(date -u +%Y%m%d-%H%M%S)
+        out="$chardir/char-$fls_id-$ts.json"
+        errf=$(mktemp)
+        if ! dune_psql_q --set=fls="$fls_id" -tA >"$out" 2>"$errf" <<'CB_SQL'
+SELECT dune.character_transfer_export(:'fls');
+CB_SQL
+        then
+            echo "[admin-publish] ERROR char-backup: export failed: $(head -c 2000 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$out" "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # write_meta validates the export json and extracts the checksum; a
+        # backup an admin can't trust is worse than no backup at all.
+        meta_out=$(python3 "$BASE/scripts/admin_charbackup.py" meta "$chardir" "$(basename "$out")" "$fls_id" "$cname" "$action" "$reason")
+        case "$meta_out" in
+            '{"ok": true'*) : ;;
+            *)  echo "[admin-publish] ERROR char-backup: $meta_out" >&2
+                rm -f "$out"
+                exit 1 ;;
+        esac
+        python3 "$BASE/scripts/admin_charbackup.py" prune "$chardir" "${DUNE_CHAR_BACKUP_RETENTION:-10}" >/dev/null 2>&1 || true
+        sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+        echo "charbackup=ok file=$(basename "$out") fls=$fls_id name=$cname checksum_ok=true bytes=$sz"
+        exit 0
+        ;;
+
+    char-backup-list)
+        # JSON list of character backups (newest first), optionally for one
+        # player. Pure file read — the sidecar metadata carries name/action/
+        # checksum.
+        chardir="$BASE/backups/char"
+        if [ -n "${1:-}" ]; then
+            fls_id=$(resolve_player_id "$1") || exit 1
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir" "$fls_id"
+        else
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir"
+        fi
+        exit 0
+        ;;
+
+    char-backup-delete)
+        # Delete ONE backup (data + sidecar). Path-safety through the python
+        # gate: canonical name + realpath containment.
+        file="${1:?usage: char-backup-delete <char-...json>}"
+        chardir="$BASE/backups/char"
+        if ! python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file" >/dev/null 2>&1; then
+            echo "[admin-publish] ERROR char-backup-delete: unknown or unsafe backup '$file'" >&2
+            exit 2
+        fi
+        rm -f "$chardir/$file" "$chardir/${file%.json}.meta.json"
+        echo "publish=db-delete char-backup-delete file=$file"
+        exit 0
+        ;;
+
+    char-restore)
+        # FULL REPLACE of the character for the backup's FLS id via
+        # dune.character_transfer_import (requires the player offline AND the
+        # exported '_patches_checksum' to match the current game patch — the
+        # proc enforces both; its messages surface unchanged). The import
+        # internally calls dune.delete_account, which is known to leave (a) an
+        # orphaned dune.encrypted_player_state row and (b) the old player
+        # actor trio (pawn/controller/player-state) behind — both cleaned up
+        # after a successful import, the trio HARD-SCOPED to the player actor
+        # classes of the replaced account: delete_account strips ownership
+        # from bases/vehicles/storage but leaves their actor rows alive with
+        # the same dangling owner_account_id, so an unscoped delete would
+        # destroy every one of them. Never widen that predicate. Ported from
+        # Icehunter/dune-admin v0.46.0 (MIT).
+        file="${1:?usage: char-restore <char-...json>}"
+        chardir="$BASE/backups/char"
+        path_out=$(python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file") || {
+            echo "[admin-publish] ERROR char-restore: unknown or unsafe backup '$file'" >&2
+            exit 2
+        }
+        bpath="$chardir/$file"
+        fls_id=$(basename "$file" | sed -E 's/^char-([0-9A-Fa-f]+)-[0-9]{8}-[0-9]{6}\.json$/\1/')
+        cname=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('character_name', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        assert_player_offline "$fls_id" || exit $?
+        # The account currently holding this FLS id must be resolved BEFORE
+        # the import — character_transfer_import destroys it via
+        # delete_account, after which there is nothing left to look up.
+        old_aid=$(dune_account_id "$fls_id")
+        # Patch-checksum guard BEFORE any teardown: the import proc refuses a
+        # backup from a different game patch, and by then the current
+        # character would already be torn down. Refuse first, destroy after.
+        bk_ck=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('patches_checksum', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        cur_ck=$({ dune_psql -tAc "SELECT dune._character_transfer_get_patches_checksum()" 2>/dev/null || true; } | tail -n1 | tr -d '\r\n')
+        # FAIL CLOSED: this guard is the only thing standing between a
+        # mismatched backup and a teardown-then-failed-import (= character
+        # destroyed with nothing to replace it). An unreadable current
+        # checksum is a connectivity/build problem, not a "no mismatch"
+        # signal; a sidecar without a checksum is not verifiable.
+        if [ -z "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: cannot read the server's current patch checksum (DB unreachable?) — restore refused rather than risking a teardown the import then rejects" >&2
+            exit 1
+        fi
+        if [ -z "$bk_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup sidecar carries no patches_checksum — cannot verify it matches this game patch; restore refused. (If you are sure, add \"patches_checksum\": \"$cur_ck\" to ${file%.json}.meta.json.)" >&2
+            exit 1
+        fi
+        if [ "$bk_ck" != "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup was taken on game patch $bk_ck, server is on $cur_ck — restore refused (take a fresh backup after each game update)" >&2
+            exit 1
+        fi
+        # PRE-import teardown of the current character (import is a FULL
+        # replace). The proc's internal delete_account leaves the current
+        # player_state row and its per-character natural-key rows alive
+        # (player_respawn_locations uuids collide on re-import —
+        # live-reproduced 2026-08-20), so the game's own teardown cascades
+        # run here first. NO trio cleanup happens post-import: the import
+        # reuses the account id (also live-observed), so an after-the-fact
+        # trio delete keyed on old_aid would destroy the restored character.
+        char_state_sweep
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
+        sqltmp=$(mktemp)
+        errf=$(mktemp)
+        {
+            printf '\\set data `cat %s`\n' "$bpath"
+            printf "SELECT dune.character_transfer_import(:'data'::jsonb, :'fls', :'nm');\n"
+        } > "$sqltmp"
+        import_ok=true
+        raw_out=$(dune_psql --set=fls="$fls_id" --set=nm="$cname" -tA -f "$sqltmp" 2>"$errf") || import_ok=false
+        new_id=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
+        rm -f "$sqltmp"
+        if [ "$import_ok" != "true" ] || [ -z "$new_id" ]; then
+            echo "[admin-publish] ERROR char-restore: import failed: $(head -c 2000 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # Post-import: only the conservative global sweep. See the pre-import
+        # comment for why NO account-keyed trio cleanup may run here.
+        char_state_sweep
+        echo "[admin-publish] OK char-restore fls=$fls_id file=$file new_controller=$new_id"
+        echo "publish=db-write char-restore fls=$fls_id new_controller=$new_id"
+        exit 0
+        ;;
+
     db-restore)
         # DESTRUCTIVE, CLI-ONLY. pg_restore --clean a backup into the dune DB.
         # Hard-gated: confirm token must be RESTORE, and NO UE5 game server may be
@@ -846,6 +1154,548 @@ SQL
             exit 0
         fi
         echo "[admin-publish] ERROR db-restore: pg_restore failed" >&2; exit 1
+        ;;
+
+    chat-queue-init)
+        # Bind a SECOND, BOUNDED queue to the game broker's `chat.intercept`
+        # TOPIC exchange (catch-all '#'): a COPY of every chat message,
+        # leaving Funcom's own queue.intercept consumer untouched. Bounded by
+        # construction (max-length 500 + 5 min TTL, drop-head) so a stopped
+        # drainer can never pressure the broker. Idempotent. Mechanism from
+        # DST v13.4 (Apache-2.0), proven live by them 2026-08-04.
+        out=$(rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+Args = [{<<"x-max-length">>, long, 500},
+        {<<"x-message-ttl">>, long, 300000},
+        {<<"x-overflow">>, longstr, <<"drop-head">>}],
+rabbit_amqqueue:declare(QName, false, false, Args, none, <<"admin">>),
+XName = rabbit_misc:r(<<"/">>, exchange, <<"chat.intercept">>),
+rabbit_binding:add({binding, XName, <<"#">>, QName, []}, <<"admin">>).
+') || { echo "[admin-publish] ERROR chat-queue-init: $out" >&2; exit 1; }
+        echo "[admin-publish] OK chat-queue-init"
+        echo "publish=db-write chat-queue-init queue=admin.chat.commands"
+        exit 0
+        ;;
+
+    chat-queue-drop)
+        # Remove the copy-queue. Called when the feature is switched off, so
+        # a disabled panel is not quietly accumulating everything players type.
+        out=$(rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+case rabbit_amqqueue:lookup(QName) of
+  {ok, Q} -> rabbit_amqqueue:delete(Q, false, false, <<"admin">>), io:format("removed~n");
+  _ -> io:format("absent~n")
+end.
+') || { echo "[admin-publish] ERROR chat-queue-drop: $out" >&2; exit 1; }
+        echo "[admin-publish] OK chat-queue-drop ($(printf '%s' "$out" | grep -o 'removed\|absent' | head -1))"
+        echo "publish=db-write chat-queue-drop queue=admin.chat.commands"
+        exit 0
+        ;;
+
+    chat-drain)
+        # Drain up to N messages from the copy-queue, one base64 body per
+        # MSG: line (bodies carry UTF-8 + newlines). NoAck: the queue is ours
+        # alone and a command already read but failed must NOT redeliver
+        # forever — at-most-once is the right semantic for a chat command.
+        max="${1:-25}"
+        case "$max" in *[!0-9]*|"") max=25;; esac
+        [ "$max" -gt 200 ] && max=200
+        rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+case rabbit_amqqueue:lookup(QName) of
+  {ok, Q} ->
+    F = fun(Loop, N) ->
+      case N of
+        0 -> ok;
+        _ ->
+          case rabbit_amqqueue:basic_get(Q, true, 0, <<"admin">>, rabbit_queue_type:init()) of
+            {ok, _C, {_QN, _QP, _MI, _RD, Msg}, _S} ->
+              Content = mc:protocol_state(Msg),
+              Body = iolist_to_binary(lists:reverse(element(6, Content))),
+              io:format("MSG:~s~n", [base64:encode(Body)]),
+              Loop(Loop, N - 1);
+            _ -> ok
+          end
+      end
+    end,
+    F(F, '"$max"');
+  _ -> io:format("NOQUEUE~n")
+end.
+'
+        exit 0
+        ;;
+
+    resolve-funcom)
+        # Chat identity ("Name#1234", m_FuncomIdFrom) -> FLS id. The column
+        # is plain UTF-8 bytes when user-data encryption is As-is, same as
+        # the character name.
+        fid="${1:?usage: resolve-funcom <Name#1234>}"
+        # count||user in one round trip: an AMBIGUOUS identity is refused
+        # (same treatment as the 'me' shortcut) — a chat command must never
+        # act on an arbitrary one of two accounts.
+        row=$({ dune_psql_q --set=fid="$fid" -tA 2>/dev/null <<'RF_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*)::text || '|' || COALESCE(MIN("user"), '')
+FROM dune.encrypted_accounts
+WHERE convert_from(encrypted_funcom_id, 'UTF8') = :'fid';
+RF_SQL
+)
+        n="${row%%|*}"
+        fls="${row#*|}"
+        if [ -z "$row" ] || [ "${n:-0}" = "0" ] || [ -z "$fls" ]; then
+            echo "[admin-publish] ERROR resolve-funcom: no account with chat identity '$fid'" >&2
+            exit 2
+        fi
+        if [ "$n" != "1" ]; then
+            echo "[admin-publish] ERROR resolve-funcom: $n accounts share chat identity '$fid' — refusing to pick one" >&2
+            exit 2
+        fi
+        echo "fls=$fls"
+        exit 0
+        ;;
+
+    bases)
+        # Base inventory: every claimed base (a dune.buildings row whose owner
+        # actor is placed in the world), with owner (lowest-rank permission
+        # holder), map, piece + placeable counts. Picked-up bases (unclaimed
+        # AND base_backup-linked) are excluded — the base-backup tool leaves
+        # every row intact, so unfiltered they list as ordinary ownerless
+        # bases. Read-only. Ported from Red-Blink listBases (MIT).
+        search="${1:-}"
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.placeables dune.base_backup_linked_actors || exit 3
+        dune_psql_q --set=q="%${search}%" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BASES_SQL'
+SELECT b.id AS base_id,
+       a.id AS base_actor_id,
+       a.map AS map,
+       COUNT(DISTINCT bi.instance_id)::int AS pieces,
+       COALESCE(pl.placeables, 0) AS placeables,
+       COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') AS owner
+FROM dune.buildings b
+JOIN dune.building_instances bi ON bi.building_id = b.id
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+JOIN dune.actors a ON a.id = afe.actor_id
+LEFT JOIN dune.permission_actor pa ON pa.actor_id = a.id
+LEFT JOIN LATERAL (
+    SELECT ps.encrypted_character_name
+    FROM dune.permission_actor_rank par
+    JOIN dune.actors player_a ON player_a.id = par.player_id
+    JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
+    WHERE par.permission_actor_id = a.id
+    ORDER BY par.rank ASC, par.player_id ASC LIMIT 1
+) owner_ps ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COUNT(DISTINCT p.id)::int AS placeables
+    FROM dune.actor_fgl_entities cafe
+    JOIN dune.placeables p ON p.owner_entity_id = cafe.entity_id
+    WHERE cafe.actor_id = a.id
+) pl ON TRUE
+WHERE a.transform IS NOT NULL
+  AND NOT (pa.actor_id IS NULL AND EXISTS (
+        SELECT 1 FROM dune.base_backup_linked_actors bbla WHERE bbla.actor_id = a.id))
+  AND (:'q' = '%%' OR COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') ILIKE :'q'
+       OR a.map ILIKE :'q')
+GROUP BY b.id, a.id, a.map, owner_ps.encrypted_character_name, pl.placeables
+ORDER BY pieces DESC
+LIMIT 200;
+BASES_SQL
+        exit 0
+        ;;
+
+    base-fuel)
+        # Per-DEVICE generator fuel for ONE base: fuel-powered (Oil, 1h/unit),
+        # spice-powered (SpicedFuelCell, 1.5h), omni/directional wind turbines
+        # (lubricants 1h/1.5h). Fuel lives as ITEM STACKS in the generator's
+        # own inventory (inventories.actor_id = placeable id); only the type's
+        # accepted template counts — an incompatible lubricant in a turbine
+        # contributes nothing. Per-device (not per-type) on purpose: one
+        # starved device among full siblings is exactly what a refill decision
+        # turns on. Burn seconds are upstream's measured values WITHOUT event
+        # multipliers (Funcom occasionally runs 2x uptime events; we report
+        # base rates). Read-only. Ported from Red-Blink baseGeneratorFuelLevels
+        # (MIT).
+        bid="${1:?usage: base-fuel <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-fuel: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BF_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), gen_types(gen_name, building_type, fuel_template, burn_secs, stack_sz, max_stacks, total_cap) AS (
+    VALUES ('Fuel-Powered Generator'::text, 'generator_placeable'::text, 'Oil'::text, 3600, 499, 1, 499),
+           ('Spice-Powered Generator', 'spicegenerator_placeable', 'SpicedFuelCell', 5400, 499, 1, 499),
+           ('Omnidirectional Wind Turbine', 'windturbineomnidirectional_placeable', 'WindTurbineLubricant1', 3600, 100, 5, 499),
+           ('Directional Wind Turbine', 'windturbinedirectional_placeable', 'WindTurbineLubricant2', 5400, 100, 5, 499)
+), devices AS (
+    SELECT p.id AS placeable_id, gt.gen_name, gt.fuel_template, gt.burn_secs, gt.total_cap,
+           inv.id AS inventory_id
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN gen_types gt ON gt.building_type = lower(p.building_type)
+    LEFT JOIN LATERAL (
+        SELECT id FROM dune.inventories WHERE actor_id = p.id ORDER BY id LIMIT 1
+    ) inv ON TRUE
+)
+SELECT d.placeable_id,
+       d.gen_name AS generator,
+       d.fuel_template AS fuel,
+       COALESCE(stock.units, 0) AS units,
+       d.total_cap AS cap,
+       ROUND(COALESCE(stock.units, 0) * 100.0 / d.total_cap, 1) AS percent,
+       ROUND(COALESCE(stock.units, 0) * d.burn_secs / 3600.0, 1) AS runtime_hours
+FROM devices d
+LEFT JOIN LATERAL (
+    SELECT SUM(i.stack_size)::int AS units
+    FROM dune.items i
+    WHERE i.inventory_id = d.inventory_id
+      AND lower(i.template_id) = lower(d.fuel_template)
+) stock ON TRUE
+ORDER BY d.placeable_id;
+BF_SQL
+        exit 0
+        ;;
+
+    base-fuel-refill)
+        # Top every generator/turbine of ONE base up to its cap, the way the
+        # game stores fuel: fill partial stacks first, then insert new item
+        # stacks (house 6-column recipe, the one give-item's offline path is
+        # live-proven on), bounded by the per-type stack size and max stacks
+        # and by the inventory's max_item_count. One transaction; the
+        # inventory row is locked BEFORE its fuel rows so a device with zero
+        # rows still gives a concurrent refill something to queue behind
+        # (upstream's technique). Same fail-closed map-down gate as water.
+        # Ported from Red-Blink refillBaseGenerators (MIT), with our explicit
+        # gate in place of their pending-refill queue.
+        bid="${1:?usage: base-fuel-refill <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-fuel-refill: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items dune.farm_state || exit 3
+        base_map_down_gate "$bid" "base-fuel-refill" || exit $?
+        # $bid is digits-only (validated above): safe to inline into the DO
+        # body, where psql :'var' interpolation does not reach ($$-quoted).
+        refill_ok=true
+        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
+BEGIN;
+CREATE TEMP TABLE _fuel_report (
+    placeable_id BIGINT, fuel TEXT, before_units INT, after_units INT,
+    added INT, note TEXT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    dev RECORD;
+    itemrow RECORD;
+    before_units INT;
+    stacks_now INT;
+    deficit INT;
+    room INT;
+    addn INT;
+    slots_used INT;
+    free_slots INT;
+    stacks_allowed INT;
+    next_pos BIGINT;
+BEGIN
+    FOR dev IN
+        WITH base_actor AS (
+            SELECT DISTINCT afe.actor_id
+            FROM dune.buildings b
+            JOIN dune.building_instances bi ON bi.building_id = b.id
+            JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+            WHERE b.id = ${bid}::bigint
+        ), base_entities AS (
+            SELECT cafe.entity_id
+            FROM base_actor ba
+            JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+        ), gen_types(building_type, fuel_template, stack_sz, max_stacks, total_cap) AS (
+            VALUES ('generator_placeable'::text, 'Oil'::text, 499, 1, 499),
+                   ('spicegenerator_placeable', 'SpicedFuelCell', 499, 1, 499),
+                   ('windturbineomnidirectional_placeable', 'WindTurbineLubricant1', 100, 5, 499),
+                   ('windturbinedirectional_placeable', 'WindTurbineLubricant2', 100, 5, 499)
+        )
+        SELECT p.id AS pid, gt.fuel_template, gt.stack_sz, gt.max_stacks, gt.total_cap,
+               inv.id AS inv_id, COALESCE(inv.max_item_count, 0) AS max_items
+        FROM base_entities be
+        JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+        JOIN gen_types gt ON gt.building_type = lower(p.building_type)
+        LEFT JOIN LATERAL (
+            SELECT id, max_item_count FROM dune.inventories
+            WHERE actor_id = p.id ORDER BY id LIMIT 1
+        ) inv ON TRUE
+        ORDER BY p.id
+    LOOP
+        IF dev.inv_id IS NULL THEN
+            INSERT INTO _fuel_report VALUES (dev.pid, dev.fuel_template, 0, 0, 0, 'no-inventory');
+            CONTINUE;
+        END IF;
+        -- Lock the inventory row BEFORE its fuel rows: FOR UPDATE only locks
+        -- rows it selects, so a fully drained device would otherwise leave a
+        -- concurrent refill nothing to serialize against.
+        PERFORM 1 FROM dune.inventories WHERE id = dev.inv_id FOR UPDATE;
+        before_units := 0;
+        stacks_now := 0;
+        deficit := dev.total_cap;
+        FOR itemrow IN
+            SELECT id, stack_size FROM dune.items
+            WHERE inventory_id = dev.inv_id
+              AND lower(template_id) = lower(dev.fuel_template)
+            ORDER BY position_index
+            FOR UPDATE
+        LOOP
+            before_units := before_units + COALESCE(itemrow.stack_size, 0)::int;
+            stacks_now := stacks_now + 1;
+        END LOOP;
+        deficit := GREATEST(0, dev.total_cap - before_units);
+        IF deficit = 0 THEN
+            INSERT INTO _fuel_report VALUES (dev.pid, dev.fuel_template, before_units, before_units, 0, 'full');
+            CONTINUE;
+        END IF;
+        -- Fill partial stacks first (rows already locked above).
+        FOR itemrow IN
+            SELECT id, stack_size FROM dune.items
+            WHERE inventory_id = dev.inv_id
+              AND lower(template_id) = lower(dev.fuel_template)
+            ORDER BY position_index
+        LOOP
+            EXIT WHEN deficit = 0;
+            room := dev.stack_sz - COALESCE(itemrow.stack_size, 0)::int;
+            CONTINUE WHEN room <= 0;
+            addn := LEAST(room, deficit);
+            UPDATE dune.items SET stack_size = stack_size + addn WHERE id = itemrow.id;
+            deficit := deficit - addn;
+        END LOOP;
+        -- New stacks, bounded by per-type max stacks AND the inventory's slots.
+        SELECT COUNT(*)::int INTO slots_used FROM dune.items WHERE inventory_id = dev.inv_id;
+        IF dev.max_items > 0 THEN
+            free_slots := GREATEST(0, dev.max_items - slots_used);
+        ELSE
+            free_slots := 2147483647;
+        END IF;
+        stacks_allowed := GREATEST(0, dev.max_stacks - stacks_now);
+        SELECT COALESCE(MAX(position_index), -1)::bigint + 1 INTO next_pos
+            FROM dune.items WHERE inventory_id = dev.inv_id;
+        WHILE deficit > 0 AND stacks_allowed > 0 AND free_slots > 0 LOOP
+            INSERT INTO dune.items (inventory_id, stack_size, position_index, template_id, quality_level, stats)
+            VALUES (dev.inv_id, LEAST(dev.stack_sz, deficit), next_pos, dev.fuel_template, 0, '{}'::jsonb);
+            deficit := deficit - LEAST(dev.stack_sz, deficit);
+            next_pos := next_pos + 1;
+            stacks_allowed := stacks_allowed - 1;
+            free_slots := free_slots - 1;
+        END LOOP;
+        INSERT INTO _fuel_report VALUES (
+            dev.pid, dev.fuel_template, before_units, dev.total_cap - deficit,
+            (dev.total_cap - deficit) - before_units,
+            -- 'capped', not 'capped-by-slots': the WHILE above also exits on
+            -- stacks_allowed=0, and although every gen_types row is calibrated
+            -- so max_stacks*stack_sz >= total_cap (slots are the only bottleneck
+            -- this tool can produce), an externally-anomalous inventory could
+            -- hit the stack bound — the label must not over-claim (review note).
+            CASE WHEN deficit > 0 THEN 'capped' ELSE '' END);
+    END LOOP;
+END
+\$do\$;
+SELECT placeable_id || '|' || fuel || '|' || before_units || '|' || after_units || '|' || added || '|' || note
+FROM _fuel_report ORDER BY placeable_id;
+COMMIT;
+BFR_SQL
+) || refill_ok=false
+        if [ "$refill_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-fuel-refill: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        rows=$(printf '%s\n' "$report" | grep -c '|' || true)
+        if [ "${rows:-0}" = "0" ]; then
+            echo "[admin-publish] ERROR base-fuel-refill: no generators or wind turbines at base $bid" >&2
+            exit 2
+        fi
+        total=0
+        while IFS='|' read -r _pid _fuel _before _after added _note; do
+            case "$added" in *[!0-9-]*|"") continue;; esac
+            total=$((total + added))
+        done <<< "$(printf '%s\n' "$report" | grep '|')"
+        echo "[admin-publish] OK base-fuel-refill base=$bid map=$BASE_GATE_MAP devices=$rows units_added=$total"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/device=/'
+        echo "publish=db-write base-fuel-refill base=$bid devices=$rows units_added=$total"
+        exit 0
+        ;;
+
+    base-water)
+        # Per-type water storage of ONE base: cisterns (5k/25k/100k),
+        # windtraps (500 — the large windtrap stores the same 500, confirmed
+        # upstream against a production backup), blood purifiers (1000 water
+        # + blood amounts read from the actor's own properties). Levels live
+        # in fgl_entities.components->FWaterStorageComponent[1].m_WaterStored;
+        # the lateral is guarded LIMIT 1 because some water placeables carry a
+        # second ContainerInventory fgl row and an unguarded join double-counts
+        # (upstream confirmed live: a Windtrap count read 7 instead of 4).
+        # Read-only. Ported from Red-Blink baseWater (MIT).
+        bid="${1:?usage: base-water <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BW_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), water_types(water_type, building_type, capacity, blood_key, blood_capacity) AS (
+    VALUES ('Water Cistern'::text, 'watercistern_placeable'::text, 5000, NULL::text, NULL::int),
+           ('Medium Water Cistern', 'mediumwatercistern_placeable', 25000, NULL, NULL),
+           ('Large Water Cistern', 'largewatercistern_placeable', 100000, NULL, NULL),
+           ('Windtrap', 'windtrap_placeable', 500, NULL, NULL),
+           ('Large Windtrap', 'largewindtrap_placeable', 500, NULL, NULL),
+           ('Blood Purifier', 'bloodwaterextractor_placeable', 1000, 'BP_BloodWaterExtractor_C', 6000),
+           ('Improved Blood Purifier', 'bloodwaterextractionadvanced_placeable', 1000, 'BP_BloodWaterExtractor_Advanced_C', 24000)
+), devices AS (
+    SELECT p.id AS placeable_id, wt.water_type, wt.capacity,
+           COALESCE(state.stored, 0) AS stored,
+           CASE WHEN wt.blood_key IS NOT NULL
+                THEN (a.properties -> wt.blood_key ->> 'm_CurrentAmount')::numeric END AS blood,
+           wt.blood_capacity
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN dune.actors a ON a.id = p.id
+    JOIN water_types wt ON wt.building_type = lower(p.building_type)
+    LEFT JOIN LATERAL (
+        SELECT (fe.components->'FWaterStorageComponent'->1->>'m_WaterStored')::int AS stored
+        FROM dune.actor_fgl_entities afe
+        JOIN dune.fgl_entities fe ON fe.entity_id = afe.entity_id
+        WHERE afe.actor_id = p.id AND fe.components ? 'FWaterStorageComponent'
+        LIMIT 1
+    ) state ON TRUE
+)
+SELECT water_type,
+       COUNT(*)::int AS devices,
+       SUM(stored)::int AS stored,
+       SUM(capacity)::int AS capacity,
+       COALESCE(SUM(blood), 0)::int AS blood_stored,
+       COALESCE(SUM(blood_capacity), 0)::int AS blood_capacity
+FROM devices GROUP BY water_type ORDER BY water_type;
+BW_SQL
+        exit 0
+        ;;
+
+    base-water-refill)
+        # Fill every water device of ONE base to capacity (water only — blood
+        # is a harvested resource, deliberately not granted). HARD GATE: the
+        # base's map must have NO live instance — a running map rewrites base
+        # state from memory on its next flush, silently undoing the write
+        # (the memory-flush rule DST learned on claims and cisterns). Stop the
+        # server (or park the sietch) first. Ported from Red-Blink's refill
+        # write (MIT), without their queue: the gate is explicit here.
+        bid="${1:?usage: base-water-refill <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water-refill: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities dune.farm_state || exit 3
+        # By-id paths deliberately skip the picked-up-base exclusion the list
+        # applies: an operator addressing a base by number gets a straight
+        # answer; the exclusion exists to keep NOISE out of the list.
+        base_map_down_gate "$bid" "base-water-refill" || exit $?
+        bmap="$BASE_GATE_MAP"
+        updated=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), water_types(building_type, capacity) AS (
+    VALUES ('watercistern_placeable'::text, 5000),
+           ('mediumwatercistern_placeable', 25000),
+           ('largewatercistern_placeable', 100000),
+           ('windtrap_placeable', 500),
+           ('largewindtrap_placeable', 500),
+           ('bloodwaterextractor_placeable', 1000),
+           ('bloodwaterextractionadvanced_placeable', 1000)
+), devices AS (
+    SELECT wt.capacity,
+           (SELECT afe.entity_id
+            FROM dune.actor_fgl_entities afe
+            JOIN dune.fgl_entities fe ON fe.entity_id = afe.entity_id
+            WHERE afe.actor_id = p.id AND fe.components ? 'FWaterStorageComponent'
+            LIMIT 1) AS entity_id
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN water_types wt ON wt.building_type = lower(p.building_type)
+), updated AS (
+    UPDATE dune.fgl_entities fe
+    SET components = jsonb_set(fe.components, '{FWaterStorageComponent,1,m_WaterStored}',
+                               to_jsonb(d.capacity))
+    FROM devices d
+    WHERE d.entity_id IS NOT NULL AND fe.entity_id = d.entity_id
+    RETURNING 1
+)
+SELECT (SELECT COUNT(DISTINCT entity_id) FROM devices WHERE entity_id IS NOT NULL)::text
+       || '/' || COUNT(*)::text FROM updated;
+BWR_SQL
+)
+        expected="${updated%%/*}"
+        written="${updated##*/}"
+        if [ -z "$updated" ]; then
+            echo "[admin-publish] ERROR base-water-refill: refill query failed" >&2
+            exit 1
+        fi
+        # UPDATE ... FROM silently applies ONE arbitrary row per target when
+        # two devices resolve to the same entity — an undercount here must be
+        # a loud failure, not a cheerful partial success (review-caught).
+        if [ "$expected" != "$written" ]; then
+            echo "[admin-publish] ERROR base-water-refill: expected to fill $expected device entit(ies) but wrote $written — partial write, inspect the base's actor_fgl_entities rows" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-water-refill base=$bid map=$bmap devices_filled=$written"
+        echo "publish=db-write base-water-refill base=$bid devices=$written"
+        exit 0
+        ;;
+
+    doctor)
+        # READ-ONLY connection doctor: gathers the connectivity facts (the
+        # advertised identity, what every live map registers in farm_state,
+        # actual UDP listeners, the freshest server-state heartbeat) and hands
+        # them to admin_doctor.py for typed ok/warn/error verdicts. Catches
+        # the classic "boots fine, nobody can join" family: wrong/private
+        # advertised IP, WAN IP drift, per-map port collisions (2G2), a port
+        # advertised with no listener, stuck READY, registration without a
+        # partition row, silent FLS heartbeat. Diagnose-only — no fixes.
+        # Ported from DST's P34 connection doctor (Apache-2.0) + Red-Blink's
+        # doctor.sh checks (MIT); see ATTRIBUTION.md.
+        ext=$(printf '%s' "${DUNE_EXTERNAL_IP:-}" | tr -cd '0-9a-fA-F:.')
+        real=$({ curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true; } | tr -cd '0-9.')
+        # jsonb_agg (not json_agg): jsonb renders compact, json_agg pretty-
+        # prints elements across lines and would break the single-line facts.
+        farm=$({ dune_psql -tAc "SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM (SELECT server_id, map, host(game_addr) AS game_addr, game_port, host(igw_addr) AS igw_addr, igw_port, ready, alive, connected_players FROM dune.farm_state) t" 2>/dev/null || true; } | tr -d '\r\n')
+        pmaps=$({ dune_psql -tAc "SELECT COALESCE(jsonb_agg(DISTINCT map), '[]'::jsonb) FROM dune.world_partition" 2>/dev/null || true; } | tr -d '\r\n')
+        # No -H: the runtime image's ss build rejects it (empty output). The
+        # header line carries no trailing digits, so the port grep skips it.
+        udp=$({ ss -uln 2>/dev/null || true; } | awk '{print $4}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
+        # Trailing || true: grep exits 1 on zero matches, and under pipefail
+        # a bare assignment would abort the whole doctor exactly when the
+        # heartbeat is missing — the very case it exists to diagnose.
+        hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2 || true)
+        now=$(date -u +%s)
+        python3 "$BASE/scripts/admin_doctor.py" analyze <<DOCTOR_FACTS
+{"external_ip": "$ext", "real_ip": "$real", "farm": ${farm:-[]},
+ "partition_maps": ${pmaps:-[]}, "udp_ports": [${udp:-}],
+ "heartbeat_epoch": ${hb:-null}, "now_epoch": $now}
+DOCTOR_FACTS
+        exit 0
         ;;
 
     server-status)
@@ -2687,6 +3537,14 @@ EOF2
         fi
         dune_require_tables dune.accounts dune.player_state || exit 3
         assert_player_offline "$fls_id" || exit $?
+        old_aid=$(dune_account_id "$fls_id")
+        # Safety net (dune-admin v0.46.0 semantics): a verified pre-delete
+        # character backup FIRST. A failure there aborts the whole delete
+        # rather than proceeding without the net the admin asked for.
+        if ! "$0" char-backup "$fls_id" "pre-delete" "$reason"; then
+            echo "[admin-publish] ERROR account-delete: pre-delete backup failed — delete aborted (see char-backup error above)" >&2
+            exit 1
+        fi
         # dune.delete_account keys on dune.accounts."user" (the hex FLS id) and
         # resolves the 3 player actors via dune.player_state. Confirmed live that
         # accounts."user" == encrypted_accounts."user" on this build.
@@ -2706,7 +3564,14 @@ SQL
         if [ "$result" != "t" ]; then
             echo "[admin-publish] WARN account-delete: proc returned '$result' (no matching player_state actors — nothing cascaded)" >&2
         fi
-        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason"
+        # delete_account is known to leave the player actor trio and the
+        # now link-dead player_state row behind (live-reproduced 2026-08-20);
+        # run the same teardown + sweep char-restore uses.
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
+        char_state_sweep
+        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason (pre-delete backup taken)"
         echo "publish=db-write account-delete fls=$fls_id found=$result"
         exit 0
         ;;

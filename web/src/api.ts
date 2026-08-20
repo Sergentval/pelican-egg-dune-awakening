@@ -929,6 +929,98 @@ export interface PlayerSummary {
 export const fetchPlayerSummary = (playerId: string) =>
   api<PlayerSummary>("GET", `/api/players/${encodeURIComponent(playerId)}/summary`);
 
+// ---- Bases (Red-Blink port) ---------------------------------------------
+
+export interface BaseRow {
+  base_id: string;
+  base_actor_id: string;
+  map: string;
+  pieces: string;
+  placeables: string;
+  owner: string;
+}
+
+export interface BaseWaterRow {
+  water_type: string;
+  devices: string;
+  stored: string;
+  capacity: string;
+  blood_stored: string;
+  blood_capacity: string;
+}
+
+export const fetchBases = (q = "") =>
+  api<{ ok: boolean; bases: BaseRow[] }>(
+    "GET", q ? `/api/bases?q=${encodeURIComponent(q)}` : "/api/bases");
+
+export const fetchBaseWater = (baseId: string) =>
+  api<{ ok: boolean; water: BaseWaterRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/water`);
+
+/** Server-side the refill FAILS CLOSED unless the base's map is fully
+ * stopped; the UI confirms first, so force is always sent here. */
+export const baseWaterRefill = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/water-refill`, { force: true });
+
+export interface BaseFuelRow {
+  placeable_id: string;
+  generator: string;
+  fuel: string;
+  units: string;
+  cap: string;
+  percent: string;
+  runtime_hours: string;
+}
+
+export const fetchBaseFuel = (baseId: string) =>
+  api<{ ok: boolean; fuel: BaseFuelRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/fuel`);
+
+/** Same fail-closed map-down contract as the water refill. */
+export const baseFuelRefill = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/fuel-refill`, { force: true });
+
+// ---- Connection doctor --------------------------------------------------
+
+export interface DoctorCheck {
+  id: string;
+  status: "ok" | "warn" | "error" | "skip";
+  summary: string;
+  detail: string;
+  hint: string;
+}
+
+export const fetchDoctor = () =>
+  api<{ ok: boolean; summary: Record<string, number>; checks: DoctorCheck[]; stderr?: string }>(
+    "GET", "/api/doctor");
+
+// ---- Character backups (native transfer subsystem) ---------------------
+
+export interface CharBackup {
+  file: string;
+  fls: string;
+  character_name: string;
+  action: string;
+  reason: string;
+  patches_checksum: string;
+  bytes: number;
+  created_at: string;
+}
+
+export const fetchCharBackups = (playerId: string) =>
+  api<{ ok: boolean; backups: CharBackup[] }>(
+    "GET", `/api/players/${encodeURIComponent(playerId)}/char-backups`);
+
+/** FULL REPLACE of the backup's character. The UI confirms first, so the
+ * API-level force flag is always sent here. */
+export const charBackupRestore = (file: string) =>
+  api<PublishResult & { error?: string }>("POST", "/api/char-backups/restore", { file, force: true });
+
+export const charBackupDelete = (file: string) =>
+  api<PublishResult & { error?: string }>("POST", "/api/char-backups/delete", { file });
+
 /** POST a player-editor write. `action` is the route suffix (e.g. "give-currency"). */
 export function playerWrite(
   playerId: string,

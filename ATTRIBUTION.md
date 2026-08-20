@@ -121,6 +121,44 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Generator fuel (2026-08, C3.2) ports, with thanks, Red-Blink's
+baseGenerators / baseGeneratorFuelLevels / refillBaseGenerators (MIT): the
+generator allowlist + accepted-fuel table with measured burn rates, the
+per-device (not per-type) level model, and the refill's locking + top-up +
+bounded-insert discipline — reimplemented as one plpgsql transaction behind
+our shared fail-closed map-down gate instead of their pending-refill queue.
+
+Player chat commands (2026-08) port, with thanks,
+coastal-ms/DST-DuneServerTool v13.4's ChatCommands mechanism (Apache-2.0):
+the chat.intercept copy-queue discovery (bounded declare + catch-all bind +
+basic_get drain via rabbitmqctl eval) and its safety posture (off by
+default, per-command opt-in, per-player cooldowns, bounded queue, drop on
+disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
+
+Bases + water management (2026-08) ports, with thanks, Red-Blink/
+dune-awakening-selfhost-docker's bases feature (MIT: the listBases claim
+model incl. the picked-up-base exclusion, the baseWater device resolution
+with its guarded ContainerInventory lateral, the water-type capacity table,
+and the jsonb_set refill write), reimplemented as the `bases` /
+`base-water` / `base-water-refill` subcommands with an explicit
+fail-closed map-down gate in place of their queue/flush system.
+
+Connection doctor (2026-08) ports, with thanks, the check catalogue of
+coastal-ms/DST-DuneServerTool's P34 connection doctor (Apache-2.0: advertised
+vs real IP, per-map address drift, port-range misconfig) and
+Red-Blink/dune-awakening-selfhost-docker's doctor.sh (MIT: heartbeat recency,
+listener inventory, partition coherence), reimplemented as `admin doctor` +
+`scripts/admin_doctor.py` with our own single-container IGW semantics.
+
+Character backup/restore (2026-08) ports, with thanks, the v0.46.0
+native-transfer flow (`cmd/dune-admin/db.go`: processCaptureCharacterBackup /
+processRestoreCharacterBackup / cleanupOrphanActorsForAccount, and
+`character_backups_store.go`), reimplemented as the `char-backup*` /
+`char-restore` subcommands + `scripts/admin_charbackup.py`. Our flow
+additionally tears the current character down BEFORE the import (their
+post-import cleanup collides on self-restore) and adds the same-account
+stale player_state sweep.
+
 Phase 1 (Database tab) lifts, with thanks:
 - the read-only SQL guard `is_read_only_sql()` in `scripts/admin-http.py`
   (from `cmd/dune-admin/handlers_database.go`), and

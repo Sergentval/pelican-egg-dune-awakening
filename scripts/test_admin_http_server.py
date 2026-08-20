@@ -613,5 +613,28 @@ class BlankSubmissionGuard(unittest.TestCase):
         self.assertIsNone(admin_http.blank_submission_error(self.NAME, "   "))
 
 
+class CsvRows(unittest.TestCase):
+    """_csv_rows must hand psql --csv output to the parser UNfiltered:
+    RFC4180-quoted fields legally contain embedded (even blank) newlines,
+    and a blank-line pre-filter corrupts them (review-caught with a live
+    psql repro)."""
+
+    def test_simple_table(self):
+        rows = admin_http._csv_rows("a,b\n1,x\n2,y\n")
+        self.assertEqual(rows, [{"a": "1", "b": "x"}, {"a": "2", "b": "y"}])
+
+    def test_header_only_is_empty(self):
+        self.assertEqual(admin_http._csv_rows("a,b\n"), [])
+
+    def test_blank_text_is_empty(self):
+        self.assertEqual(admin_http._csv_rows("  \n"), [])
+
+    def test_quoted_field_with_blank_line_survives(self):
+        text = 'id,owner\n1,"Smith, ""The"" Great"\n2,"Multi\nLine\n\nName"\n'
+        rows = admin_http._csv_rows(text)
+        self.assertEqual(rows[0]["owner"], 'Smith, "The" Great')
+        self.assertEqual(rows[1]["owner"], "Multi\nLine\n\nName")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,9 @@
+{
+  "_comment": "Player-triggered !commands from in-game chat (DST v13.4 port). OFF by default: flip enabled to true, then opt each command in. Replies go through the server-wide broadcast banner. cooldown_secs applies per player per command. kit items use game template ids (see 'admin items <search>').",
+  "enabled": false,
+  "cooldown_secs": 60,
+  "commands": {
+    "ping": { "enabled": true },
+    "kit": { "enabled": false, "items": [] }
+  }
+}

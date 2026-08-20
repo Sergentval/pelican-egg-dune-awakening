@@ -547,6 +547,126 @@ Suitable for sharing as constructive feedback with the game team.
 > prints the assembled envelope without publishing — that covers the
 > same diagnostic use case safely.
 
+## Character backups (native transfer subsystem)
+
+Full-character snapshots via the game's own server-to-server transfer procs
+(`dune.character_transfer_export` / `character_transfer_import`, ~50-table
+footprint). Player must be OFFLINE for both. Ported from
+Icehunter/dune-admin v0.46.0 (MIT); see ATTRIBUTION.md.
+
+```text
+admin char-backup <player> [action] [reason]   # export -> backups/char/char-<fls>-<ts>.json (+ .meta.json)
+admin char-backup-list [player]                # JSON list, newest first
+admin char-backup-delete <file>                # delete one backup (data + sidecar)
+admin char-restore <file>                      # FULL REPLACE of that FLS id's character
+```
+
+- The `.meta.json` sidecar records the `_patches_checksum` of the game patch
+  the backup was taken on; `char-restore` refuses a mismatched patch BEFORE
+  touching anything (take a fresh backup after each game update).
+- `char-restore` tears the current character down first (the import proc's
+  internal `delete_account` leaves natural-key rows behind that collide on
+  re-import), then imports, then sweeps stale `player_state` rows.
+- `account-delete` now takes a verified `pre-delete` char-backup first and
+  aborts if it fails — the backup is the undo for a fat-fingered delete.
+- Retention: newest `DUNE_CHAR_BACKUP_RETENTION` (default 10) per player.
+- HTTP: `GET /api/players/<id>/char-backups`, `POST /api/players/<id>/char-backup`,
+  `POST /api/char-backups/restore` (force-confirmed), `POST /api/char-backups/delete`.
+  UI: Players → Character → "Character backups".
+
+## Bases
+
+Claimed-base inventory + water management, ported from
+Red-Blink/dune-awakening-selfhost-docker (MIT); see ATTRIBUTION.md.
+
+```text
+admin bases [search]              # CSV: base_id, owner, map, pieces, placeables
+admin base-water <base_id>        # CSV: per-type water storage (+ blood levels)
+admin base-water-refill <base_id> # fill every water device to capacity
+```
+
+- Water lives in `fgl_entities.components → FWaterStorageComponent[1].m_WaterStored`;
+  the read is guarded against the duplicate ContainerInventory fgl row that
+  double-counts devices (upstream confirmed live).
+- **The refill FAILS CLOSED twice**: it refuses while the base's map has any
+  live instance (a running map rewrites base state from memory on flush — the
+  write would silently vanish), and it refuses a map name `farm_state` has
+  never seen (can't prove it's down). Stop the server or park the sietch first.
+- Blood (purifier) levels are read but never granted — blood is a harvested
+  resource.
+
+Generator fuel (same base model, C3.2):
+
+```text
+admin base-fuel <base_id>          # CSV per DEVICE: units/cap, %, runtime hours
+admin base-fuel-refill <base_id>   # top every device to its fuel cap
+```
+
+- Fuel is item stacks in the device's own inventory; only the type's accepted
+  template counts (Oil ×499, SpicedFuelCell ×499, lubricants in 100-unit
+  stacks up to 499). Runtime uses upstream's measured burn rates (1 h / 1.5 h
+  per unit) without Funcom's occasional 2x uptime-event multiplier.
+- The refill is ONE transaction: inventory row locked before its fuel rows,
+  partial stacks topped up first, then new stacks (house give-item insert
+  recipe), bounded by per-type max stacks AND the inventory's slot count.
+  Same fail-closed map-down gate as the water refill.
+- HTTP: `GET /api/bases/<id>/fuel`, `POST /api/bases/<id>/fuel-refill`
+  (force-confirmed). UI: ⚡ Generators panel in the Bases tab.
+- Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
+- HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
+  `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
+
+## Player chat commands (!ping / !kit)
+
+Players trigger actions from in-game chat. OFF by default — flip `enabled`
+in `data/admin/chat-commands.json`, then opt each command in. Ported from
+DST v13.4 (Apache-2.0); see ATTRIBUTION.md.
+
+Mechanism: the game broker's `chat.intercept` TOPIC exchange is catch-all
+bound to Funcom's own consumer; we bind a SECOND bounded queue
+(`admin.chat.commands`, max-length 500, 5-min TTL, drop-head) and get a copy
+of every chat message with zero interference. A daemon
+(`start-chat-commands.sh`, no-op while disabled) drains it every few seconds;
+a disabled tick also DROPS the queue so a switched-off panel never
+accumulates chat.
+
+```text
+admin chat-queue-init          # declare+bind the bounded copy-queue (idempotent)
+admin chat-drain [max]         # base64 MSG: lines, NoAck (at-most-once)
+admin chat-queue-drop          # remove the copy-queue
+admin resolve-funcom <Name#1234>  # chat identity -> FLS id
+```
+
+Commands (all self-targeting, per-player+command cooldown, replies via the
+broadcast banner): `!ping` (liveness pong), `!kit` (grants the configured
+item pack to the sender via give-item; templates from `admin items <search>`).
+
+Live-verified end to end by injecting synthetic TextChat envelopes into
+`chat.intercept`: drain → parse → identity resolution → grant landed in
+`dune.items` → broadcast reply; cooldown blocks repeats; the disabled path
+removes the queue.
+
+## Connection doctor
+
+Read-only diagnosis of the "boots fine, nobody can join" family. Run it
+whenever players report join timeouts or hung map travel:
+
+```text
+admin doctor    # JSON: 11 typed checks, ok/warn/error/skip
+```
+
+Checks: `DUNE_EXTERNAL_IP` set / public / matching the real WAN IP (ipify,
+5s cap), per-map advertised game + IGW addresses in `farm_state` (loopback
+IGW is legitimate on this stack — every instance shares one container),
+per-map UDP port collisions (the in-game 2G2 error), advertised ports with
+no actual UDP listener, alive-but-not-ready instances, registrations without
+a `world_partition` row, and the freshest server-state heartbeat age from
+the director log. Diagnose-only — it never fixes anything itself.
+
+HTTP: `GET /api/doctor` (on demand — never polled; it performs the public-IP
+lookup). UI: 🩺 card on the Overview page. Ported from DST's P34 connection
+doctor (Apache-2.0) and Red-Blink's doctor.sh checks (MIT); see ATTRIBUTION.md.
+
 ## Known no-ops on seabass servers
 
 Per [adainrivers' live-testing](https://github.com/adainrivers/dune-dedicated-server-manager)

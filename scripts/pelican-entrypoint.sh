@@ -91,6 +91,10 @@ bash scripts/start-scheduler.sh "$BASE"
 # Market-bot autonomous loop (7b-3). No-op while market-bot.json enabled:false,
 # so always safe to launch; tops up listings + gamble-buys only once armed.
 bash scripts/start-market-bot.sh "$BASE"
+# Player chat commands (!ping/!kit — DST v13.4 port). No-op while
+# chat-commands.json enabled:false (a disabled tick also drops the chat
+# copy-queue), so always safe to launch.
+bash scripts/start-chat-commands.sh "$BASE"
 # Demand-based autoscaler. No-op while autoscaler.json enabled:false, so always
 # safe to launch; drains idle on-demand maps + wakes/load-scales them once armed.
 bash scripts/start-autoscaler.sh "$BASE"
