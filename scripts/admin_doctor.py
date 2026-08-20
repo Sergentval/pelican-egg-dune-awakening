@@ -184,6 +184,11 @@ def _main(argv: "list[str]") -> int:
     if len(argv) > 1 and argv[1] == "analyze":
         raw = sys.stdin.read()
         try:
+            with open("/tmp/doctor-raw.json", "w", encoding="utf-8") as _f:
+                _f.write(raw)
+        except OSError:
+            pass
+        try:
             facts = json.loads(raw)
         except ValueError as exc:
             # Surface WHERE it broke — the facts line is machine-assembled,
