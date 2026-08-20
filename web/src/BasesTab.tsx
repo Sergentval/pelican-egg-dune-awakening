@@ -8,6 +8,9 @@ import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from 
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
   baseFuelRefill,
+  baseGuardApply,
+  baseGuardConfig,
+  baseGuardRevert,
   basePermissionRemove,
   basePermissionSet,
   baseTransferCustodian,
@@ -15,12 +18,14 @@ import {
   deleteItem,
   fetchBaseContainers,
   fetchBaseFuel,
+  fetchBaseGuard,
   fetchBasePermissions,
   fetchBases,
   fetchBaseWater,
   fetchPermissionCandidates,
   type BaseContainerItem,
   type BaseFuelRow,
+  type BaseGuardState,
   type BasePermissionRow,
   type BaseRow,
   type BaseWaterRow,
@@ -50,6 +55,8 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   // null = no search ran yet (renders nothing); [] = a search found nobody.
   const [candidates, setCandidates] = useState<PermissionCandidate[] | null>(null);
   const [candLoading, setCandLoading] = useState(false);
+  const [guard, setGuard] = useState<BaseGuardState | null>(null);
+  const [guardLoading, setGuardLoading] = useState(false);
   // Selection token: a slow response for base A must never render under
   // base B's header after a quick re-selection (review-caught display race).
   const selectedIdRef = useRef<string>("");
@@ -147,6 +154,29 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
     }
   }
 
+  async function loadGuard() {
+    setGuardLoading(true);
+    const res = await fetchBaseGuard().catch(() => null);
+    setGuardLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "available" in b) {
+      setGuard(b as BaseGuardState);
+    } else {
+      setGuard(null);
+    }
+  }
+
+  async function runGuardAction(label: string, run: () => Promise<{ ok: boolean; body: unknown } | null>) {
+    setBusy(true);
+    const res = await run().catch(() => null);
+    setBusy(false);
+    const rb: unknown = res?.body;
+    const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+      && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+    pushToConsole(setConsoleEntries, label, typeof rb === "string" ? rb : (rb as PublishResult), ok);
+    void loadGuard();
+  }
+
   async function loadFuel(base: BaseRow) {
     setFuelLoading(true);
     const res = await fetchBaseFuel(base.base_id).catch(() => null);
@@ -160,7 +190,7 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
     }
   }
 
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); void loadGuard(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pct = (stored: string, capacity: string): string => {
     const s = Number(stored);
@@ -223,6 +253,68 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
           )}
         </div>
       </div>
+
+      {guard !== null && guard.available && (
+        <div className="card">
+          <header className="card-header">
+            <div>
+              <h2 className="card-title">🛡 Base backup wipe-guard</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                The weekly Deep Desert reset deletes stored base backups (their actors sit in
+                the database in state 'BaseBackup', which Funcom's cleanup does not spare).
+                The guard adds the missing exclusion to the cleanup function; a game update
+                can undo it, so arm the boot re-apply once you rely on it.
+              </p>
+            </div>
+            <div className="flex gap-2 items-center">
+              <button className="btn-ghost text-xs" onClick={() => void loadGuard()} disabled={guardLoading}>
+                {guardLoading ? "…" : "reload"}
+              </button>
+              {guard.applied ? (
+                <button className="btn-ghost text-xs text-red-300" disabled={busy || !guard.function_found}
+                  onClick={() => setConfirm({
+                    title: "Remove the wipe-guard?",
+                    message: "Restore Funcom's original cleanup behaviour: the next weekly Deep Desert reset will delete stored base backups again.",
+                    confirmLabel: "Remove guard",
+                    onConfirm: () => void runGuardAction("base-guard-revert", () => baseGuardRevert()),
+                  })}>
+                  Remove guard…
+                </button>
+              ) : (
+                <button className="btn-primary text-xs" disabled={busy || !guard.function_found}
+                  onClick={() => setConfirm({
+                    title: "Apply the wipe-guard?",
+                    message: "Adds one exclusion to Funcom's season-cleanup function so stored base backups survive the weekly Deep Desert reset. Anchored and verified by re-read; reversible.",
+                    confirmLabel: "Apply guard",
+                    onConfirm: () => void runGuardAction("base-guard-apply", () => baseGuardApply()),
+                  })}>
+                  Apply guard…
+                </button>
+              )}
+            </div>
+          </header>
+          <div className="card-body">
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs items-center">
+              <span>
+                Status:{" "}
+                {!guard.function_found
+                  ? <span className="text-red-300">cleanup function not found on this build</span>
+                  : guard.applied
+                    ? <span className="text-emerald-400">protected — backups survive the wipe</span>
+                    : <span className="text-amber-400">not protected</span>}
+              </span>
+              <span className="font-mono">{guard.base_backups} stored backup{guard.base_backups === 1 ? "" : "s"}</span>
+              <span className="font-mono">{guard.backup_state_actors} backup actors</span>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={guard.boot_reapply} disabled={busy}
+                  onChange={(e) => void runGuardAction(`base-guard-config ${e.target.checked ? "on" : "off"}`,
+                    () => baseGuardConfig(e.target.checked))} />
+                re-apply at every boot
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <div className="card">

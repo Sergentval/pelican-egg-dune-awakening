@@ -1041,6 +1041,29 @@ export const baseTransferCustodian = (baseId: string) =>
   api<PublishResult & { error?: string }>(
     "POST", `/api/bases/${encodeURIComponent(baseId)}/transfer-custodian`, {});
 
+// ---- Base backup wipe-guard (DST port) ----------------------------------
+
+export interface BaseGuardState {
+  ok: boolean;
+  available: boolean;
+  function_found: boolean;
+  applied: boolean;
+  base_backups: number;
+  backup_state_actors: number;
+  boot_reapply: boolean;
+}
+
+export const fetchBaseGuard = () => api<BaseGuardState>("GET", "/api/base-guard");
+
+export const baseGuardApply = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/base-guard/apply", {});
+
+export const baseGuardRevert = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/base-guard/revert", {});
+
+export const baseGuardConfig = (enabled: boolean) =>
+  api<{ ok: boolean; boot_reapply: boolean }>("POST", "/api/base-guard/config", { enabled });
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {

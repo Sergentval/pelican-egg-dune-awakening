@@ -152,6 +152,17 @@ basic_get drain via rabbitmqctl eval) and its safety posture (off by
 default, per-command opt-in, per-player cooldowns, bounded queue, drop on
 disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
 
+Base backup wipe-guard (2026-08, C3.5) port, with thanks,
+coastal-ms/DST-DuneServerTool v13.3.0's BaseBackupGuard.ps1 (Apache-2.0):
+the discovery that base backups are live actor rows in state 'BaseBackup'
+which the weekly Deep Desert reset deletes (the state is missing from
+delete_actors_and_respawns_on_server's exclusion list), the one-predicate
+fix, the anchored fail-closed insertion, the verify-by-re-read discipline,
+and the re-apply posture against game updates replacing the Funcom-owned
+function — reimplemented as scripts/admin_baseguard.py + the base-guard-*
+subcommands, with a boot-time re-apply (after migrate-db) in place of
+their periodic tick, since on this stack migrations only run at boot.
+
 Bases + water management (2026-08) ports, with thanks, Red-Blink/
 dune-awakening-selfhost-docker's bases feature (MIT: the listBases claim
 model incl. the picked-up-base exclusion, the baseWater device resolution

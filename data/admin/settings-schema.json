@@ -1079,6 +1079,21 @@
       "verified": false
     },
     {
+      "id": "buildingsettings_m_basebackuptoolmaprestriction",
+      "file": "UserOverrides",
+      "section": "/Script/DuneSandbox.BuildingSettings",
+      "key": "m_BaseBackupToolMapRestriction",
+      "type": "struct",
+      "quoted": false,
+      "default": "((Name=\"HaggaBasin\"), (Name=\"Editor_Default\"), (Name=\"IGW_Test_Small\"))",
+      "enum": null,
+      "category": "Building",
+      "label": "Base Backup Tool Allowed Maps",
+      "client_gated": "no",
+      "advanced": true,
+      "verified": false
+    },
+    {
       "id": "buildingsettings_m_basebackuptooltimerestrictioninseconds",
       "file": "UserOverrides",
       "section": "/Script/DuneSandbox.BuildingSettings",

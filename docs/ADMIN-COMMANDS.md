@@ -672,6 +672,42 @@ admin base-permission-candidates [name-or-id]      # roster picker (controller i
   `GET /api/bases/permission-candidates?q=`. UI: the 🔑 panel's rank
   dropdowns, ✕ remove, add-player picker and "Transfer to custodian…".
 
+Base backup wipe-guard (C3.5):
+
+```text
+admin base-guard-status   # CSV: function_found, applied, base_backups, backup_state_actors
+admin base-guard-apply    # add the BaseBackup exclusion to the season cleanup (idempotent)
+admin base-guard-revert   # remove exactly that exclusion again
+```
+
+- **Why**: a stored base backup is not a blob. `base_backup_save` keeps the
+  totem/building/placeable actor rows and flips them to
+  `actor_state.state = 'BaseBackup'`. The weekly Deep Desert reset
+  (`coriolis_cleanup_partition` → `delete_actors_and_respawns_on_server`)
+  deletes every actor whose state is not `Travel`/`VehicleBackup`/
+  `VehicleRecovery` — `'BaseBackup'` is a real state but missing from that
+  list, because Funcom never allowed the backup tool in the Deep Desert.
+  The moment you add `DeepDesert` to **Base Backup Tool Allowed Maps**
+  (`m_BaseBackupToolMapRestriction`, now in the settings catalogue), the
+  wipe eats stored backups and the tool can only offer Recycle.
+- **What apply does**: reads the LIVE function definition, inserts one
+  predicate (`AND s.state IS DISTINCT FROM 'BaseBackup'`) after the
+  `VehicleRecovery` exclusion, `CREATE OR REPLACE`s it, then RE-READS and
+  verifies. The insertion is anchored — a body without the expected anchor
+  is refused, never guessed at. Everything else in Funcom's function is
+  preserved byte-for-byte.
+- **The function is Funcom-owned**: a game update can ship a migration that
+  replaces it and silently drops the predicate. Arm the boot re-apply
+  (`data/admin/base-guard.json` → `{"enabled": true}`, or the checkbox in
+  the 🛡 card) and the entrypoint re-patches right after `migrate-db` on
+  every boot — on this stack migrations only run at boot, so that covers
+  every replacement window. Off by default.
+- HTTP: `GET /api/base-guard`, `POST /api/base-guard/apply`,
+  `POST /api/base-guard/revert`, `POST /api/base-guard/config`
+  `{enabled}`. UI: 🛡 card in the Bases tab.
+- Ported from coastal-ms/DST-DuneServerTool v13.3.0 BaseBackupGuard
+  (Apache-2.0); see ATTRIBUTION.md.
+
 Base list + water (recap of the section header commands): picked-up bases
 (unclaimed + base_backup-linked) are excluded from the LIST only — by-id
 commands answer straight. HTTP: `GET /api/bases[?q=]`,
