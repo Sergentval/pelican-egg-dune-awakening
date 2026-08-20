@@ -323,6 +323,64 @@ SQL
 # developer-supplied constants, never user input.
 # --------------------------------------------------------------------------
 
+# Sweep stale dune.encrypted_player_state rows, both known shapes. Safe and
+# idempotent; used PRE-import (a leftover duplicate row breaks
+# character_transfer_import's RespawnLocation subquery — live-reproduced
+# 2026-08-20), post-restore and post-delete.
+#   1. account-orphaned rows (dune-admin v0.46.0's sweep, MIT);
+#   2. link-dead duplicates on a LIVE account (our addition): a self-restore
+#      keeps the account id, so the previous row is not account-orphaned — it
+#      sits next to the fresh one with NULL/dangling actor links. Removed only
+#      when a healthy row for the same account exists; an account's only row
+#      is never touched (a not-yet-spawned character legitimately has NULL links).
+char_state_sweep() {
+    dune_psql_q -tA >/dev/null 2>&1 <<'CS_SQL' || true
+DELETE FROM dune.encrypted_player_state ps
+WHERE NOT EXISTS (SELECT 1 FROM dune.encrypted_accounts a WHERE a.id = ps.account_id);
+DELETE FROM dune.encrypted_player_state ps
+WHERE (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id))
+  AND EXISTS (SELECT 1 FROM dune.encrypted_player_state live
+              WHERE live.account_id = ps.account_id
+                AND live.ctid <> ps.ctid
+                AND live.player_controller_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM dune.actors a2 WHERE a2.id = live.player_controller_id));
+CS_SQL
+}
+
+# Tear down the CURRENT character of one account: the guild/party/ownership
+# cascades keyed on its controller actor, the player actor trio (hard-scoped
+# to player actor classes — delete_account strips ownership from bases,
+# storage and vehicles but leaves their actor rows alive with the same
+# dangling owner_account_id, so an unscoped delete would destroy all of them;
+# never widen the predicate), then this account's now link-dead player_state
+# rows — whose deletion CASCADE-removes the per-character natural-key rows
+# (player_respawn_locations, markers, …) that character_transfer_import would
+# otherwise collide with: their uuids come from the export verbatim, and
+# delete_account leaves them behind (live-reproduced 2026-08-20).
+char_teardown_account() {
+    dune_psql_q --set=aid="$1" -tA >/dev/null 2>&1 <<'CT_SQL' || true
+SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+DELETE FROM dune.actors
+WHERE owner_account_id = :'aid'::bigint
+  AND (class ILIKE '%PlayerCharacter%'
+    OR class ILIKE '%PlayerController%'
+    OR class ILIKE '%PlayerState%');
+DELETE FROM dune.encrypted_player_state ps
+WHERE ps.account_id = :'aid'::bigint
+  AND (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id));
+CT_SQL
+}
+
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
     dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
@@ -823,6 +881,197 @@ SQL
             printf '%s,%s,%s\n' "$(basename "$f")" "$(stat -c%s "$f" 2>/dev/null)" \
                 "$(date -u -d "@$(stat -c%Y "$f" 2>/dev/null)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
         done
+        exit 0
+        ;;
+
+    char-backup)
+        # Native FULL-CHARACTER backup via dune.character_transfer_export —
+        # the game's own server-to-server transfer subsystem (~50-table
+        # footprint: account, actors, inventories, items, vehicles,
+        # progression…, local ids remapped to portable transfer ids). The
+        # proc REQUIRES the player offline (raises 'sbRP2$' otherwise); we
+        # gate first for a clean message. Writes
+        # $BASE/backups/char/char-<fls>-<ts>.json + .meta.json sidecar
+        # (records the '_patches_checksum' a later restore must match), then
+        # prunes to per-player retention. Ported from Icehunter/dune-admin
+        # v0.46.0 (MIT).
+        raw="${1:?usage: char-backup <fls_id|me|steam:<id>|name:<n>> [action] [reason]}"
+        action="${2:-manual}"
+        reason="${3:-}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR char-backup: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR char-backup: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        cname=$({ dune_psql_q --set=aid="$aid" -tA 2>/dev/null <<'CB_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
+FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
+CB_SQL
+)
+        # Defence in depth: fls_id lands in a filesystem path here, and the
+        # steam:/name:/me resolution branches return the DB column verbatim —
+        # re-assert the canonical hex shape before building the path.
+        case "$fls_id" in
+            *[!0-9A-Fa-f]*|"")
+                echo "[admin-publish] ERROR char-backup: resolved FLS id '$fls_id' is not canonical hex — refusing to build a backup path from it" >&2
+                exit 2 ;;
+        esac
+        chardir="$BASE/backups/char"
+        mkdir -p "$chardir"
+        ts=$(date -u +%Y%m%d-%H%M%S)
+        out="$chardir/char-$fls_id-$ts.json"
+        errf=$(mktemp)
+        if ! dune_psql_q --set=fls="$fls_id" -tA >"$out" 2>"$errf" <<'CB_SQL'
+SELECT dune.character_transfer_export(:'fls');
+CB_SQL
+        then
+            echo "[admin-publish] ERROR char-backup: export failed: $(head -c 2000 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$out" "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # write_meta validates the export json and extracts the checksum; a
+        # backup an admin can't trust is worse than no backup at all.
+        meta_out=$(python3 "$BASE/scripts/admin_charbackup.py" meta "$chardir" "$(basename "$out")" "$fls_id" "$cname" "$action" "$reason")
+        case "$meta_out" in
+            '{"ok": true'*) : ;;
+            *)  echo "[admin-publish] ERROR char-backup: $meta_out" >&2
+                rm -f "$out"
+                exit 1 ;;
+        esac
+        python3 "$BASE/scripts/admin_charbackup.py" prune "$chardir" "${DUNE_CHAR_BACKUP_RETENTION:-10}" >/dev/null 2>&1 || true
+        sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+        echo "charbackup=ok file=$(basename "$out") fls=$fls_id name=$cname checksum_ok=true bytes=$sz"
+        exit 0
+        ;;
+
+    char-backup-list)
+        # JSON list of character backups (newest first), optionally for one
+        # player. Pure file read — the sidecar metadata carries name/action/
+        # checksum.
+        chardir="$BASE/backups/char"
+        if [ -n "${1:-}" ]; then
+            fls_id=$(resolve_player_id "$1") || exit 1
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir" "$fls_id"
+        else
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir"
+        fi
+        exit 0
+        ;;
+
+    char-backup-delete)
+        # Delete ONE backup (data + sidecar). Path-safety through the python
+        # gate: canonical name + realpath containment.
+        file="${1:?usage: char-backup-delete <char-...json>}"
+        chardir="$BASE/backups/char"
+        if ! python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file" >/dev/null 2>&1; then
+            echo "[admin-publish] ERROR char-backup-delete: unknown or unsafe backup '$file'" >&2
+            exit 2
+        fi
+        rm -f "$chardir/$file" "$chardir/${file%.json}.meta.json"
+        echo "publish=db-delete char-backup-delete file=$file"
+        exit 0
+        ;;
+
+    char-restore)
+        # FULL REPLACE of the character for the backup's FLS id via
+        # dune.character_transfer_import (requires the player offline AND the
+        # exported '_patches_checksum' to match the current game patch — the
+        # proc enforces both; its messages surface unchanged). The import
+        # internally calls dune.delete_account, which is known to leave (a) an
+        # orphaned dune.encrypted_player_state row and (b) the old player
+        # actor trio (pawn/controller/player-state) behind — both cleaned up
+        # after a successful import, the trio HARD-SCOPED to the player actor
+        # classes of the replaced account: delete_account strips ownership
+        # from bases/vehicles/storage but leaves their actor rows alive with
+        # the same dangling owner_account_id, so an unscoped delete would
+        # destroy every one of them. Never widen that predicate. Ported from
+        # Icehunter/dune-admin v0.46.0 (MIT).
+        file="${1:?usage: char-restore <char-...json>}"
+        chardir="$BASE/backups/char"
+        path_out=$(python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file") || {
+            echo "[admin-publish] ERROR char-restore: unknown or unsafe backup '$file'" >&2
+            exit 2
+        }
+        bpath="$chardir/$file"
+        fls_id=$(basename "$file" | sed -E 's/^char-([0-9A-Fa-f]+)-[0-9]{8}-[0-9]{6}\.json$/\1/')
+        cname=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('character_name', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        assert_player_offline "$fls_id" || exit $?
+        # The account currently holding this FLS id must be resolved BEFORE
+        # the import — character_transfer_import destroys it via
+        # delete_account, after which there is nothing left to look up.
+        old_aid=$(dune_account_id "$fls_id")
+        # Patch-checksum guard BEFORE any teardown: the import proc refuses a
+        # backup from a different game patch, and by then the current
+        # character would already be torn down. Refuse first, destroy after.
+        bk_ck=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('patches_checksum', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        cur_ck=$({ dune_psql -tAc "SELECT dune._character_transfer_get_patches_checksum()" 2>/dev/null || true; } | tail -n1 | tr -d '\r\n')
+        # FAIL CLOSED: this guard is the only thing standing between a
+        # mismatched backup and a teardown-then-failed-import (= character
+        # destroyed with nothing to replace it). An unreadable current
+        # checksum is a connectivity/build problem, not a "no mismatch"
+        # signal; a sidecar without a checksum is not verifiable.
+        if [ -z "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: cannot read the server's current patch checksum (DB unreachable?) — restore refused rather than risking a teardown the import then rejects" >&2
+            exit 1
+        fi
+        if [ -z "$bk_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup sidecar carries no patches_checksum — cannot verify it matches this game patch; restore refused. (If you are sure, add \"patches_checksum\": \"$cur_ck\" to ${file%.json}.meta.json.)" >&2
+            exit 1
+        fi
+        if [ "$bk_ck" != "$cur_ck" ]; then
+            echo "[admin-publish] ERROR char-restore: backup was taken on game patch $bk_ck, server is on $cur_ck — restore refused (take a fresh backup after each game update)" >&2
+            exit 1
+        fi
+        # PRE-import teardown of the current character (import is a FULL
+        # replace). The proc's internal delete_account leaves the current
+        # player_state row and its per-character natural-key rows alive
+        # (player_respawn_locations uuids collide on re-import —
+        # live-reproduced 2026-08-20), so the game's own teardown cascades
+        # run here first. NO trio cleanup happens post-import: the import
+        # reuses the account id (also live-observed), so an after-the-fact
+        # trio delete keyed on old_aid would destroy the restored character.
+        char_state_sweep
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
+        sqltmp=$(mktemp)
+        errf=$(mktemp)
+        {
+            printf '\\set data `cat %s`\n' "$bpath"
+            printf "SELECT dune.character_transfer_import(:'data'::jsonb, :'fls', :'nm');\n"
+        } > "$sqltmp"
+        import_ok=true
+        raw_out=$(dune_psql --set=fls="$fls_id" --set=nm="$cname" -tA -f "$sqltmp" 2>"$errf") || import_ok=false
+        new_id=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
+        rm -f "$sqltmp"
+        if [ "$import_ok" != "true" ] || [ -z "$new_id" ]; then
+            echo "[admin-publish] ERROR char-restore: import failed: $(head -c 2000 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # Post-import: only the conservative global sweep. See the pre-import
+        # comment for why NO account-keyed trio cleanup may run here.
+        char_state_sweep
+        echo "[admin-publish] OK char-restore fls=$fls_id file=$file new_controller=$new_id"
+        echo "publish=db-write char-restore fls=$fls_id new_controller=$new_id"
         exit 0
         ;;
 
@@ -2687,6 +2936,14 @@ EOF2
         fi
         dune_require_tables dune.accounts dune.player_state || exit 3
         assert_player_offline "$fls_id" || exit $?
+        old_aid=$(dune_account_id "$fls_id")
+        # Safety net (dune-admin v0.46.0 semantics): a verified pre-delete
+        # character backup FIRST. A failure there aborts the whole delete
+        # rather than proceeding without the net the admin asked for.
+        if ! "$0" char-backup "$fls_id" "pre-delete" "$reason"; then
+            echo "[admin-publish] ERROR account-delete: pre-delete backup failed — delete aborted (see char-backup error above)" >&2
+            exit 1
+        fi
         # dune.delete_account keys on dune.accounts."user" (the hex FLS id) and
         # resolves the 3 player actors via dune.player_state. Confirmed live that
         # accounts."user" == encrypted_accounts."user" on this build.
@@ -2706,7 +2963,14 @@ SQL
         if [ "$result" != "t" ]; then
             echo "[admin-publish] WARN account-delete: proc returned '$result' (no matching player_state actors — nothing cascaded)" >&2
         fi
-        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason"
+        # delete_account is known to leave the player actor trio and the
+        # now link-dead player_state row behind (live-reproduced 2026-08-20);
+        # run the same teardown + sweep char-restore uses.
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
+        char_state_sweep
+        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason (pre-delete backup taken)"
         echo "publish=db-write account-delete fls=$fls_id found=$result"
         exit 0
         ;;

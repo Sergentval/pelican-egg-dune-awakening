@@ -626,6 +626,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
+            "char-backup", "char-backup-list",
         )
     )
     entry = {
@@ -1712,6 +1713,20 @@ class Handler(BaseHTTPRequestHandler):
                 if player and sub == "summary":
                     self._handle_player_summary(player)
                     return
+                if player and sub == "char-backups":
+                    # Newest-first backup list for this player. The subcommand
+                    # resolves name:/steam: forms; the JSON is the helper's own
+                    # (parsed out of stdout so the UI gets a typed list).
+                    entry = run_publish(["char-backup-list", player], timeout=15)
+                    data = {}
+                    try:
+                        data = json.loads(entry.get("stdout") or "{}")
+                    except ValueError:
+                        pass
+                    self._write(200, {"ok": bool(entry.get("ok")) and bool(data.get("ok")),
+                                      "backups": data.get("backups", []),
+                                      "stderr": entry.get("stderr", "")[:300]})
+                    return
             self._write(404, {"error": "unknown player sub-resource"})
             return
 
@@ -2098,6 +2113,65 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "actor_id (positive int) required"})
                 return
             entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
+            self._write(200, entry)
+            return
+
+        # Character backup (native transfer export). Offline-gated by the
+        # subcommand; the export proc refuses online players too.
+        # POST /api/players/<id>/char-backup  body {"reason"?: str}
+        if path.startswith("/api/players/") and path.endswith("/char-backup"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            player = unquote(path[len("/api/players/"):-len("/char-backup")])
+            reason = body.get("reason") if isinstance(body, dict) else ""
+            if not player:
+                self._write(400, {"error": "player id required"})
+                return
+            entry = run_publish(["char-backup", player, "manual", str(reason or "")], timeout=120)
+            self._write(200, entry)
+            return
+
+        # Character restore — FULL REPLACE of the backup's FLS id from a
+        # backup file (import proc enforces offline + patch checksum).
+        # POST /api/char-backups/restore  body {"file": str, "force"?: bool}
+        if path == "/api/char-backups/restore":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            fname = body.get("file") if isinstance(body, dict) else None
+            if not isinstance(fname, str) or not fname:
+                self._write(400, {"error": "file (backup name) required"})
+                return
+            if not bool(body.get("force")):
+                self._write(200, {"ok": False, "requiresConfirmation": True,
+                                  "message": f"Restoring {fname} REPLACES the character's current "
+                                             "state entirely. Re-send with force:true."})
+                return
+            entry = run_publish(["char-restore", fname], timeout=180)
+            self._write(200, entry)
+            return
+
+        # Delete ONE character backup file (data + sidecar).
+        # POST /api/char-backups/delete  body {"file": str}
+        if path == "/api/char-backups/delete":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            fname = body.get("file") if isinstance(body, dict) else None
+            if not isinstance(fname, str) or not fname:
+                self._write(400, {"error": "file (backup name) required"})
+                return
+            entry = run_publish(["char-backup-delete", fname], timeout=15)
             self._write(200, entry)
             return
 
@@ -2972,7 +3046,9 @@ class Handler(BaseHTTPRequestHandler):
             if not player:
                 self._write(400, {"error": "player id required"})
                 return
-            entry = run_publish(["account-delete", player, confirm, reason], timeout=20)
+            # Takes a verified pre-delete character backup first (v0.46
+            # semantics) — the export of a big character needs headroom.
+            entry = run_publish(["account-delete", player, confirm, reason], timeout=120)
             self._write(200, entry)
             return
 

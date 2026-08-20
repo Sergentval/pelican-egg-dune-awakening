@@ -639,6 +639,16 @@
       "user_editable": true,
       "rules": "nullable|integer|between:1,365",
       "field_type": "text"
+    },
+    {
+      "name": "Character Backup Retention (per player)",
+      "description": "How many character backups to keep PER PLAYER under backups/char/ (oldest pruned after each new backup). Each backup is a full-character snapshot taken via the game's own transfer subsystem — see the admin panel's Character backups card. Default 10.",
+      "env_variable": "DUNE_CHAR_BACKUP_RETENTION",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,100",
+      "field_type": "text"
     }
   ]
 }

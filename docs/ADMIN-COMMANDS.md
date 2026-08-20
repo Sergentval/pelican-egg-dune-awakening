@@ -547,6 +547,33 @@ Suitable for sharing as constructive feedback with the game team.
 > prints the assembled envelope without publishing — that covers the
 > same diagnostic use case safely.
 
+## Character backups (native transfer subsystem)
+
+Full-character snapshots via the game's own server-to-server transfer procs
+(`dune.character_transfer_export` / `character_transfer_import`, ~50-table
+footprint). Player must be OFFLINE for both. Ported from
+Icehunter/dune-admin v0.46.0 (MIT); see ATTRIBUTION.md.
+
+```text
+admin char-backup <player> [action] [reason]   # export -> backups/char/char-<fls>-<ts>.json (+ .meta.json)
+admin char-backup-list [player]                # JSON list, newest first
+admin char-backup-delete <file>                # delete one backup (data + sidecar)
+admin char-restore <file>                      # FULL REPLACE of that FLS id's character
+```
+
+- The `.meta.json` sidecar records the `_patches_checksum` of the game patch
+  the backup was taken on; `char-restore` refuses a mismatched patch BEFORE
+  touching anything (take a fresh backup after each game update).
+- `char-restore` tears the current character down first (the import proc's
+  internal `delete_account` leaves natural-key rows behind that collide on
+  re-import), then imports, then sweeps stale `player_state` rows.
+- `account-delete` now takes a verified `pre-delete` char-backup first and
+  aborts if it fails — the backup is the undo for a fat-fingered delete.
+- Retention: newest `DUNE_CHAR_BACKUP_RETENTION` (default 10) per player.
+- HTTP: `GET /api/players/<id>/char-backups`, `POST /api/players/<id>/char-backup`,
+  `POST /api/char-backups/restore` (force-confirmed), `POST /api/char-backups/delete`.
+  UI: Players → Character → "Character backups".
+
 ## Known no-ops on seabass servers
 
 Per [adainrivers' live-testing](https://github.com/adainrivers/dune-dedicated-server-manager)

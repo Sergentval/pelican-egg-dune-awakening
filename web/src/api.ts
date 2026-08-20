@@ -929,6 +929,31 @@ export interface PlayerSummary {
 export const fetchPlayerSummary = (playerId: string) =>
   api<PlayerSummary>("GET", `/api/players/${encodeURIComponent(playerId)}/summary`);
 
+// ---- Character backups (native transfer subsystem) ---------------------
+
+export interface CharBackup {
+  file: string;
+  fls: string;
+  character_name: string;
+  action: string;
+  reason: string;
+  patches_checksum: string;
+  bytes: number;
+  created_at: string;
+}
+
+export const fetchCharBackups = (playerId: string) =>
+  api<{ ok: boolean; backups: CharBackup[] }>(
+    "GET", `/api/players/${encodeURIComponent(playerId)}/char-backups`);
+
+/** FULL REPLACE of the backup's character. The UI confirms first, so the
+ * API-level force flag is always sent here. */
+export const charBackupRestore = (file: string) =>
+  api<PublishResult & { error?: string }>("POST", "/api/char-backups/restore", { file, force: true });
+
+export const charBackupDelete = (file: string) =>
+  api<PublishResult & { error?: string }>("POST", "/api/char-backups/delete", { file });
+
 /** POST a player-editor write. `action` is the route suffix (e.g. "give-currency"). */
 export function playerWrite(
   playerId: string,

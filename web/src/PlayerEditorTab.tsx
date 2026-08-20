@@ -9,9 +9,13 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { Confirm, PlayerPicker, pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import {
+  charBackupDelete,
+  charBackupRestore,
+  fetchCharBackups,
   fetchPlayerSummary,
   fetchProgressionPresets,
   playerWrite,
+  type CharBackup,
   type PlayerSummary,
   type ProgressionPreset,
   type PublishResult,
@@ -60,6 +64,8 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [summary, setSummary] = useState<PlayerSummary | null>(null);
   const [sumLoading, setSumLoading] = useState(false);
+  const [backups, setBackups] = useState<CharBackup[]>([]);
+  const [bkLoading, setBkLoading] = useState(false);
 
   useEffect(() => {
     fetchProgressionPresets().then((res) => {
@@ -90,9 +96,26 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
     }
   }
 
+  async function loadBackups() {
+    if (!pid) {
+      setBackups([]);
+      return;
+    }
+    setBkLoading(true);
+    const res = await fetchCharBackups(pid).catch(() => null);
+    setBkLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "backups" in b) {
+      setBackups((b as { backups: CharBackup[] }).backups ?? []);
+    } else {
+      setBackups([]);
+    }
+  }
+
   // Reload the current-state panel whenever the target player changes.
   useEffect(() => {
     void loadSummary();
+    void loadBackups();
   }, [pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function run(action: string, body: Record<string, unknown> | undefined, label: string) {
@@ -329,9 +352,98 @@ export function PlayerEditorTab({ setConsoleEntries }: { setConsoleEntries: SetE
         </Section>
       </div>
 
+      {/* Character backups (native transfer subsystem) */}
+      <Section title="Character backups"
+        hint="Full-character snapshots via the game's own transfer subsystem (offline-gated). A restore fully REPLACES the character's current state; a backup from an older game patch is refused.">
+        <div className="flex items-center gap-2">
+          <button className="btn-primary" disabled={anyBusy}
+            onClick={async () => {
+              await run("char-backup", { reason: "manual via player-editor" }, `char-backup ${pid}`);
+              void loadBackups();
+            }}>
+            {busy === "char-backup" ? "…" : "Backup now"}
+          </button>
+          <button className="btn-ghost text-xs" onClick={() => void loadBackups()} disabled={bkLoading || !pid}>
+            {bkLoading ? "…" : "reload"}
+          </button>
+        </div>
+        {backups.length === 0 && !bkLoading && (
+          <p className="text-sm text-slate-500 italic">No backups yet for this player.</p>
+        )}
+        {backups.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-slate-500">
+                  <th className="pr-3 py-1">Taken</th>
+                  <th className="pr-3">Character</th>
+                  <th className="pr-3">Origin</th>
+                  <th className="pr-3">Size</th>
+                  <th className="pr-3">Game patch</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {backups.map((b) => (
+                  <tr key={b.file} className="border-t border-slate-800">
+                    <td className="pr-3 py-1 font-mono whitespace-nowrap">{b.created_at || "-"}</td>
+                    <td className="pr-3">{b.character_name || "-"}</td>
+                    <td className="pr-3">{b.action}{b.reason ? ` — ${b.reason}` : ""}</td>
+                    <td className="pr-3 whitespace-nowrap">{(b.bytes / 1024).toFixed(0)} KB</td>
+                    <td className="pr-3 font-mono">{b.patches_checksum ? b.patches_checksum.slice(0, 8) : "-"}</td>
+                    <td className="whitespace-nowrap text-right">
+                      <button className="btn-ghost text-xs border border-amber-900/60 text-amber-300 mr-2"
+                        disabled={anyBusy}
+                        onClick={() => setConfirm({
+                          title: "Restore character?",
+                          message: `Restore ${b.character_name || b.fls} from ${b.created_at}. This REPLACES the character's entire current state (the player must be offline). Anything done since this backup is lost.`,
+                          confirmLabel: "Restore",
+                          onConfirm: async () => {
+                            setBusy("char-restore");
+                            const res = await charBackupRestore(b.file).catch(() => null);
+                            setBusy("");
+                            const rb: unknown = res?.body;
+                            const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+                              && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+                            pushToConsole(setConsoleEntries, `char-restore ${b.file}`,
+                              typeof rb === "string" ? rb : (rb as PublishResult), ok);
+                            void loadSummary();
+                            void loadBackups();
+                          },
+                        })}>
+                        Restore…
+                      </button>
+                      <button className="btn-ghost text-xs text-red-300" disabled={anyBusy}
+                        onClick={() => setConfirm({
+                          title: "Delete this backup?",
+                          message: `Permanently delete backup ${b.file}. The character itself is not touched.`,
+                          confirmLabel: "Delete backup",
+                          onConfirm: async () => {
+                            setBusy("char-backup-delete");
+                            const res = await charBackupDelete(b.file).catch(() => null);
+                            setBusy("");
+                            const rb: unknown = res?.body;
+                            const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+                              && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+                            pushToConsole(setConsoleEntries, `char-backup-delete ${b.file}`,
+                              typeof rb === "string" ? rb : (rb as PublishResult), ok);
+                            void loadBackups();
+                          },
+                        })}>
+                        🗑
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
       {/* Danger zone */}
       <Section title="Danger zone" danger
-        hint="Destructive, offline-gated writes. reset-spec wipes specialization tracks + keystones; account-delete is an irreversible full cascade.">
+        hint="Destructive, offline-gated writes. reset-spec wipes specialization tracks + keystones; account-delete takes a verified character backup first, then runs the irreversible full cascade.">
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label className="label">Reset specialization</label>
