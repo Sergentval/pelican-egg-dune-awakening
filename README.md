@@ -372,6 +372,13 @@ template ships it as a commented example). Clearing the variable reverts
 everything to PvE. Also editable live in the admin panel under
 **Settings → PvP / Safety**.
 
+For the in-game instance picker to actually route players to the instance
+they select, also set **Deep Desert Instance Picker Routing**
+(`DUNE_DD_PICKER_ROUTING`) to `True`: the game's default routing rule for
+DeepDesert_1 (`FirstOfGroup`) ignores the pick, while `HomeDimension` — the
+rule Hagga Basin ships with — honors it. `False` restores the game default;
+empty leaves the file untouched.
+
 The install fetches scripts + Go source from this repo's `main` branch by
 default. Pin a tag or commit SHA via the `DUNE_EGG_REF` panel variable for
 reproducible installs.

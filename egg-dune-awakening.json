@@ -904,6 +904,20 @@
         "max:128"
       ],
       "sort": 62
+    },
+    {
+      "name": "Deep Desert Instance Picker Routing",
+      "description": "Whether the Deep Desert instance picker honors the player's choice. The game's default routing rule for DeepDesert_1 (FirstOfGroup) ignores the pick; True swaps it to HomeDimension (the rule Hagga Basin already uses), which routes players to the instance they select — recommended when running PvP-Enabled Partitions or multiple Deep Desert instances. False restores the game default. Leave empty to not touch the file. Restart required.",
+      "env_variable": "DUNE_DD_PICKER_ROUTING",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "in:True,False"
+      ],
+      "sort": 63
     }
   ]
 }

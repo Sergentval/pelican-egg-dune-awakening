@@ -165,5 +165,43 @@ for st in settings:
         log(f"ERROR while applying {env_name} → {st['key']}:")
         traceback.print_exc(file=sys.stdout)
 
+# ----------------------------------------------------------------------
+# Deep Desert instance-picker routing (issue #106). The engine default for
+# DeepDesert_1 is SelectionRule="FirstOfGroup", under which the client's
+# instance pick is NOT honored — the Director routes to the first instance
+# of the group. Survival_1 ships "HomeDimension" by default, which is why
+# multi-sietch picking works out of the box. True swaps DD to HomeDimension
+# via a -/+ pair on the shared m_BattlegroupsAllMapSettings array (only the
+# DeepDesert_1 tuple is touched); False removes the pair (engine default
+# returns); unset/empty leaves the file alone (hand edits survive).
+# Tuples verified byte-identical to this depot's DefaultGame.ini.
+# ----------------------------------------------------------------------
+MM_SECTION = "/Script/DuneSandbox.MatchmakerEventsSettings"
+MM_KEY = "m_BattlegroupsAllMapSettings"
+MM_FIRST = '(MapName="DeepDesert_1",MapSettings=(SelectionRule="FirstOfGroup",MaxPlayerCapacity=100,IsStartingMap=False))'
+MM_HOME = '(MapName="DeepDesert_1",MapSettings=(SelectionRule="HomeDimension",MaxPlayerCapacity=100,IsStartingMap=False))'
+
+routing = os.environ.get("DUNE_DD_PICKER_ROUTING", "").strip().lower()
+if routing:
+    ug_path = FILES["UserGame"]
+    if routing in ("true", "1", "false", "0"):
+        enable = routing in ("true", "1")
+        pair = [f"-{MM_KEY}={MM_FIRST}", f"+{MM_KEY}={MM_HOME}"] if enable else []
+        if os.path.isfile(ug_path):
+            with open(ug_path, "r", encoding="utf-8", errors="replace") as f:
+                ug_text = f.read()
+            ug_new = ini.upsert_matched(ug_text, MM_SECTION, MM_KEY, [MM_FIRST, MM_HOME], pair)
+            with open(ug_path, "w", encoding="utf-8") as f:
+                f.write(ug_new)
+            log(f"  UserGame.ini [{MM_SECTION}] DeepDesert_1 SelectionRule = "
+                + ("HomeDimension (picker choice honored)" if enable else "engine default (FirstOfGroup)"))
+        else:
+            log(f"WARN target {ug_path} missing — DD picker routing skipped")
+    else:
+        log(f"WARN DUNE_DD_PICKER_ROUTING={routing!r} not understood (True/False) — skipped")
+    if routing in ("false", "0") and os.environ.get("DUNE_PVP_PARTITIONS", "").strip():
+        log("WARN DUNE_PVP_PARTITIONS is set but picker routing is False — "
+            "players may not be routed to the instance they pick.")
+
 log(f"pass complete: applied={applied} skipped(unset)={skipped_unset} skipped(rejected)={skipped_reject} errored={errored}")
 PYEOF

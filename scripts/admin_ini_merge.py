@@ -145,7 +145,7 @@ def upsert_repeated(text: str, section: str, key: str, values: "list[str]") -> s
     lines = text.splitlines(keepends=True)
     section_re = re.compile(rf"^\s*\[{re.escape(section)}\]\s*$", re.IGNORECASE)
     any_section_re = re.compile(r"^\s*\[[^\]]+\]\s*$")
-    live_re = re.compile(rf"^\s*[+.!]?{re.escape(key)}\s*=", re.IGNORECASE)
+    live_re = re.compile(rf"^\s*[-+.!]?{re.escape(key)}\s*=", re.IGNORECASE)
     new_lines = [f"+{key}={v}\n" for v in values]
 
     out: list[str] = []
@@ -190,6 +190,73 @@ def upsert_repeated(text: str, section: str, key: str, values: "list[str]") -> s
         if out and not out[-1].endswith("\n"):
             out.append("\n")
         out.extend(new_lines)
+
+    return "".join(out)
+
+
+def upsert_matched(text: str, section: str, key: str,
+                   match_values: "list[str]", new_lines: "list[str]") -> str:
+    """Replace the UE array entries of `key` under `[section]` whose VALUE is
+    in `match_values` — whatever their prefix (`+`, `-`, `.`, `!` or bare) —
+    with `new_lines` (COMPLETE prefixed lines, e.g. `-key=(...)`), inserted as
+    one block at the first match, or at the end of the section.
+
+    Unlike upsert_repeated, which owns every live line of its key, this only
+    touches the listed values: other entries of the same UE array key (other
+    maps' tuples, operator additions) survive. Empty `new_lines` just removes;
+    a missing section is created only when there is something to write.
+    Comments (`;`-prefixed) are preserved. Issue #106: the Deep Desert
+    instance-picker routing swap (SelectionRule FirstOfGroup → HomeDimension)
+    is one -/+ pair inside an array shared with every other map."""
+    lines = text.splitlines(keepends=True)
+    section_re = re.compile(rf"^\s*\[{re.escape(section)}\]\s*$", re.IGNORECASE)
+    any_section_re = re.compile(r"^\s*\[[^\]]+\]\s*$")
+    live_re = re.compile(rf"^\s*[-+.!]?{re.escape(key)}\s*=(.*)$", re.IGNORECASE)
+    targets = set(match_values)
+    block = [ln if ln.endswith("\n") else ln + "\n" for ln in new_lines]
+
+    out: list[str] = []
+    in_target = False
+    section_seen = False
+    written = False
+
+    for line in lines:
+        if section_re.match(line):
+            section_seen = True
+            in_target = True
+            out.append(line)
+            continue
+        if any_section_re.match(line):
+            if in_target and not written and block:
+                if out and out[-1].strip() == "":
+                    for nl in block:
+                        out.insert(len(out) - 1, nl)
+                else:
+                    out.extend(block)
+                written = True
+            in_target = False
+            out.append(line)
+            continue
+        if in_target:
+            m = live_re.match(line)
+            if m and m.group(1).strip() in targets:
+                if not written:
+                    out.extend(block)
+                    written = True
+                continue  # drop every matched entry
+        out.append(line)
+
+    if not section_seen:
+        if not block:
+            return text
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.append(f"\n[{section}]\n")
+        out.extend(block)
+    elif in_target and not written and block:
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.extend(block)
 
     return "".join(out)
 
