@@ -423,8 +423,8 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                 <tbody>
                   {roster.map((r, i) => (
                     <tr key={`${r.fls_id}-${r.rank}-${i}`} className="border-t border-slate-800">
-                      <td className="pr-3 py-1 font-mono">{r.rank}{r.rank === roster[0].rank && i === 0 ? " 👑" : ""}</td>
-                      <td className="pr-3">{r.character || <span className="text-slate-500 italic">?</span>}</td>
+                      <td className="pr-3 py-1 font-mono">{r.rank}{r.rank === roster[0].rank ? " 👑" : ""}</td>
+                      <td className="pr-3">{r.character || <span className="text-slate-500 italic">deleted character (actor #{r.player_id})</span>}</td>
                       <td className="pr-3 font-mono">{r.fls_id}</td>
                     </tr>
                   ))}

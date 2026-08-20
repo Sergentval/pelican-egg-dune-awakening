@@ -617,7 +617,7 @@ Containers + permissions (read):
 
 ```text
 admin base-containers <base_id>    # CSV: one row per stored item stack, with its container
-admin base-permissions <base_id>   # CSV: rank, character, fls_id (lowest rank = owner)
+admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id (lowest rank = owner)
 ```
 
 - Containers covers every placeable holding an inventory (chests AND powered
@@ -629,9 +629,12 @@ admin base-permissions <base_id>   # CSV: rank, character, fls_id (lowest rank =
   the diagnosis. Permission WRITES are deliberately not ported yet.
 - HTTP: `GET /api/bases/<id>/containers`, `GET /api/bases/<id>/permissions`.
   UI: 📦 Containers + 🔑 Permissions panels in the Bases tab.
-- Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
-- HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
-  `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
+
+Base list + water (recap of the section header commands): picked-up bases
+(unclaimed + base_backup-linked) are excluded from the LIST only — by-id
+commands answer straight. HTTP: `GET /api/bases[?q=]`,
+`GET /api/bases/<id>/water`, `POST /api/bases/<id>/water-refill`
+(force-confirmed). UI: 🏠 Bases tab.
 
 ## Player chat commands (!ping / !kit)
 

@@ -1325,10 +1325,16 @@ WITH base_actor AS (
 )
 SELECT par.rank,
        COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '') AS character,
-       COALESCE(ea."user", '') AS fls_id
+       COALESCE(ea."user", '') AS fls_id,
+       par.player_id
 FROM base_actor ba
 JOIN dune.permission_actor_rank par ON par.permission_actor_id = ba.actor_id
-JOIN dune.actors player_a ON player_a.id = par.player_id
+-- LEFT: char_teardown_account (account-delete / char-restore) deletes the
+-- player actor trio while leaving permission rows in place — an INNER join
+-- here made the whole roster vanish and falsely read as "unclaimed"
+-- (review-caught). A torn-down holder keeps its rank row, with player_id as
+-- the fallback identifier.
+LEFT JOIN dune.actors player_a ON player_a.id = par.player_id
 LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
 LEFT JOIN dune.encrypted_accounts ea ON ea.id = player_a.owner_account_id
 ORDER BY par.rank ASC, character ASC;
