@@ -121,6 +121,13 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Player chat commands (2026-08) port, with thanks,
+coastal-ms/DST-DuneServerTool v13.4's ChatCommands mechanism (Apache-2.0):
+the chat.intercept copy-queue discovery (bounded declare + catch-all bind +
+basic_get drain via rabbitmqctl eval) and its safety posture (off by
+default, per-command opt-in, per-player cooldowns, bounded queue, drop on
+disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
+
 Bases + water management (2026-08) ports, with thanks, Red-Blink/
 dune-awakening-selfhost-docker's bases feature (MIT: the listBases claim
 model incl. the picked-up-base exclusion, the baseWater device resolution
