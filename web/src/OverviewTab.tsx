@@ -10,13 +10,87 @@ import { useAutoRefresh } from "./live";
 import { Icon } from "./icons";
 import { MAP_ROLE_META, mapDisplayName, mapRole, mapStatusPill } from "./mapNames";
 import {
+  fetchDoctor,
   fetchPlayers,
   fetchStatus,
   parsePlayerTable,
+  type DoctorCheck,
   type PlayerRow,
   type PublishResult,
   type StatusGrid,
 } from "./api";
+
+const DOCTOR_PILL: Record<DoctorCheck["status"], string> = {
+  ok: "bg-emerald-900/40 text-emerald-300",
+  warn: "bg-amber-900/40 text-amber-300",
+  error: "bg-red-900/40 text-red-300",
+  skip: "bg-slate-800 text-slate-400",
+};
+
+// On-demand connectivity diagnosis (it curls the public-IP service, so it is
+// never polled). Catches the "boots fine, nobody can join" family: advertised
+// IP drift, port collisions, stuck READY, silent FLS heartbeat.
+function DoctorCard() {
+  const [checks, setChecks] = useState<DoctorCheck[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function runDoctor() {
+    setBusy(true);
+    setErr("");
+    const res = await fetchDoctor().catch(() => null);
+    setBusy(false);
+    const b: unknown = res?.body;
+    const body = typeof b === "object" && b !== null ? (b as {
+      ok?: boolean; checks?: DoctorCheck[]; error?: string; stderr?: string;
+    }) : null;
+    // The endpoint always answers HTTP 200 — the SEMANTIC ok and a non-empty
+    // check list are what distinguish a diagnosis from a backend failure. An
+    // empty list must never render as "all clear" on a diagnostic tool.
+    if (res?.ok && body?.ok && (body.checks?.length ?? 0) > 0) {
+      setChecks(body.checks ?? []);
+    } else {
+      setChecks(null);
+      setErr(body?.error || body?.stderr || "diagnosis failed — see the console/logs");
+    }
+  }
+
+  const bad = (checks ?? []).filter((c) => c.status === "warn" || c.status === "error").length;
+  return (
+    <div className="card">
+      <header className="card-header">
+        <div>
+          <h2 className="card-title">🩺 Connection doctor</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Can players actually join? Advertised IP, ports, readiness, FLS heartbeat.
+          </p>
+        </div>
+        <button className="btn-ghost text-xs" onClick={() => void runDoctor()} disabled={busy}>
+          {busy ? "diagnosing…" : checks ? "re-run" : "run diagnosis"}
+        </button>
+      </header>
+      <div className="card-body space-y-1.5">
+        {err && <p className="text-xs text-red-300">{err}</p>}
+        {!checks && !busy && !err && (
+          <p className="text-xs text-slate-500 italic">Run on demand — not polled.</p>
+        )}
+        {checks && bad === 0 && (
+          <p className="text-xs text-emerald-300">All clear — nothing between players and this server.</p>
+        )}
+        {(checks ?? []).map((c) => (
+          <div key={c.id} className="py-1 border-b border-slate-800/60 last:border-0 text-xs">
+            <div className="flex items-center gap-2">
+              <span className={"px-1.5 rounded text-[10px] uppercase " + (DOCTOR_PILL[c.status] ?? DOCTOR_PILL.skip)}>{c.status}</span>
+              <span className="text-slate-200">{c.summary}</span>
+            </div>
+            {c.detail && <p className="text-slate-400 mt-0.5 font-mono break-all">{c.detail}</p>}
+            {c.hint && c.status !== "ok" && <p className="text-slate-500 mt-0.5">{c.hint}</p>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
@@ -172,6 +246,8 @@ export function OverviewTab({ setConsoleEntries }: { setConsoleEntries: SetEntri
               })}
           </div>
         </div>
+
+        <DoctorCard />
       </div>
     </div>
   );

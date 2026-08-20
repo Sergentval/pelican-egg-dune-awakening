@@ -626,7 +626,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
-            "char-backup", "char-backup-list",
+            "char-backup", "char-backup-list", "doctor",
         )
     )
     entry = {
@@ -1395,6 +1395,26 @@ class Handler(BaseHTTPRequestHandler):
             if mock is None:
                 grid["warning"] = "mock-k8s /status unreachable; showing player counts only"
             self._write(200, grid)
+            return
+
+        # Connection doctor: read-only diagnosis of the "boots fine, nobody
+        # can join" family (advertised IP drift, port collisions, stuck
+        # READY, silent heartbeat). Runs on demand — it curls the public-IP
+        # service, so it is not polled.
+        if path == "/api/doctor":
+            entry = run_publish(["doctor"], timeout=30)
+            data = {}
+            try:
+                data = json.loads(entry.get("stdout") or "{}")
+            except ValueError:
+                pass
+            self._write(200, {"ok": bool(entry.get("ok")) and bool(data.get("ok")),
+                              "summary": data.get("summary", {}),
+                              "checks": data.get("checks", []),
+                              "facts": data.get("facts", {}),
+                              "error": data.get("error", ""),
+                              "context": data.get("context", ""),
+                              "stderr": entry.get("stderr", "")[:300]})
             return
 
         # World-partition topology (warm dim=0 + dimensional dim>0) joined to

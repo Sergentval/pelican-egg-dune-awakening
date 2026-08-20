@@ -574,6 +574,27 @@ admin char-restore <file>                      # FULL REPLACE of that FLS id's c
   `POST /api/char-backups/restore` (force-confirmed), `POST /api/char-backups/delete`.
   UI: Players → Character → "Character backups".
 
+## Connection doctor
+
+Read-only diagnosis of the "boots fine, nobody can join" family. Run it
+whenever players report join timeouts or hung map travel:
+
+```text
+admin doctor    # JSON: 11 typed checks, ok/warn/error/skip
+```
+
+Checks: `DUNE_EXTERNAL_IP` set / public / matching the real WAN IP (ipify,
+5s cap), per-map advertised game + IGW addresses in `farm_state` (loopback
+IGW is legitimate on this stack — every instance shares one container),
+per-map UDP port collisions (the in-game 2G2 error), advertised ports with
+no actual UDP listener, alive-but-not-ready instances, registrations without
+a `world_partition` row, and the freshest server-state heartbeat age from
+the director log. Diagnose-only — it never fixes anything itself.
+
+HTTP: `GET /api/doctor` (on demand — never polled; it performs the public-IP
+lookup). UI: 🩺 card on the Overview page. Ported from DST's P34 connection
+doctor (Apache-2.0) and Red-Blink's doctor.sh checks (MIT); see ATTRIBUTION.md.
+
 ## Known no-ops on seabass servers
 
 Per [adainrivers' live-testing](https://github.com/adainrivers/dune-dedicated-server-manager)

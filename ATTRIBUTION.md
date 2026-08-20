@@ -121,6 +121,13 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Connection doctor (2026-08) ports, with thanks, the check catalogue of
+coastal-ms/DST-DuneServerTool's P34 connection doctor (Apache-2.0: advertised
+vs real IP, per-map address drift, port-range misconfig) and
+Red-Blink/dune-awakening-selfhost-docker's doctor.sh (MIT: heartbeat recency,
+listener inventory, partition coherence), reimplemented as `admin doctor` +
+`scripts/admin_doctor.py` with our own single-container IGW semantics.
+
 Character backup/restore (2026-08) ports, with thanks, the v0.46.0
 native-transfer flow (`cmd/dune-admin/db.go`: processCaptureCharacterBackup /
 processRestoreCharacterBackup / cleanupOrphanActorsForAccount, and
