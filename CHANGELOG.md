@@ -23,6 +23,31 @@ here on the log is maintained with each merge.
   on branch `feat/106-deep-desert-pvp` (PR #109), in-game labels confirmed by
   the reporter, final soak in progress before merge. (#106)
 
+## 2026-08-20 — World reset, gated and reversible (C6)
+
+- **Season resets without fear.** `world-reset-arm "RESET WORLD"` verifies
+  zero players online, takes a verified database backup (optionally a
+  per-character backup sweep too), and writes a durable marker — the world
+  is untouched until the NEXT RESTART, which sets the current datadir
+  aside (moved, never deleted) and boots a fresh, empty world under the
+  same battlegroup identity, tokens, and config. 🌍 card in the Scheduler
+  tab, chained to the restart-now flow.
+- **Rollback is a swap**: `world-rollback-arm "ROLL BACK WORLD"` restores
+  the preserved world at the next boot; progress on the fresh world is
+  parked (`pg.rolled-back-<ts>`), not lost. Retention: 2 preserved
+  pre-reset worlds, 1 rolled-back world.
+- Every gate fails closed: confirmation phrases (re-validated
+  server-side), zero-online check, backup re-verified at arm AND at boot,
+  and any doubt boots the old world untouched. The boot hook can
+  structurally never brick the boot.
+- Proven live end-to-end on a real server: reset → fresh world (the
+  wipe-guard's armed boot re-apply re-patched it automatically) →
+  rollback → original world back, characters and permissions intact.
+- Pairing with character backups: after a reset, a player joins the fresh
+  world once, then `char-restore` brings their old character back.
+- Ported from coastal-ms/DST-DuneServerTool's worldreset-2 (Apache-2.0),
+  reshaped for this single-container stack — see ATTRIBUTION.md.
+
 ## 2026-08-20 — Base backup wipe-guard (C3.5)
 
 - **Stored base backups can now survive the weekly Deep Desert reset.** A
