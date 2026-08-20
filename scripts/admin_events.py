@@ -619,6 +619,24 @@ def _backfill(conn, publish, events, players, now) -> int:
     return sealed
 
 
+def make_publish(base: str):
+    """The real publish: shell out to admin-publish.sh. rc=0 returns pure
+    stdout (db-sql CSV must stay clean); failures return both streams."""
+    import subprocess
+    script = os.path.join(base, "scripts", "admin-publish.sh")
+
+    def publish(argv):
+        try:
+            res = subprocess.run(["bash", script] + [str(a) for a in argv],
+                                 capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return 1, "publish timed out"
+        if res.returncode == 0:
+            return 0, res.stdout or ""
+        return res.returncode, (res.stdout or "") + (res.stderr or "")
+    return publish
+
+
 def run_tick(base: str, publish, now: int | None = None,
              rng: random.Random | None = None, boot: bool = False) -> dict:
     """One engine tick. Returns a summary dict for the daemon log line."""
@@ -655,3 +673,22 @@ def run_tick(base: str, publish, now: int | None = None,
         summary["due"] = len(due)
         summary["retried"] = _retry_pass(conn, publish, now)
     return summary
+
+
+def main(argv: list[str]) -> int:
+    import sys
+    if len(argv) >= 2 and argv[0] == "tick":
+        base = argv[1]
+        boot = "--boot" in argv[2:]
+        summary = run_tick(base, make_publish(base), boot=boot)
+        if any(summary[k] for k in ("due", "granted", "failed", "retried",
+                                    "backfilled")):
+            print(f"[events] {json.dumps(summary)}")
+        return 0
+    print("usage: admin_events.py tick <base> [--boot]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))

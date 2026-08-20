@@ -350,6 +350,19 @@ class ResetTests(Harness):
         self.assertEqual(self.claims(202)["level:10"], "earned")
 
 
+class PacingTests(Harness):
+    def test_poll_seconds_gates_ticks(self):
+        self.player(101, level=50)
+        s1 = bp.run_tick(self.base, self.game, now=1000)
+        self.assertEqual(s1["scanned"], 1)          # first sight fires
+        s2 = bp.run_tick(self.base, self.game, now=1030)
+        self.assertEqual(s2["scanned"], 0)          # inside the 60s window
+        s3 = bp.run_tick(self.base, self.game, now=1061)
+        self.assertEqual(s3["scanned"], 1)
+        s4 = bp.run_tick(self.base, self.game, now=1062, force=True)
+        self.assertEqual(s4["scanned"], 1)          # force bypasses pacing
+
+
 class MigratedSchemaTests(Harness):
     def test_tags_via_character_id_schema(self):
         self.game.tags_key_col = "character_id"

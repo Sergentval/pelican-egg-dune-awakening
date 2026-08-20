@@ -109,6 +109,10 @@ bash scripts/start-chat-commands.sh "$BASE"
 # Demand-based autoscaler. No-op while autoscaler.json enabled:false, so always
 # safe to launch; drains idle on-demand maps + wakes/load-scales them once armed.
 bash scripts/start-autoscaler.sh "$BASE"
+# Player-events + battlepass engines (dune-admin port). No-op while both
+# events-engine.json and battlepass.json say enabled:false, so always safe
+# to launch; zone races/milestones and the intel pass run only once armed.
+bash scripts/start-player-events.sh "$BASE"
 
 # Spawn dimensional UE5 partitions for cross-Sietch travel destinations.
 # prestart.sh has already seeded the dim>0 world_partition rows; this

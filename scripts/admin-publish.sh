@@ -2965,6 +2965,114 @@ SQL
         echo "publish=db-write award-char-xp pawn=$pawn xp=$applied_xp level=$new_level"
         exit 0
         ;;
+    award-intel)
+        # Battlepass intel grant: ADDS tech-knowledge points on the PAWN,
+        # clamped in SQL so the balance never exceeds 2779 — the most a
+        # character can ever spend; anything past it is unspendable waste
+        # (dune-admin #208). REQUIRES the player OFFLINE — the game caches
+        # TechKnowledgePlayerComponent in memory and clobbers live edits on
+        # flush. The gate fails CLOSED on duplicate player-state rows (any
+        # non-Offline duplicate wins the ORDER BY — their #290), and a
+        # never-connected player (no state row) counts as offline. EXIT 4
+        # is the dedicated "player online" code: the battlepass engine
+        # routes it to a short retry that never consumes an attempt
+        # (their #259/#280). Ported from dune-admin cmdAwardIntelCtx (MIT).
+        raw="${1:?usage: award-intel <player> <amount>}"
+        amount="${2:?usage: award-intel <player> <amount>}"
+        case "$amount" in *[!0-9]*|"") echo "[admin-publish] ERROR award-intel: amount must be a positive integer" >&2; exit 2;; esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR award-intel: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.encrypted_player_state dune.encrypted_accounts dune.actors || exit 3
+        status=$({ dune_psql_q --set=fls="$fls_id" -tA 2>/dev/null <<'AI_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT eps.online_status::text
+FROM dune.encrypted_player_state eps
+JOIN dune.encrypted_accounts ea ON ea.id = eps.account_id
+WHERE ea."user" = :'fls'
+ORDER BY (eps.online_status::text = 'Offline'), eps.last_login_time DESC NULLS LAST
+LIMIT 1;
+AI_SQL
+)
+        if [ -n "$status" ] && [ "$status" != "Offline" ]; then
+            echo "[admin-publish] ERROR award-intel: player is currently $status — intel edits need them offline" >&2
+            exit 4
+        fi
+        updated=$(dune_psql_q --set=fls="$fls_id" --set=amt="$amount" -q -tA -v ON_ERROR_STOP=1 <<'AI2_SQL'
+WITH target AS (
+    SELECT eps.player_pawn_id AS pawn
+    FROM dune.encrypted_player_state eps
+    JOIN dune.encrypted_accounts ea ON ea.id = eps.account_id
+    WHERE ea."user" = :'fls' AND eps.player_pawn_id IS NOT NULL
+    ORDER BY eps.last_login_time DESC NULLS LAST, eps.id DESC
+    LIMIT 1
+)
+UPDATE dune.actors a
+SET properties = jsonb_set(
+  a.properties,
+  '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}',
+  to_jsonb(
+    (a.properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints')::bigint
+    + LEAST(
+        GREATEST(:'amt'::bigint, 0),
+        GREATEST(2779 - (a.properties->'TechKnowledgePlayerComponent'->>'m_TechKnowledgePoints')::bigint, 0))))
+FROM target
+WHERE a.id = target.pawn AND a.properties ? 'TechKnowledgePlayerComponent'
+RETURNING a.id;
+AI2_SQL
+) || { echo "[admin-publish] ERROR award-intel: update failed" >&2; exit 1; }
+        if [ -z "$updated" ]; then
+            echo "[admin-publish] ERROR award-intel: no PlayerCharacter pawn with TechKnowledgePlayerComponent for $fls_id" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK award-intel fls=$fls_id pawn=$(printf '%s' "$updated" | tail -n1) added_up_to=$amount (clamped to the 2779 spendable cap)"
+        echo "publish=db-write award-intel fls=$fls_id amount=$amount"
+        exit 0
+        ;;
+    award-track-xp)
+        # Specialization-track XP (the events engine's xp reward): upsert on
+        # the player-CONTROLLER (same key as reset-spec), clamped to the
+        # 44,182 per-track cap — upstream's exact two-statement shape.
+        # Ported from dune-admin cmdAwardTrackXP (MIT).
+        raw="${1:?usage: award-track-xp <player> <track> <amount>}"
+        track="${2:?usage: award-track-xp <player> <track> <amount>}"
+        amount="${3:?usage: award-track-xp <player> <track> <amount>}"
+        case "$track" in Combat|Crafting|Gathering|Exploration|Sabotage) ;;
+            *) echo "[admin-publish] ERROR award-track-xp: track must be Combat|Crafting|Gathering|Exploration|Sabotage" >&2; exit 2;; esac
+        case "$amount" in *[!0-9]*|"") echo "[admin-publish] ERROR award-track-xp: amount must be a positive integer" >&2; exit 2;; esac
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR award-track-xp: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        dune_require_tables dune.specialization_tracks || exit 3
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        if [ -z "$ctrl" ]; then
+            echo "[admin-publish] ERROR award-track-xp: no player-controller actor for $fls_id" >&2
+            exit 1
+        fi
+        applied=$(dune_psql_q --set=ctrl="$ctrl" --set=track="$track" --set=amt="$amount" \
+                -q -tA -v ON_ERROR_STOP=1 <<'ATX_SQL'
+WITH bumped AS (
+    UPDATE dune.specialization_tracks
+       SET xp_amount = GREATEST(LEAST(xp_amount + :'amt'::integer, 44182), 0)
+     WHERE player_id = :'ctrl'::bigint AND track_type::text = :'track'
+    RETURNING xp_amount
+), inserted AS (
+    INSERT INTO dune.specialization_tracks (player_id, track_type, xp_amount, level)
+    SELECT :'ctrl'::bigint, (:'track')::dune.specializationtracktype,
+           LEAST(:'amt'::integer, 44182), 0::real
+    WHERE NOT EXISTS (SELECT 1 FROM bumped)
+    RETURNING xp_amount
+)
+SELECT xp_amount FROM bumped UNION ALL SELECT xp_amount FROM inserted;
+ATX_SQL
+) || { echo "[admin-publish] ERROR award-track-xp: write failed" >&2; exit 1; }
+        echo "[admin-publish] OK award-track-xp fls=$fls_id ctrl=$ctrl track=$track now=$(printf '%s' "$applied" | tail -n1)"
+        echo "publish=db-write award-track-xp fls=$fls_id track=$track amount=$amount"
+        exit 0
+        ;;
     tech-unlock)
         # Flip every DISCOVERED recipe in the pawn's TechKnowledgePlayerComponent
         # .m_TechKnowledge.m_TechKnowledgeData to Purchased (unlock-all) or

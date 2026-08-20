@@ -489,13 +489,22 @@ def _deliver_grant(conn, publish, tier: dict, account_id: int, fls: str,
 # Tick
 # ---------------------------------------------------------------------------
 
-def run_tick(base: str, publish, now: int | None = None) -> dict:
+def run_tick(base: str, publish, now: int | None = None,
+             force: bool = False) -> dict:
     now = int(now if now is not None else time.time())
     cfg = load_config(base)
     summary = {"scanned": 0, "baselined": 0, "earned": 0, "seen": 0,
                "granted": 0, "retry_later": 0, "failed": 0}
     if not cfg["enabled"]:
         return summary
+    with connect(base) as conn:
+        # Pace the scan to poll_seconds — the daemon ticks faster than the
+        # pass needs to run. First sight (no state) fires immediately.
+        raw = admin_events._state_get(conn, "bp:next_due")
+        if not force and raw.isdigit() and int(raw) > now:
+            return summary
+        admin_events._state_set(conn, "bp:next_due",
+                                str(now + cfg["poll_seconds"]))
     with connect(base) as conn:
         tiers = [dict(r) for r in conn.execute(
             "SELECT * FROM battlepass_tiers WHERE enabled=1").fetchall()]
@@ -603,3 +612,47 @@ WHERE eps.account_id = {int(account_id)} LIMIT 1""")
                     detail = "player is online — intel needs them offline"
                     break
         return {"granted": granted, "failed": failed, "detail": detail}
+
+
+def main(argv: list[str]) -> int:
+    import sys
+    if len(argv) >= 2 and argv[0] == "tick":
+        base = argv[1]
+        try:
+            seeded = seed_tiers_if_empty(base)
+            if seeded:
+                print(f"[battlepass] seeded {seeded} catalog tiers")
+        except (OSError, ValueError) as exc:
+            print(f"[battlepass] catalog seed failed: {exc}", file=sys.stderr)
+        summary = run_tick(base, admin_events.make_publish(base))
+        if any(summary[k] for k in ("baselined", "earned", "granted",
+                                    "retry_later", "failed")):
+            print(f"[battlepass] {json.dumps(summary)}")
+        return 0
+    if len(argv) >= 3 and argv[0] == "grant":
+        base = argv[1]
+        try:
+            account = int(argv[2])
+        except ValueError:
+            print("account id must be numeric", file=sys.stderr)
+            return 2
+        result = grant_account(base, admin_events.make_publish(base), account)
+        print(json.dumps(result))
+        return 0 if not result["failed"] else 1
+    if len(argv) >= 3 and argv[0] == "reset":
+        base, mode = argv[1], argv[2]
+        account = int(argv[3]) if len(argv) > 3 else 0
+        try:
+            print(json.dumps(reset_claims(base, mode, account)))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
+    print("usage: admin_battlepass.py tick <base> | grant <base> <account>"
+          " | reset <base> demote|purge [account]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))
