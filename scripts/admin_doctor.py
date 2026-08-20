@@ -182,10 +182,15 @@ def summarize(checks: "list[dict]") -> dict:
 
 def _main(argv: "list[str]") -> int:
     if len(argv) > 1 and argv[1] == "analyze":
+        raw = sys.stdin.read()
         try:
-            facts = json.load(sys.stdin)
+            facts = json.loads(raw)
         except ValueError as exc:
-            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}"}))
+            # Surface WHERE it broke — the facts line is machine-assembled,
+            # so a parse error means a gathering bug worth pinpointing fast.
+            at = getattr(exc, "pos", 0) or 0
+            ctx = raw[max(0, at - 80):at + 40].replace("\n", "⏎")
+            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}", "context": ctx}))
             return 1
         checks = analyze(facts if isinstance(facts, dict) else {})
         print(json.dumps({"ok": True, "summary": summarize(checks), "checks": checks,
