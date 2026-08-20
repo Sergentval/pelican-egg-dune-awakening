@@ -890,7 +890,7 @@ CB_SQL
 SELECT dune.character_transfer_export(:'fls');
 CB_SQL
         then
-            echo "[admin-publish] ERROR char-backup: export failed: $(tail -n2 "$errf" | tr '\n' ' ')" >&2
+            echo "[admin-publish] ERROR char-backup: export failed: $({ grep -E 'ERROR|DETAIL' "$errf" || tail -n4 "$errf"; } | head -n4 | tr '\n' ' ')" >&2
             rm -f "$out" "$errf"
             exit 1
         fi
@@ -986,7 +986,7 @@ except Exception:
         new_id=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
         rm -f "$sqltmp"
         if [ "$import_ok" != "true" ] || [ -z "$new_id" ]; then
-            echo "[admin-publish] ERROR char-restore: import failed: $(tail -n2 "$errf" | tr '\n' ' ')" >&2
+            echo "[admin-publish] ERROR char-restore: import failed: $({ grep -E 'ERROR|DETAIL' "$errf" || tail -n4 "$errf"; } | head -n4 | tr '\n' ' ')" >&2
             rm -f "$errf"
             exit 1
         fi
