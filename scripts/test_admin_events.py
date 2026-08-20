@@ -142,7 +142,7 @@ class MilestoneTests(EngineHarness):
         summary = self.tick(now=1000)
         self.assertEqual(summary["granted"], 1)
         self.assertEqual(self.grants(),
-                         [("give-currency", "FLS0065", "100")])
+                         [("give-currency", "FLS0065", "100", "allow-online")])
         self.assertEqual(len(self.broadcasts()), 1)
         self.assertIn("P101 reached Level Up!", self.broadcasts()[0][2])
         # second due tick: idempotent (claim ledger)
@@ -200,10 +200,10 @@ class ZoneRaceTests(EngineHarness):
         self.player(102, map="HaggaBasin", x=5, y=0, z=0)  # closer but later in list
         self.make_race([101, 102])
         self.assertEqual(self.tick(now=1000)["granted"], 1)
-        self.assertEqual(self.grants(), [("give-currency", "FLS0065", "10")])
+        self.assertEqual(self.grants(), [("give-currency", "FLS0065", "10", "allow-online")])
         # next due tick: 101 claimed → 102 wins
         self.assertEqual(self.tick(now=2000)["granted"], 1)
-        self.assertEqual(self.grants()[-1], ("give-currency", "FLS0066", "10"))
+        self.assertEqual(self.grants()[-1], ("give-currency", "FLS0066", "10", "allow-online"))
 
     def test_map_and_radius_filters(self):
         self.player(101, map="DeepDesert", x=0, y=0, z=0)      # wrong map
@@ -217,7 +217,7 @@ class ZoneRaceTests(EngineHarness):
         self.player(102, map="HaggaBasin", x=0, y=0, z=0)
         self.make_race([101, 102])
         self.tick()
-        self.assertEqual(self.grants(), [("give-currency", "FLS0066", "10")])
+        self.assertEqual(self.grants(), [("give-currency", "FLS0066", "10", "allow-online")])
 
 
 class RetryTests(EngineHarness):
@@ -320,7 +320,7 @@ class BackfillTests(EngineHarness):
         self.make_milestone(award_past=True)
         summary = self.tick(now=1000, boot=True)
         self.assertEqual(summary["backfilled"], 1)
-        self.assertEqual(self.grants(), [("give-currency", "FLS0065", "100")])
+        self.assertEqual(self.grants(), [("give-currency", "FLS0065", "100", "allow-online")])
         self.assertEqual(self.broadcasts(), [])      # backfill never announces
 
     def test_zone_races_never_backfilled(self):

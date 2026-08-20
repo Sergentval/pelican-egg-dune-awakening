@@ -2741,8 +2741,12 @@ SQL
         # delta), keyed on the player-CONTROLLER actor (not the pawn), then read
         # the new balance back. amount may be negative to deduct; the proc
         # enforces non-negative balances. Ported from dune-admin cmdGiveCurrency.
-        raw="${1:?usage: give-currency <fls_id|me|steam:<id>|name:<n>> <amount>}"
+        raw="${1:?usage: give-currency <fls_id|me|steam:<id>|name:<n>> <amount> [allow-online]}"
         amount="${2:?usage: give-currency <player> <amount>}"
+        allow_online="${3:-}"
+        case "$allow_online" in ""|allow-online) ;; *)
+            echo "[admin-publish] ERROR give-currency: third argument must be omitted or 'allow-online'" >&2
+            exit 2;; esac
         # Signed-integer validation: strip one optional leading '-', rest digits.
         amt_digits="${amount#-}"
         case "$amt_digits" in
@@ -2757,7 +2761,14 @@ SQL
             exit 2
         fi
         dune_require_tables dune.player_virtual_currency_balances dune.actors || exit 3
-        assert_player_offline "$fls_id" || exit $?
+        # The offline gate is house prudence for MANUAL edits (a logged-in
+        # client shows a stale balance until its next refresh). The events
+        # engine passes allow-online: the proc is the same one the game's
+        # own live economy runs through, and upstream granted event currency
+        # to online players via it in production.
+        if [ "$allow_online" != "allow-online" ]; then
+            assert_player_offline "$fls_id" || exit $?
+        fi
         ctrl=$(dune_controller_actor_id "$fls_id")
         if [ -z "$ctrl" ]; then
             echo "[admin-publish] ERROR give-currency: no player-controller actor for $fls_id" >&2

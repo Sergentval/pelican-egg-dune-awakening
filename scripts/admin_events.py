@@ -452,7 +452,9 @@ def make_grant_runner(publish, fls: str, online: bool):
     def runner(step):
         stage, payload = step["stage"], step["payload"]
         if stage == "currency":
-            argv = ["give-currency", fls, str(payload["amount"])]
+            # allow-online: the balance proc is the game's own live-economy
+            # path (upstream granted event currency to online players).
+            argv = ["give-currency", fls, str(payload["amount"]), "allow-online"]
         elif stage == "items":
             if online:
                 argv = ["give", fls, payload["template"], str(payload["qty"])]
