@@ -187,16 +187,37 @@ if routing:
     if routing in ("true", "1", "false", "0"):
         enable = routing in ("true", "1")
         pair = [f"-{MM_KEY}={MM_FIRST}", f"+{MM_KEY}={MM_HOME}"] if enable else []
-        if os.path.isfile(ug_path):
-            with open(ug_path, "r", encoding="utf-8", errors="replace") as f:
-                ug_text = f.read()
-            ug_new = ini.upsert_matched(ug_text, MM_SECTION, MM_KEY, [MM_FIRST, MM_HOME], pair)
-            with open(ug_path, "w", encoding="utf-8") as f:
-                f.write(ug_new)
-            log(f"  UserGame.ini [{MM_SECTION}] DeepDesert_1 SelectionRule = "
-                + ("HomeDimension (picker choice honored)" if enable else "engine default (FirstOfGroup)"))
-        else:
-            log(f"WARN target {ug_path} missing — DD picker routing skipped")
+        # Same failure contract as every other write in this pass: an I/O or
+        # engine error must skip THIS feature, never abort the boot (the
+        # entrypoint runs under set -e).
+        try:
+            if os.path.isfile(ug_path):
+                with open(ug_path, "r", encoding="utf-8", errors="replace") as f:
+                    ug_text = f.read()
+                ug_new = ini.upsert_matched(ug_text, MM_SECTION, MM_KEY, [MM_FIRST, MM_HOME], pair)
+                with open(ug_path, "w", encoding="utf-8") as f:
+                    f.write(ug_new)
+                log(f"  UserGame.ini [{MM_SECTION}] DeepDesert_1 SelectionRule = "
+                    + ("HomeDimension (picker choice honored)" if enable else "engine default (FirstOfGroup)"))
+                if enable:
+                    # Drift sentinel: exactly our -/+ pair should carry the DD
+                    # tuple. More live lines means a format-drifted duplicate
+                    # (e.g. a game patch changed MaxPlayerCapacity) that the
+                    # exact-value matcher could not remove.
+                    live = sum(1 for l in ug_new.splitlines()
+                               if l.lstrip().lower().startswith(("+" + MM_KEY.lower(), "-" + MM_KEY.lower(),
+                                                                 MM_KEY.lower(), "." + MM_KEY.lower()))
+                               and 'MapName="DeepDesert_1"' in l)
+                    if live != 2:
+                        log(f"WARN {live} live DeepDesert_1 routing tuple(s) found where 2 were expected — "
+                            "a format-drifted duplicate may need hand cleanup in UserGame.ini "
+                            f"[{MM_SECTION}].")
+            else:
+                log(f"WARN target {ug_path} missing — DD picker routing skipped")
+        except Exception:
+            errored += 1
+            log("ERROR while applying DUNE_DD_PICKER_ROUTING:")
+            traceback.print_exc(file=sys.stdout)
     else:
         log(f"WARN DUNE_DD_PICKER_ROUTING={routing!r} not understood (True/False) — skipped")
     if routing in ("false", "0") and os.environ.get("DUNE_PVP_PARTITIONS", "").strip():

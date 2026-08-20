@@ -3023,7 +3023,7 @@
       "key": "m_PingMaximumDistance",
       "type": "float",
       "quoted": false,
-      "default": "2000.0",
+      "default": "2000.000000",
       "enum": null,
       "category": "Player",
       "label": "Ping Maximum Distance",
