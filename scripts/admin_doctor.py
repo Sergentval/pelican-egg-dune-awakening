@@ -190,7 +190,9 @@ def _main(argv: "list[str]") -> int:
             # so a parse error means a gathering bug worth pinpointing fast.
             at = getattr(exc, "pos", 0) or 0
             ctx = raw[max(0, at - 80):at + 40].replace("\n", "⏎")
-            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}", "context": ctx}))
+            window = raw[max(0, at - 20):at + 20]
+            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}", "context": ctx,
+                              "bytes": [hex(b) for b in window.encode("utf-8", "replace")]}))
             return 1
         checks = analyze(facts if isinstance(facts, dict) else {})
         print(json.dumps({"ok": True, "summary": summarize(checks), "checks": checks,
