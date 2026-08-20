@@ -594,6 +594,24 @@ admin base-water-refill <base_id> # fill every water device to capacity
   never seen (can't prove it's down). Stop the server or park the sietch first.
 - Blood (purifier) levels are read but never granted — blood is a harvested
   resource.
+
+Generator fuel (same base model, C3.2):
+
+```text
+admin base-fuel <base_id>          # CSV per DEVICE: units/cap, %, runtime hours
+admin base-fuel-refill <base_id>   # top every device to its fuel cap
+```
+
+- Fuel is item stacks in the device's own inventory; only the type's accepted
+  template counts (Oil ×499, SpicedFuelCell ×499, lubricants in 100-unit
+  stacks up to 499). Runtime uses upstream's measured burn rates (1 h / 1.5 h
+  per unit) without Funcom's occasional 2x uptime-event multiplier.
+- The refill is ONE transaction: inventory row locked before its fuel rows,
+  partial stacks topped up first, then new stacks (house give-item insert
+  recipe), bounded by per-type max stacks AND the inventory's slot count.
+  Same fail-closed map-down gate as the water refill.
+- HTTP: `GET /api/bases/<id>/fuel`, `POST /api/bases/<id>/fuel-refill`
+  (force-confirmed). UI: ⚡ Generators panel in the Bases tab.
 - Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
 - HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
   `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
