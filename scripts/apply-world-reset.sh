@@ -115,9 +115,13 @@ fi
 # on $STATE/schema-loaded, which lives OUTSIDE the datadir. It must travel
 # with the preserved world, or the fresh boot skips schema creation and
 # migrate-db dies on "database dune does not exist" (found the hard way on
-# the live e2e). Rollback restores it from the preserved dir.
+# the live e2e). Rollback restores it from the preserved dir. If the park
+# itself fails, force the safe default — sentinel ABSENT (a stale present
+# sentinel reproduces the migrate-db dead end; absent merely re-runs the
+# schema load on the fresh, empty datadir).
 if [ -f "$STATE/schema-loaded" ]; then
-    mv "$STATE/schema-loaded" "$STATE/$keep/schema-loaded.sentinel" || true
+    mv "$STATE/schema-loaded" "$STATE/$keep/schema-loaded.sentinel" \
+        || rm -f "$STATE/schema-loaded" || true
 fi
 prune_preserved
 python3 "$PY" clear-pending "$BASE" || true
