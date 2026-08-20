@@ -323,6 +323,31 @@ SQL
 # developer-supplied constants, never user input.
 # --------------------------------------------------------------------------
 
+# Sweep stale dune.encrypted_player_state rows, both known shapes. Safe and
+# idempotent; used PRE-import (a leftover duplicate row breaks
+# character_transfer_import's RespawnLocation subquery — live-reproduced
+# 2026-08-20), post-restore and post-delete.
+#   1. account-orphaned rows (dune-admin v0.46.0's sweep, MIT);
+#   2. link-dead duplicates on a LIVE account (our addition): a self-restore
+#      keeps the account id, so the previous row is not account-orphaned — it
+#      sits next to the fresh one with NULL/dangling actor links. Removed only
+#      when a healthy row for the same account exists; an account's only row
+#      is never touched (a not-yet-spawned character legitimately has NULL links).
+char_state_sweep() {
+    dune_psql_q -tA >/dev/null 2>&1 <<'CS_SQL' || true
+DELETE FROM dune.encrypted_player_state ps
+WHERE NOT EXISTS (SELECT 1 FROM dune.encrypted_accounts a WHERE a.id = ps.account_id);
+DELETE FROM dune.encrypted_player_state ps
+WHERE (ps.player_controller_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dune.actors a WHERE a.id = ps.player_controller_id))
+  AND EXISTS (SELECT 1 FROM dune.encrypted_player_state live
+              WHERE live.account_id = ps.account_id
+                AND live.ctid <> ps.ctid
+                AND live.player_controller_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM dune.actors a2 WHERE a2.id = live.player_controller_id));
+CS_SQL
+}
+
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
     dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
@@ -823,6 +848,222 @@ SQL
             printf '%s,%s,%s\n' "$(basename "$f")" "$(stat -c%s "$f" 2>/dev/null)" \
                 "$(date -u -d "@$(stat -c%Y "$f" 2>/dev/null)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
         done
+        exit 0
+        ;;
+
+    char-backup)
+        # Native FULL-CHARACTER backup via dune.character_transfer_export —
+        # the game's own server-to-server transfer subsystem (~50-table
+        # footprint: account, actors, inventories, items, vehicles,
+        # progression…, local ids remapped to portable transfer ids). The
+        # proc REQUIRES the player offline (raises 'sbRP2$' otherwise); we
+        # gate first for a clean message. Writes
+        # $BASE/backups/char/char-<fls>-<ts>.json + .meta.json sidecar
+        # (records the '_patches_checksum' a later restore must match), then
+        # prunes to per-player retention. Ported from Icehunter/dune-admin
+        # v0.46.0 (MIT).
+        raw="${1:?usage: char-backup <fls_id|me|steam:<id>|name:<n>> [action] [reason]}"
+        action="${2:-manual}"
+        reason="${3:-}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR char-backup: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        assert_player_offline "$fls_id" || exit $?
+        aid=$(dune_account_id "$fls_id")
+        if [ -z "$aid" ]; then
+            echo "[admin-publish] ERROR char-backup: no account for $fls_id (run 'admin players')" >&2
+            exit 2
+        fi
+        cname=$({ dune_psql_q --set=aid="$aid" -tA 2>/dev/null <<'CB_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(convert_from(encrypted_character_name, 'UTF8'), '')
+FROM dune.encrypted_player_state WHERE account_id = :'aid'::bigint;
+CB_SQL
+)
+        chardir="$BASE/backups/char"
+        mkdir -p "$chardir"
+        ts=$(date -u +%Y%m%d-%H%M%S)
+        out="$chardir/char-$fls_id-$ts.json"
+        errf=$(mktemp)
+        if ! dune_psql_q --set=fls="$fls_id" -tA >"$out" 2>"$errf" <<'CB_SQL'
+SELECT dune.character_transfer_export(:'fls');
+CB_SQL
+        then
+            echo "[admin-publish] ERROR char-backup: export failed: $(tail -n2 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$out" "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # write_meta validates the export json and extracts the checksum; a
+        # backup an admin can't trust is worse than no backup at all.
+        meta_out=$(python3 "$BASE/scripts/admin_charbackup.py" meta "$chardir" "$(basename "$out")" "$fls_id" "$cname" "$action" "$reason")
+        case "$meta_out" in
+            '{"ok": true'*) : ;;
+            *)  echo "[admin-publish] ERROR char-backup: $meta_out" >&2
+                rm -f "$out"
+                exit 1 ;;
+        esac
+        python3 "$BASE/scripts/admin_charbackup.py" prune "$chardir" "${DUNE_CHAR_BACKUP_RETENTION:-10}" >/dev/null 2>&1 || true
+        sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+        echo "charbackup=ok file=$(basename "$out") fls=$fls_id name=$cname checksum_ok=true bytes=$sz"
+        exit 0
+        ;;
+
+    char-backup-list)
+        # JSON list of character backups (newest first), optionally for one
+        # player. Pure file read — the sidecar metadata carries name/action/
+        # checksum.
+        chardir="$BASE/backups/char"
+        if [ -n "${1:-}" ]; then
+            fls_id=$(resolve_player_id "$1") || exit 1
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir" "$fls_id"
+        else
+            python3 "$BASE/scripts/admin_charbackup.py" list "$chardir"
+        fi
+        exit 0
+        ;;
+
+    char-backup-delete)
+        # Delete ONE backup (data + sidecar). Path-safety through the python
+        # gate: canonical name + realpath containment.
+        file="${1:?usage: char-backup-delete <char-...json>}"
+        chardir="$BASE/backups/char"
+        if ! python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file" >/dev/null 2>&1; then
+            echo "[admin-publish] ERROR char-backup-delete: unknown or unsafe backup '$file'" >&2
+            exit 2
+        fi
+        rm -f "$chardir/$file" "$chardir/${file%.json}.meta.json"
+        echo "publish=db-delete char-backup-delete file=$file"
+        exit 0
+        ;;
+
+    char-restore)
+        # FULL REPLACE of the character for the backup's FLS id via
+        # dune.character_transfer_import (requires the player offline AND the
+        # exported '_patches_checksum' to match the current game patch — the
+        # proc enforces both; its messages surface unchanged). The import
+        # internally calls dune.delete_account, which is known to leave (a) an
+        # orphaned dune.encrypted_player_state row and (b) the old player
+        # actor trio (pawn/controller/player-state) behind — both cleaned up
+        # after a successful import, the trio HARD-SCOPED to the player actor
+        # classes of the replaced account: delete_account strips ownership
+        # from bases/vehicles/storage but leaves their actor rows alive with
+        # the same dangling owner_account_id, so an unscoped delete would
+        # destroy every one of them. Never widen that predicate. Ported from
+        # Icehunter/dune-admin v0.46.0 (MIT).
+        file="${1:?usage: char-restore <char-...json>}"
+        chardir="$BASE/backups/char"
+        path_out=$(python3 "$BASE/scripts/admin_charbackup.py" path "$chardir" "$file") || {
+            echo "[admin-publish] ERROR char-restore: unknown or unsafe backup '$file'" >&2
+            exit 2
+        }
+        bpath="$chardir/$file"
+        fls_id=$(basename "$file" | sed -E 's/^char-([0-9A-Fa-f]+)-[0-9]{8}-[0-9]{6}\.json$/\1/')
+        cname=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('character_name', ''))
+except Exception:
+    print('')" "$chardir/${file%.json}.meta.json" | tr -d '\r\n')
+        assert_player_offline "$fls_id" || exit $?
+        # The account currently holding this FLS id must be resolved BEFORE
+        # the import — character_transfer_import destroys it via
+        # delete_account, after which there is nothing left to look up.
+        old_aid=$(dune_account_id "$fls_id")
+        # Pre-flight sweep: a stale duplicate player_state row breaks the
+        # import proc itself (its RespawnLocation subquery expects one row per
+        # account — live-reproduced 2026-08-20 restoring twice in a row).
+        char_state_sweep
+        sqltmp=$(mktemp)
+        errf=$(mktemp)
+        {
+            printf '\\set data `cat %s`\n' "$bpath"
+            printf "SELECT dune.character_transfer_import(:'data'::jsonb, :'fls', :'nm');\n"
+        } > "$sqltmp"
+        import_ok=true
+        raw_out=$(dune_psql --set=fls="$fls_id" --set=nm="$cname" -tA -f "$sqltmp" 2>"$errf") || import_ok=false
+        new_id=$(printf '%s' "$raw_out" | tail -n1 | tr -d '\r\n')
+        rm -f "$sqltmp"
+        if [ "$import_ok" != "true" ] || [ -z "$new_id" ]; then
+            echo "[admin-publish] ERROR char-restore: import failed: $(tail -n2 "$errf" | tr '\n' ' ')" >&2
+            rm -f "$errf"
+            exit 1
+        fi
+        rm -f "$errf"
+        # Post-import orphan cleanup (only after a genuinely successful import).
+        char_state_sweep
+        if [ -n "$old_aid" ]; then
+            dune_psql_q --set=aid="$old_aid" -tA >/dev/null 2>&1 <<'CR_SQL' || true
+SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+DELETE FROM dune.actors
+WHERE owner_account_id = :'aid'::bigint
+  AND (class ILIKE '%PlayerCharacter%'
+    OR class ILIKE '%PlayerController%'
+    OR class ILIKE '%PlayerState%');
+CR_SQL
+        fi
+        echo "[admin-publish] OK char-restore fls=$fls_id file=$file new_controller=$new_id"
+        echo "publish=db-write char-restore fls=$fls_id new_controller=$new_id"
+        exit 0
+        ;;
+
+    char-delete)
+        # Delete a character THE SAFE WAY: a verified pre-delete backup first
+        # (a failure there — including "player must be offline" — aborts the
+        # whole delete rather than proceeding without the safety net), then
+        # dune.delete_account, then the same orphan cleanup as char-restore.
+        raw="${1:?usage: char-delete <fls_id|me|steam:<id>|name:<n>> [reason]}"
+        reason="${2:-admin delete}"
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR char-delete: needs a single player, not '*'" >&2
+            exit 2
+        fi
+        old_aid=$(dune_account_id "$fls_id")
+        if [ -z "$old_aid" ]; then
+            echo "[admin-publish] ERROR char-delete: no account for $fls_id" >&2
+            exit 2
+        fi
+        if ! "$0" char-backup "$fls_id" "pre-delete" "$reason"; then
+            echo "[admin-publish] ERROR char-delete: pre-delete backup failed — delete aborted" >&2
+            exit 1
+        fi
+        deleted=$({ dune_psql_q --set=fls="$fls_id" --set=rsn="$reason" -tA 2>/dev/null <<'CD_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT dune.delete_account(:'fls', :'rsn');
+CD_SQL
+)
+        if [ "$deleted" != "t" ]; then
+            echo "[admin-publish] ERROR char-delete: dune.delete_account returned '$deleted'" >&2
+            exit 1
+        fi
+        char_state_sweep
+        dune_psql_q --set=aid="$old_aid" -tA >/dev/null 2>&1 <<'CD_SQL' || true
+SELECT dune.guild_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.remove_party_member(ctl.id, 0::SMALLINT) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+SELECT dune.ownership_handle_actor_delete(ctl.id) FROM (
+    SELECT id FROM dune.actors
+    WHERE owner_account_id = :'aid'::bigint AND class ILIKE '%PlayerController%' LIMIT 1) ctl;
+DELETE FROM dune.actors
+WHERE owner_account_id = :'aid'::bigint
+  AND (class ILIKE '%PlayerCharacter%'
+    OR class ILIKE '%PlayerController%'
+    OR class ILIKE '%PlayerState%');
+CD_SQL
+        echo "[admin-publish] OK char-delete fls=$fls_id account=$old_aid (backup taken first)"
+        echo "publish=db-delete char-delete fls=$fls_id account=$old_aid"
         exit 0
         ;;
 
