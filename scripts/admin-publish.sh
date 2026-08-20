@@ -1116,7 +1116,7 @@ except Exception:
         pmaps=$({ dune_psql -tAc "SELECT COALESCE(jsonb_agg(DISTINCT map), '[]'::jsonb) FROM dune.world_partition" 2>/dev/null || true; } | tr -d '\r\n')
         # No -H: the runtime image's ss build rejects it (empty output). The
         # header line carries no trailing digits, so the port grep skips it.
-        udp=$({ ss -uln 2>/dev/null || true; } | awk '{print $5}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
+        udp=$({ ss -uln 2>/dev/null || true; } | awk '{print $4}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
         hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2)
         now=$(date -u +%s)
         python3 "$BASE/scripts/admin_doctor.py" analyze <<DOCTOR_FACTS
