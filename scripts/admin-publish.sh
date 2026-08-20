@@ -1110,8 +1110,10 @@ except Exception:
         # doctor.sh checks (MIT); see ATTRIBUTION.md.
         ext=$(printf '%s' "${DUNE_EXTERNAL_IP:-}" | tr -cd '0-9a-fA-F:.')
         real=$({ curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true; } | tr -cd '0-9.')
-        farm=$({ dune_psql -tAc "SELECT COALESCE(json_agg(t), '[]'::json) FROM (SELECT server_id, map, host(game_addr) AS game_addr, game_port, host(igw_addr) AS igw_addr, igw_port, ready, alive, connected_players FROM dune.farm_state) t" 2>/dev/null || true; } | tail -n1)
-        pmaps=$({ dune_psql -tAc "SELECT COALESCE(json_agg(DISTINCT map), '[]'::json) FROM dune.world_partition" 2>/dev/null || true; } | tail -n1)
+        # jsonb_agg (not json_agg): jsonb renders compact, json_agg pretty-
+        # prints elements across lines and would break the single-line facts.
+        farm=$({ dune_psql -tAc "SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM (SELECT server_id, map, host(game_addr) AS game_addr, game_port, host(igw_addr) AS igw_addr, igw_port, ready, alive, connected_players FROM dune.farm_state) t" 2>/dev/null || true; } | tr -d '\r\n')
+        pmaps=$({ dune_psql -tAc "SELECT COALESCE(jsonb_agg(DISTINCT map), '[]'::jsonb) FROM dune.world_partition" 2>/dev/null || true; } | tr -d '\r\n')
         udp=$({ ss -ulnH 2>/dev/null || true; } | awk '{print $5}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
         hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2)
         now=$(date -u +%s)
