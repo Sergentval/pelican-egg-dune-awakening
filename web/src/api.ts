@@ -1064,6 +1064,53 @@ export const baseGuardRevert = () =>
 export const baseGuardConfig = (enabled: boolean) =>
   api<{ ok: boolean; boot_reapply: boolean }>("POST", "/api/base-guard/config", { enabled });
 
+// ---- World reset (DST worldreset-2 port) --------------------------------
+
+export interface WorldResetPending {
+  backup_file: string;
+  backup_bytes: number;
+  char_backups: string[];
+  requested_at: number;
+}
+
+export interface WorldRollbackPending {
+  restore_dir: string;
+  requested_at: number;
+}
+
+export interface WorldResetResult {
+  operation: string;
+  ok: boolean;
+  detail: string;
+  preserved: string;
+  at: number;
+}
+
+export interface WorldResetState {
+  ok: boolean;
+  pending: WorldResetPending | null;
+  rollback: WorldRollbackPending | null;
+  last_result: WorldResetResult | null;
+  preserved: string[];
+  online_players: number | null;
+}
+
+export const fetchWorldReset = () => api<WorldResetState>("GET", "/api/world-reset");
+
+/** Arms only — the phrase is re-validated server-side and the next boot
+ *  executes. Long timeout territory: backup + optional character sweep. */
+export const worldResetArm = (phrase: string, charBackups: boolean) =>
+  api<PublishResult & { error?: string }>(
+    "POST", "/api/world-reset/arm", { phrase, char_backups: charBackups });
+
+export const worldResetCancel = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/world-reset/cancel", {});
+
+export const worldRollbackArm = (phrase: string, target?: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", "/api/world-reset/rollback",
+    target ? { phrase, target } : { phrase });
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {

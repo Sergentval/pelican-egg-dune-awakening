@@ -59,6 +59,7 @@ import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pu
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
 import admin_baseguard  # noqa: E402  # type: ignore[import-not-found]  (sys.path; base-guard boot-reapply config, no DB/network)
+import admin_worldreset  # noqa: E402  # type: ignore[import-not-found]  (sys.path; world-reset marker/state files, no DB/network)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
@@ -1435,6 +1436,26 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
+        # World-reset state: armed markers, last boot result, preserved
+        # datadirs, live online count. The mutation routes only ARM durable
+        # markers — the next boot executes (see apply-world-reset.sh).
+        if path == "/api/world-reset":
+            entry = run_publish(["farm-player-count"], timeout=15)
+            online = None
+            if entry.get("ok"):
+                try:
+                    online = sum(int(r.get("players") or 0)
+                                 for r in _csv_rows(entry.get("stdout") or ""))
+                except (TypeError, ValueError):
+                    online = None
+            self._write(200, {"ok": True,
+                              "pending": admin_worldreset.read_pending(BASE_DIR),
+                              "rollback": admin_worldreset.read_rollback(BASE_DIR),
+                              "last_result": admin_worldreset.read_result(BASE_DIR),
+                              "preserved": admin_worldreset.preserved_dirs(BASE_DIR),
+                              "online_players": online})
+            return
+
         # BaseBackup wipe-guard state: is Funcom's season-cleanup function
         # patched to spare stored base backups from the weekly Deep Desert
         # reset, plus how many backups are at stake and whether the boot
@@ -2386,6 +2407,58 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "base id must be numeric"})
                 return
             entry = run_publish(["base-transfer-custodian", bid], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Arm a reversible world reset: verified backup + durable marker;
+        # the next boot executes. The confirmation phrase is validated by
+        # the subcommand (server-side), never trusted from the client alone.
+        # POST /api/world-reset/arm  body {"phrase", "char_backups"?: bool}
+        if path == "/api/world-reset/arm":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            phrase = str(body.get("phrase", "")) if isinstance(body, dict) else ""
+            with_chars = bool(body.get("char_backups")) if isinstance(body, dict) else False
+            argv = ["world-reset-arm", phrase] + (["with-char-backups"] if with_chars else [])
+            # pg_dump plus a per-character sweep can take a while on a big
+            # world; the arm is otherwise idle-safe to wait on.
+            entry = run_publish(argv, timeout=600)
+            self._write(200, entry)
+            return
+
+        # Disarm any pending world reset/rollback marker.
+        # POST /api/world-reset/cancel  body {}
+        if path == "/api/world-reset/cancel":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            entry = run_publish(["world-reset-cancel"], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Arm the reverse swap back to a preserved pre-reset datadir.
+        # POST /api/world-reset/rollback  body {"phrase", "target"?: str}
+        if path == "/api/world-reset/rollback":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            phrase = str(body.get("phrase", "")) if isinstance(body, dict) else ""
+            target = str(body.get("target", "")) if isinstance(body, dict) else ""
+            if target and not re.fullmatch(r"pg\.pre-reset-\d{8}-\d{6}", target):
+                self._write(400, {"error": "target must be a pg.pre-reset-<ts> directory name"})
+                return
+            argv = ["world-rollback-arm", phrase] + ([target] if target else [])
+            entry = run_publish(argv, timeout=60)
             self._write(200, entry)
             return
 

@@ -1886,6 +1886,148 @@ BGC_SQL
         exit 0
         ;;
 
+    world-reset-arm)
+        # Arm a REVERSIBLE world reset (DST worldreset-2 port, reshaped for
+        # this single-container stack). NOTHING is destroyed here: verify
+        # zero players online (fail closed), take a verified logical backup
+        # (optionally per-character backups too), and write the durable
+        # marker apply-world-reset.sh consumes at the NEXT BOOT — where the
+        # current datadir is set aside (moved, never deleted) and prestart
+        # builds a fresh empty world under the same battlegroup identity
+        # and config. Reverse any time with world-rollback-arm. $1 must be
+        # the exact confirmation phrase; $2 optionally 'with-char-backups'.
+        phrase="${1:-}"
+        with_chars="${2:-}"
+        if [ "$phrase" != "RESET WORLD" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: confirmation phrase mismatch — pass exactly: RESET WORLD" >&2
+            exit 2
+        fi
+        case "$with_chars" in ""|with-char-backups) ;; *)
+            echo "[admin-publish] ERROR world-reset-arm: second argument must be omitted or 'with-char-backups'" >&2
+            exit 2;; esac
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        dune_require_tables dune.farm_state dune.encrypted_accounts dune.encrypted_player_state || exit 3
+        online=$({ dune_psql -tA -q 2>/dev/null <<'WRA_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(SUM(connected_players), 0)::text FROM dune.farm_state;
+WRA_SQL
+)
+        if [ -z "$online" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: cannot read the online-player count — refusing (fail closed)" >&2
+            exit 1
+        fi
+        if [ "$online" != "0" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: $online player(s) are connected — have everyone log out and retry" >&2
+            exit 1
+        fi
+        chars_csv=""
+        if [ "$with_chars" = "with-char-backups" ]; then
+            fls_list=$({ dune_psql -tA -q 2>/dev/null <<'WRC_SQL' || true; }
+SELECT DISTINCT ea."user"
+FROM dune.encrypted_accounts ea
+JOIN dune.encrypted_player_state eps ON eps.account_id = ea.id
+WHERE ea.id NOT IN (9000001, 9000002, 9000003)
+  AND COALESCE(ea."user", '') <> '';
+WRC_SQL
+)
+            while IFS= read -r fls; do
+                [ -n "$fls" ] || continue
+                if ! bash "$BASE/scripts/admin-publish.sh" char-backup "$fls" world-reset "pre-reset sweep" >/dev/null 2>&1; then
+                    echo "[admin-publish] ERROR world-reset-arm: character backup failed for $fls — aborting, no marker written (fix it or retry without with-char-backups)" >&2
+                    exit 1
+                fi
+                chars_csv="${chars_csv:+$chars_csv,}$fls"
+            done <<< "$fls_list"
+        fi
+        bk_out=$(bash "$BASE/scripts/admin-publish.sh" db-backup) || {
+            echo "[admin-publish] ERROR world-reset-arm: database backup failed — aborting, no marker written" >&2
+            exit 1
+        }
+        bk_line=$(printf '%s\n' "$bk_out" | grep '^backup=ok' | head -n1 || true)
+        bk_file=$(printf '%s' "$bk_line" | sed -n 's/.*file=\([^ ]*\).*/\1/p')
+        bk_bytes=$(printf '%s' "$bk_line" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+        if [ -z "$bk_file" ] || [ -z "$bk_bytes" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: could not parse the backup result — aborting" >&2
+            exit 1
+        fi
+        if ! python3 "$BASE/scripts/admin_worldreset.py" arm-reset "$BASE" "$bk_file" "$bk_bytes" "$chars_csv"; then
+            echo "[admin-publish] ERROR world-reset-arm: marker refused — the backup did not re-verify" >&2
+            exit 1
+        fi
+        nchars=0
+        [ -n "$chars_csv" ] && nchars=$(printf '%s' "$chars_csv" | awk -F, '{print NF}')
+        echo "[admin-publish] OK world-reset-arm: backup $bk_file ($bk_bytes bytes), $nchars character backup(s). RESTART THE SERVER to execute the reset — until then nothing changes; disarm with world-reset-cancel."
+        echo "publish=db-write world-reset-arm backup=$bk_file chars=$nchars"
+        exit 0
+        ;;
+
+    world-reset-cancel)
+        # Disarm: remove any pending reset/rollback marker. The world is
+        # untouched either way until a boot consumes a marker.
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-reset-cancel: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        had=""
+        python3 "$BASE/scripts/admin_worldreset.py" pending "$BASE" >/dev/null 2>&1 && had="reset"
+        python3 "$BASE/scripts/admin_worldreset.py" rollback-pending "$BASE" >/dev/null 2>&1 && had="${had:+$had+}rollback"
+        python3 "$BASE/scripts/admin_worldreset.py" clear-pending "$BASE" || true
+        python3 "$BASE/scripts/admin_worldreset.py" clear-rollback "$BASE" || true
+        echo "[admin-publish] OK world-reset-cancel: cleared ${had:-nothing (no marker was armed)}"
+        echo "publish=db-write world-reset-cancel cleared=${had:-none}"
+        exit 0
+        ;;
+
+    world-rollback-arm)
+        # Arm the reverse swap: at the next boot the current (fresh) datadir
+        # is set aside and the preserved pre-reset datadir moved back —
+        # progress made on the fresh world since the reset is parked, not
+        # lost (kept as pg.rolled-back-<ts>). Same phrase + zero-online
+        # gates as the reset; nothing happens until the restart.
+        # $2 = preserved dir name (world-reset status lists them), default
+        # newest.
+        phrase="${1:-}"
+        target="${2:-}"
+        if [ "$phrase" != "ROLL BACK WORLD" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: confirmation phrase mismatch — pass exactly: ROLL BACK WORLD" >&2
+            exit 2
+        fi
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        dune_require_tables dune.farm_state || exit 3
+        online=$({ dune_psql -tA -q 2>/dev/null <<'WRB_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(SUM(connected_players), 0)::text FROM dune.farm_state;
+WRB_SQL
+)
+        if [ -z "$online" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: cannot read the online-player count — refusing (fail closed)" >&2
+            exit 1
+        fi
+        if [ "$online" != "0" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: $online player(s) are connected — have everyone log out and retry" >&2
+            exit 1
+        fi
+        if [ -z "$target" ]; then
+            target=$(python3 "$BASE/scripts/admin_worldreset.py" preserved "$BASE" \
+                | python3 -c 'import json,sys; l=json.load(sys.stdin); print(l[0] if l else "")')
+        fi
+        if [ -z "$target" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: no preserved pre-reset datadir exists — nothing to roll back to" >&2
+            exit 1
+        fi
+        if ! python3 "$BASE/scripts/admin_worldreset.py" arm-rollback "$BASE" "$target"; then
+            echo "[admin-publish] ERROR world-rollback-arm: '$target' is not a valid preserved datadir" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK world-rollback-arm: $target will be restored at the next boot. RESTART THE SERVER to execute; disarm with world-reset-cancel."
+        echo "publish=db-write world-rollback-arm target=$target"
+        exit 0
+        ;;
+
     bases)
         # Base inventory: every claimed base (a dune.buildings row whose owner
         # actor is placed in the world), with owner (lowest-rank permission

@@ -152,6 +152,21 @@ basic_get drain via rabbitmqctl eval) and its safety posture (off by
 default, per-command opt-in, per-player cooldowns, bounded queue, drop on
 disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
 
+World reset (2026-08, C6) port, with thanks,
+coastal-ms/DST-DuneServerTool's worldreset-2 / WorldRestart.ps1
+(Apache-2.0): the reversible same-battlegroup restart shape — verified
+logical backup before anything destructive, admission gates (confirmation
+phrase, zero players online, fail-closed on every ambiguous read), the
+durable recovery marker that survives a reboot, and the
+preserve-don't-delete storage discipline. Reshaped for this
+single-container stack: the "storage replacement" is an atomic datadir
+set-aside consumed by a boot hook ordered before prestart (whose ordinary
+first-boot path builds the fresh world), and rollback is the reverse swap
+instead of a restore — their K8s StatefulSet/PVC dance and periodic
+research-recovery audit do not apply here (research/entitlement recovery
+deliberately not ported; per-character backups via our native
+char-backup/char-restore cover the operator need).
+
 Base backup wipe-guard (2026-08, C3.5) port, with thanks,
 coastal-ms/DST-DuneServerTool v13.3.0's BaseBackupGuard.ps1 (Apache-2.0):
 the discovery that base backups are live actor rows in state 'BaseBackup'

@@ -101,10 +101,11 @@ class TestSettingsSchema(unittest.TestCase):
 
     def test_catalogue_size(self):
         # 51 original (25 env + 26 cvar) + 144 verified UClass knobs
-        self.assertEqual(len(self.settings), 195)
-        # the 144 API-managed UClass knobs sink to UserOverrides, no env var
+        # + m_BaseBackupToolMapRestriction (C3.5 wipe-guard companion)
+        self.assertEqual(len(self.settings), 196)
+        # the API-managed UClass knobs sink to UserOverrides, no env var
         uclass = [s for s in self.settings if s["file"] == "UserOverrides"]
-        self.assertEqual(len(uclass), 144)
+        self.assertEqual(len(uclass), 145)
         for s in uclass:
             self.assertFalse(s.get("env"), f"{s['id']} UserOverrides knob must not be env/boot-applied")
         # untested knobs ship verified:false; only live-tested ones are flipped
