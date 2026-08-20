@@ -69,6 +69,10 @@ bash scripts/patch-world-template.sh "$BASE"
 
 bash scripts/start-pg.sh         "$BASE"
 bash scripts/migrate-db.sh       "$BASE"
+# Re-apply the BaseBackup wipe-guard AFTER migrations (they can replace the
+# guarded Funcom function). No-op while base-guard.json enabled:false, and
+# never blocks the boot. See scripts/admin_baseguard.py.
+bash scripts/apply-base-guard.sh "$BASE"
 bash scripts/start-mq-admin.sh   "$BASE"
 bash scripts/start-mq-game.sh    "$BASE"
 bash scripts/start-text-router.sh "$BASE"

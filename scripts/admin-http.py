@@ -58,6 +58,7 @@ import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
+import admin_baseguard  # noqa: E402  # type: ignore[import-not-found]  (sys.path; base-guard boot-reapply config, no DB/network)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
@@ -643,6 +644,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
             "base-containers", "base-permissions", "base-permission-candidates",
+            "base-guard-status",
         )
     )
     entry = {
@@ -1430,6 +1432,27 @@ class Handler(BaseHTTPRequestHandler):
                               "facts": data.get("facts", {}),
                               "error": data.get("error", ""),
                               "context": data.get("context", ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # BaseBackup wipe-guard state: is Funcom's season-cleanup function
+        # patched to spare stored base backups from the weekly Deep Desert
+        # reset, plus how many backups are at stake and whether the boot
+        # re-apply is armed.
+        if path == "/api/base-guard":
+            entry = run_publish(["base-guard-status"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "base backup tables not present on this build"})
+                return
+            rows = _csv_rows(entry.get("stdout") or "")
+            row = rows[0] if rows else {}
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "function_found": row.get("function_found") == "t",
+                              "applied": row.get("applied") == "t",
+                              "base_backups": int(row.get("base_backups") or 0),
+                              "backup_state_actors": int(row.get("backup_state_actors") or 0),
+                              "boot_reapply": admin_baseguard.load_enabled(BASE_DIR),
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
@@ -2364,6 +2387,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["base-transfer-custodian", bid], timeout=20)
             self._write(200, entry)
+            return
+
+        # Apply / revert the BaseBackup wipe-guard (rewrites Funcom's
+        # season-cleanup function — anchored, idempotent, verified by
+        # re-read; see admin_baseguard.py). POST /api/base-guard/apply|revert
+        if path in ("/api/base-guard/apply", "/api/base-guard/revert"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            verb = "base-guard-apply" if path.endswith("/apply") else "base-guard-revert"
+            entry = run_publish([verb], timeout=30)
+            self._write(200, entry)
+            return
+
+        # Arm/disarm the boot re-apply (survives restarts; the entrypoint
+        # re-patches after migrate-db when armed).
+        # POST /api/base-guard/config  body {"enabled": bool}
+        if path == "/api/base-guard/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+                self._write(400, {"error": "body must be {\"enabled\": true|false}"})
+                return
+            if not admin_baseguard.save_enabled(BASE_DIR, body["enabled"]):
+                self._write(500, {"ok": False, "error": "could not write data/admin/base-guard.json"})
+                return
+            admin_history.note(BASE_DIR, "base-guard-config",
+                               f"boot re-apply {'enabled' if body['enabled'] else 'disabled'}")
+            self._write(200, {"ok": True, "boot_reapply": body["enabled"]})
             return
 
         # Character backup (native transfer export). Offline-gated by the

@@ -499,6 +499,35 @@ baseperm_guard_sql() {
 GUARD_SQL
 }
 
+# Current definition of Funcom's season-cleanup delete function, verbatim
+# (empty when the function does not exist on this build). Read with -tA so
+# psql emits the single column raw — internal newlines preserved. Used by
+# the base-guard subcommands; the text surgery itself lives in
+# admin_baseguard.py.
+# The text engine is a sibling file, and partial volume syncs are a known
+# failure mode on this stack (the C3.4 lesson). A missing OR EMPTY
+# admin_baseguard.py would make every `python3 file …` exit 0 with empty
+# output — turning the apply into a fabricated success and defeating the
+# re-read verification one layer up. So: never trust the engine's exit
+# codes before proving the engine is present and non-empty (review-caught,
+# reproduced live).
+baseguard_engine_ok() {
+    if [ ! -s "$BASE/scripts/admin_baseguard.py" ]; then
+        echo "[admin-publish] ERROR $1: scripts/admin_baseguard.py is missing or empty (partial volume sync?) — refusing to touch the cleanup function. Reinstall the server to resync scripts." >&2
+        return 1
+    fi
+    return 0
+}
+
+baseguard_read_def() {
+    { dune_psql -tA -q 2>/dev/null <<'BGD_SQL' || true; }
+SELECT pg_get_functiondef(p.oid)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'dune' AND p.proname = 'delete_actors_and_respawns_on_server';
+BGD_SQL
+}
+
 # Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
 # subcommands talk to the GAME broker — chat.intercept lives there). Same
 # env recipe as the ServerCommand publish path at the bottom of this file.
@@ -1727,6 +1756,133 @@ WHERE COALESCE(eps.player_controller_id, 0) > 0
 ORDER BY character ASC
 LIMIT 25;
 BPC_SQL
+        exit 0
+        ;;
+
+    base-guard-status)
+        # Is the BaseBackup wipe-guard applied? A stored base backup is not a
+        # blob: dune.base_backup_save keeps the actor rows in state
+        # 'BaseBackup', and the weekly Deep Desert reset
+        # (coriolis_cleanup_partition → delete_actors_and_respawns_on_server)
+        # deletes every actor whose state is not Travel/VehicleBackup/
+        # VehicleRecovery — 'BaseBackup' is missing from that list, so the
+        # wipe eats stored backups the moment the backup tool is allowed in
+        # the Deep Desert. The guard adds the missing predicate. Read-only.
+        # Ported from DST v13.3.0 BaseBackupGuard (Apache-2.0).
+        dune_require_tables dune.base_backups dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-status || exit 1
+        def=$(baseguard_read_def)
+        found=f; applied=f
+        if [ -n "$def" ]; then
+            found=t
+            if printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+                applied=t
+            fi
+        fi
+        counts=$({ dune_psql -tA -q 2>/dev/null <<'BGC_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT (SELECT COUNT(*) FROM dune.base_backups)::text || ',' ||
+       (SELECT COUNT(*) FROM dune.actor_state WHERE state = 'BaseBackup')::text;
+BGC_SQL
+)
+        echo "function_found,applied,base_backups,backup_state_actors"
+        echo "$found,$applied,${counts:-0,0}"
+        exit 0
+        ;;
+
+    base-guard-apply)
+        # Idempotent apply of the wipe-guard predicate: read the LIVE
+        # definition, insert `AND s.state IS DISTINCT FROM 'BaseBackup'`
+        # after the VehicleRecovery exclusion (anchored — a body without
+        # that anchor is REFUSED, never guessed at), CREATE OR REPLACE, then
+        # RE-READ and verify; the write call alone is never trusted.
+        # The function is Funcom-owned: a game update can replace it via a
+        # boot migration, which is why apply-base-guard.sh re-runs this
+        # after migrate-db when the operator has opted in
+        # (data/admin/base-guard.json).
+        dune_require_tables dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-apply || exit 1
+        def=$(baseguard_read_def)
+        if [ -z "$def" ]; then
+            echo "[admin-publish] ERROR base-guard-apply: dune.delete_actors_and_respawns_on_server not found on this build" >&2
+            exit 3
+        fi
+        rc=0
+        patched=$(printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" patch 2>&1) || rc=$?
+        if [ "$rc" = "4" ]; then
+            echo "[admin-publish] OK base-guard-apply: already applied"
+            echo "publish=ok base-guard-apply already-applied"
+            exit 0
+        fi
+        if [ "$rc" != "0" ]; then
+            echo "[admin-publish] ERROR base-guard-apply: refusing — ${patched:-unknown reason}. This build's cleanup function no longer matches the expected shape; not guessing where to inject SQL." >&2
+            exit 1
+        fi
+        # Belt over the engine check: rc=0 with no function text means the
+        # engine is broken in a way the file-size probe missed — an empty
+        # script piped to psql -f - would "succeed" while writing nothing.
+        case "$patched" in
+            *"CREATE OR REPLACE FUNCTION"*) ;;
+            *) echo "[admin-publish] ERROR base-guard-apply: patch engine returned no function text — refusing to execute an empty script" >&2; exit 1;;
+        esac
+        out=$(printf '%s\n' "$patched" | dune_psql -q -v ON_ERROR_STOP=1 -f - 2>&1) || {
+            echo "[admin-publish] ERROR base-guard-apply: CREATE OR REPLACE failed: $(printf '%s' "$out" | head -c 400 | tr '\n' ' ')" >&2
+            exit 1
+        }
+        def2=$(baseguard_read_def)
+        if [ -z "$def2" ] || ! printf '%s' "$def2" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+            echo "[admin-publish] ERROR base-guard-apply: wrote the patched function but the re-read does not show the BaseBackup exclusion" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-guard-apply: BaseBackup exclusion added to dune.delete_actors_and_respawns_on_server"
+        echo "publish=db-write base-guard-apply"
+        exit 0
+        ;;
+
+    base-guard-revert)
+        # Inverse of apply: strip exactly the line we added, write back,
+        # re-read to verify it is gone. Refuses when the predicate is not on
+        # a line of its own (someone merged it into different SQL — blind
+        # surgery there could leave the function unparseable).
+        dune_require_tables dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-revert || exit 1
+        def=$(baseguard_read_def)
+        if [ -z "$def" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: dune.delete_actors_and_respawns_on_server not found on this build" >&2
+            exit 3
+        fi
+        rc=0
+        stripped=$(printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" unpatch 2>&1) || rc=$?
+        if [ "$rc" = "4" ]; then
+            echo "[admin-publish] OK base-guard-revert: already absent"
+            echo "publish=ok base-guard-revert already-absent"
+            exit 0
+        fi
+        if [ "$rc" != "0" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: refusing — ${stripped:-unknown reason}" >&2
+            exit 1
+        fi
+        case "$stripped" in
+            *"CREATE OR REPLACE FUNCTION"*) ;;
+            *) echo "[admin-publish] ERROR base-guard-revert: unpatch engine returned no function text — refusing to execute an empty script" >&2; exit 1;;
+        esac
+        out=$(printf '%s\n' "$stripped" | dune_psql -q -v ON_ERROR_STOP=1 -f - 2>&1) || {
+            echo "[admin-publish] ERROR base-guard-revert: CREATE OR REPLACE failed: $(printf '%s' "$out" | head -c 400 | tr '\n' ' ')" >&2
+            exit 1
+        }
+        # An empty re-read must fail the verify — `check` on empty input
+        # exits non-zero, which this branch would otherwise read as "the
+        # predicate is gone" and report success (review-caught edge).
+        def2=$(baseguard_read_def)
+        if [ -z "$def2" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: could not re-read the function after the write — verification failed" >&2
+            exit 1
+        fi
+        if printf '%s' "$def2" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+            echo "[admin-publish] ERROR base-guard-revert: wrote the reverted function but the re-read still shows the BaseBackup exclusion" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-guard-revert: BaseBackup exclusion removed"
+        echo "publish=db-write base-guard-revert"
         exit 0
         ;;
 
