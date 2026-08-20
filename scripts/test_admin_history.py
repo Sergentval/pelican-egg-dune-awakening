@@ -155,5 +155,17 @@ class Store(unittest.TestCase):
         self.assertEqual(total, 120)
 
 
+class BasesClassification(unittest.TestCase):
+    """The bases feature's reads must never pollute the persisted trail;
+    its one write must always land in it."""
+
+    def test_reads_are_read_only(self):
+        for argv in (["bases"], ["bases", "Paul"], ["base-water", "3"]):
+            self.assertFalse(hist.is_recordable(argv), argv)
+
+    def test_refill_is_recorded(self):
+        self.assertTrue(hist.is_recordable(["base-water-refill", "3"]))
+
+
 if __name__ == "__main__":
     unittest.main()

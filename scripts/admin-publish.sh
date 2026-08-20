@@ -1105,6 +1105,9 @@ except Exception:
         # every row intact, so unfiltered they list as ordinary ownerless
         # bases. Read-only. Ported from Red-Blink listBases (MIT).
         search="${1:-}"
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.placeables dune.base_backup_linked_actors || exit 3
         dune_psql_q --set=q="%${search}%" -q --csv \
             -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BASES_SQL'
 SELECT b.id AS base_id,
@@ -1124,7 +1127,7 @@ LEFT JOIN LATERAL (
     JOIN dune.actors player_a ON player_a.id = par.player_id
     JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
     WHERE par.permission_actor_id = a.id
-    ORDER BY par.rank ASC LIMIT 1
+    ORDER BY par.rank ASC, par.player_id ASC LIMIT 1
 ) owner_ps ON TRUE
 LEFT JOIN LATERAL (
     SELECT COUNT(DISTINCT p.id)::int AS placeables
@@ -1156,6 +1159,8 @@ BASES_SQL
         # Read-only. Ported from Red-Blink baseWater (MIT).
         bid="${1:?usage: base-water <base_id>}"
         case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities || exit 3
         dune_psql_q --set=bid="$bid" -q --csv \
             -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BW_SQL'
 WITH base_actor AS (
@@ -1215,6 +1220,11 @@ BW_SQL
         # write (MIT), without their queue: the gate is explicit here.
         bid="${1:?usage: base-water-refill <base_id>}"
         case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water-refill: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities dune.farm_state || exit 3
+        # By-id paths deliberately skip the picked-up-base exclusion the list
+        # applies: an operator addressing a base by number gets a straight
+        # answer; the exclusion exists to keep NOISE out of the list.
         bmap=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
 SELECT a.map
 FROM dune.buildings b
@@ -1285,15 +1295,25 @@ WITH base_actor AS (
     WHERE d.entity_id IS NOT NULL AND fe.entity_id = d.entity_id
     RETURNING 1
 )
-SELECT COUNT(*) FROM updated;
+SELECT (SELECT COUNT(DISTINCT entity_id) FROM devices WHERE entity_id IS NOT NULL)::text
+       || '/' || COUNT(*)::text FROM updated;
 BWR_SQL
 )
+        expected="${updated%%/*}"
+        written="${updated##*/}"
         if [ -z "$updated" ]; then
             echo "[admin-publish] ERROR base-water-refill: refill query failed" >&2
             exit 1
         fi
-        echo "[admin-publish] OK base-water-refill base=$bid map=$bmap devices_filled=$updated"
-        echo "publish=db-write base-water-refill base=$bid devices=$updated"
+        # UPDATE ... FROM silently applies ONE arbitrary row per target when
+        # two devices resolve to the same entity — an undercount here must be
+        # a loud failure, not a cheerful partial success (review-caught).
+        if [ "$expected" != "$written" ]; then
+            echo "[admin-publish] ERROR base-water-refill: expected to fill $expected device entit(ies) but wrote $written — partial write, inspect the base's actor_fgl_entities rows" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-water-refill base=$bid map=$bmap devices_filled=$written"
+        echo "publish=db-write base-water-refill base=$bid devices=$written"
         exit 0
         ;;
 

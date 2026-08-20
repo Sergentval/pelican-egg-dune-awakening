@@ -617,14 +617,16 @@ def _run_helper(script: str, argv: list[str], timeout: int, env: dict | None = N
 
 def _csv_rows(text: str) -> list[dict]:
     """First line = header, rest = rows — the shape every CSV-emitting
-    subcommand (bases, base-water, db-*) prints. Numeric-looking cells are
-    kept as strings; the UI formats."""
+    subcommand (bases, base-water, db-*) prints. The text goes to the csv
+    parser UNfiltered: RFC4180-quoted fields legally contain embedded (even
+    blank) newlines, and psql --csv emits them that way — a blank-line
+    pre-filter would corrupt those values (review-caught). Numeric-looking
+    cells stay strings; the UI formats."""
     import csv as _csv
     import io as _io
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if len(lines) < 1:
+    if not text.strip():
         return []
-    reader = _csv.DictReader(_io.StringIO("\n".join(lines)))
+    reader = _csv.DictReader(_io.StringIO(text))
     return [dict(r) for r in reader]
 
 
@@ -1435,7 +1437,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/bases":
             q = (query.get("q", [""])[0] if isinstance(query, dict) else "") or ""
             entry = run_publish(["bases", q] if q else ["bases"], timeout=20)
-            self._write(200, {"ok": bool(entry.get("ok")),
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
                               "bases": _csv_rows(entry.get("stdout") or ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
@@ -1447,7 +1453,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "base id must be numeric"})
                 return
             entry = run_publish(["base-water", bid], timeout=15)
-            self._write(200, {"ok": bool(entry.get("ok")),
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
                               "water": _csv_rows(entry.get("stdout") or ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
