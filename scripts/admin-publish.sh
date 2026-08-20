@@ -1110,7 +1110,7 @@ except Exception:
 SELECT b.id AS base_id,
        a.id AS base_actor_id,
        a.map AS map,
-       COUNT(DISTINCT bi.id)::int AS pieces,
+       COUNT(DISTINCT bi.instance_id)::int AS pieces,
        COALESCE(pl.placeables, 0) AS placeables,
        COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') AS owner
 FROM dune.buildings b
