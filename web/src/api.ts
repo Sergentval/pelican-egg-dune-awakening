@@ -982,6 +982,32 @@ export const baseFuelRefill = (baseId: string) =>
   api<PublishResult & { error?: string }>(
     "POST", `/api/bases/${encodeURIComponent(baseId)}/fuel-refill`, { force: true });
 
+export interface BaseContainerItem {
+  placeable_id: string;
+  container_type: string;
+  inventory_id: string;
+  slots: string;
+  item_id: string;
+  template_id: string;
+  stack_size: string;
+  quality_level: string;
+  position_index: string;
+}
+
+export interface BasePermissionRow {
+  rank: string;
+  character: string;
+  fls_id: string;
+}
+
+export const fetchBaseContainers = (baseId: string) =>
+  api<{ ok: boolean; items: BaseContainerItem[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/containers`);
+
+export const fetchBasePermissions = (baseId: string) =>
+  api<{ ok: boolean; roster: BasePermissionRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/permissions`);
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {

@@ -9,10 +9,15 @@ import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
   baseFuelRefill,
   baseWaterRefill,
+  deleteItem,
+  fetchBaseContainers,
   fetchBaseFuel,
+  fetchBasePermissions,
   fetchBases,
   fetchBaseWater,
+  type BaseContainerItem,
   type BaseFuelRow,
+  type BasePermissionRow,
   type BaseRow,
   type BaseWaterRow,
   type PublishResult,
@@ -30,6 +35,10 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   const [waterLoading, setWaterLoading] = useState(false);
   const [fuel, setFuel] = useState<BaseFuelRow[]>([]);
   const [fuelLoading, setFuelLoading] = useState(false);
+  const [items, setItems] = useState<BaseContainerItem[]>([]);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  const [roster, setRoster] = useState<BasePermissionRow[]>([]);
+  const [rosterLoading, setRosterLoading] = useState(false);
   // Selection token: a slow response for base A must never render under
   // base B's header after a quick re-selection (review-caught display race).
   const selectedIdRef = useRef<string>("");
@@ -54,6 +63,8 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
     selectedIdRef.current = base.base_id;
     setWater([]);
     setFuel([]);
+    setItems([]);
+    setRoster([]);
     setWaterLoading(true);
     const res = await fetchBaseWater(base.base_id).catch(() => null);
     if (selectedIdRef.current !== base.base_id) return; // superseded selection
@@ -65,6 +76,34 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
       setWater([]);
     }
     void loadFuel(base);
+    void loadContainers(base);
+    void loadRoster(base);
+  }
+
+  async function loadContainers(base: BaseRow) {
+    setItemsLoading(true);
+    const res = await fetchBaseContainers(base.base_id).catch(() => null);
+    if (selectedIdRef.current !== base.base_id) return; // superseded selection
+    setItemsLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "items" in b) {
+      setItems((b as { items: BaseContainerItem[] }).items ?? []);
+    } else {
+      setItems([]);
+    }
+  }
+
+  async function loadRoster(base: BaseRow) {
+    setRosterLoading(true);
+    const res = await fetchBasePermissions(base.base_id).catch(() => null);
+    if (selectedIdRef.current !== base.base_id) return; // superseded selection
+    setRosterLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "roster" in b) {
+      setRoster((b as { roster: BasePermissionRow[] }).roster ?? []);
+    } else {
+      setRoster([]);
+    }
   }
 
   async function loadFuel(base: BaseRow) {
@@ -268,6 +307,125 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                       <td className="pr-3 font-mono">{f.units}/{f.cap}</td>
                       <td className="pr-3">{f.percent}%</td>
                       <td className="pr-3">{f.runtime_hours} h</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div className="card">
+          <header className="card-header">
+            <div>
+              <h2 className="card-title">📦 Containers — base #{selected.base_id}</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Everything stored in this base's placeables. Deleting a stack requires the base's
+                map to be fully stopped (world inventories are cached by the running map).
+              </p>
+            </div>
+            <button className="btn-ghost text-xs" onClick={() => selected && void loadContainers(selected)}
+              disabled={itemsLoading}>
+              {itemsLoading ? "…" : "reload"}
+            </button>
+          </header>
+          <div className="card-body">
+            {itemsLoading && <p className="text-xs text-slate-500">loading…</p>}
+            {!itemsLoading && items.length === 0 && (
+              <p className="text-sm text-slate-500 italic">No storage placeables at this base.</p>
+            )}
+            {!itemsLoading && items.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="pr-3 py-1">Container</th>
+                      <th className="pr-3">Slot</th>
+                      <th className="pr-3">Item</th>
+                      <th className="pr-3">Qty</th>
+                      <th className="pr-3">Quality</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it, idx) => {
+                      const firstOfContainer = idx === 0 || items[idx - 1].placeable_id !== it.placeable_id;
+                      return (
+                        <tr key={`${it.placeable_id}-${it.item_id || idx}`} className="border-t border-slate-800">
+                          <td className="pr-3 py-1 font-mono">
+                            {firstOfContainer ? `#${it.placeable_id} ${it.container_type.replace(/_placeable$/, "")}` : ""}
+                          </td>
+                          <td className="pr-3 font-mono">{it.item_id ? it.position_index : "—"}</td>
+                          <td className="pr-3">{it.item_id ? it.template_id : <span className="text-slate-500 italic">empty</span>}</td>
+                          <td className="pr-3 font-mono">{it.item_id ? it.stack_size : ""}</td>
+                          <td className="pr-3 font-mono">{it.item_id && it.quality_level !== "0" ? `Q${it.quality_level}` : ""}</td>
+                          <td className="text-right">
+                            {it.item_id && (
+                              <button className="btn-ghost text-xs text-red-300" disabled={busy}
+                                onClick={() => setConfirm({
+                                  title: "Delete item stack?",
+                                  message: `Permanently delete ${it.stack_size}× ${it.template_id} (item #${it.item_id}) from container #${it.placeable_id}. The base's map must be fully stopped. Unrecoverable.`,
+                                  confirmLabel: "Delete",
+                                  onConfirm: async () => {
+                                    setBusy(true);
+                                    const res = await deleteItem(it.item_id).catch(() => null);
+                                    setBusy(false);
+                                    const rb: unknown = res?.body;
+                                    const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+                                      && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+                                    pushToConsole(setConsoleEntries, `item-delete ${it.item_id}`,
+                                      typeof rb === "string" ? rb : (rb as PublishResult), ok);
+                                    if (selected) void loadContainers(selected);
+                                  },
+                                })}>
+                                🗑
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div className="card">
+          <header className="card-header">
+            <div>
+              <h2 className="card-title">🔑 Permissions — base #{selected.base_id}</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Who holds access on this base (lowest rank = owner). Read-only — an empty roster
+                means the base is unclaimed.
+              </p>
+            </div>
+          </header>
+          <div className="card-body">
+            {rosterLoading && <p className="text-xs text-slate-500">loading…</p>}
+            {!rosterLoading && roster.length === 0 && (
+              <p className="text-sm text-slate-500 italic">No permission holders — this base is unclaimed.</p>
+            )}
+            {!rosterLoading && roster.length > 0 && (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="pr-3 py-1">Rank</th>
+                    <th className="pr-3">Character</th>
+                    <th className="pr-3">FLS id</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roster.map((r, i) => (
+                    <tr key={`${r.fls_id}-${r.rank}-${i}`} className="border-t border-slate-800">
+                      <td className="pr-3 py-1 font-mono">{r.rank}{r.rank === roster[0].rank && i === 0 ? " 👑" : ""}</td>
+                      <td className="pr-3">{r.character || <span className="text-slate-500 italic">?</span>}</td>
+                      <td className="pr-3 font-mono">{r.fls_id}</td>
                     </tr>
                   ))}
                 </tbody>

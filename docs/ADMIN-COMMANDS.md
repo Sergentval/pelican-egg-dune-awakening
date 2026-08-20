@@ -612,6 +612,23 @@ admin base-fuel-refill <base_id>   # top every device to its fuel cap
   Same fail-closed map-down gate as the water refill.
 - HTTP: `GET /api/bases/<id>/fuel`, `POST /api/bases/<id>/fuel-refill`
   (force-confirmed). UI: ⚡ Generators panel in the Bases tab.
+
+Containers + permissions (read):
+
+```text
+admin base-containers <base_id>    # CSV: one row per stored item stack, with its container
+admin base-permissions <base_id>   # CSV: rank, character, fls_id (lowest rank = owner)
+```
+
+- Containers covers every placeable holding an inventory (chests AND powered
+  devices). Deleting a stack goes through the generic `item-delete`, which now
+  distinguishes inventories: a WORLD inventory (placeable/vehicle — cached by
+  the running map) requires the map-down gate, a player-carried inventory the
+  offline gate.
+- An empty permission roster means the base is unclaimed — that emptiness is
+  the diagnosis. Permission WRITES are deliberately not ported yet.
+- HTTP: `GET /api/bases/<id>/containers`, `GET /api/bases/<id>/permissions`.
+  UI: 📦 Containers + 🔑 Permissions panels in the Bases tab.
 - Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
 - HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
   `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.

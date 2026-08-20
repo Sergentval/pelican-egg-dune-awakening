@@ -121,6 +121,11 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Base containers + permission roster (2026-08, C3.3) port, with thanks,
+Red-Blink's bases container feature and listBasePermissions read model (MIT),
+reimplemented as base-containers / base-permissions; the item-delete gate
+split (world inventories → map-down, player inventories → offline) is ours.
+
 Generator fuel (2026-08, C3.2) ports, with thanks, Red-Blink's
 baseGenerators / baseGeneratorFuelLevels / refillBaseGenerators (MIT): the
 generator allowlist + accepted-fuel table with measured burn rates, the

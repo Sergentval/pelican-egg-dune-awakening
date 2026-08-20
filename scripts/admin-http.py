@@ -642,6 +642,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
+            "base-containers", "base-permissions",
         )
     )
     entry = {
@@ -1443,6 +1444,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._write(200, {"ok": bool(entry.get("ok")), "available": True,
                               "bases": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Everything stored inside one base's placeables (flat item rows).
+        if path.startswith("/api/bases/") and path.endswith("/containers"):
+            bid = path[len("/api/bases/"):-len("/containers")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-containers", bid], timeout=20)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "items": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Permission roster of one base (rank, character, fls).
+        if path.startswith("/api/bases/") and path.endswith("/permissions"):
+            bid = path[len("/api/bases/"):-len("/permissions")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-permissions", bid], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "permission tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "roster": _csv_rows(entry.get("stdout") or ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
