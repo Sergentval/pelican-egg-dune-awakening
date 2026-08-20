@@ -1191,13 +1191,23 @@ end.
         # is plain UTF-8 bytes when user-data encryption is As-is, same as
         # the character name.
         fid="${1:?usage: resolve-funcom <Name#1234>}"
-        fls=$({ dune_psql_q --set=fid="$fid" -tA 2>/dev/null <<'RF_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT "user" FROM dune.encrypted_accounts
-WHERE convert_from(encrypted_funcom_id, 'UTF8') = :'fid' LIMIT 1;
+        # count||user in one round trip: an AMBIGUOUS identity is refused
+        # (same treatment as the 'me' shortcut) — a chat command must never
+        # act on an arbitrary one of two accounts.
+        row=$({ dune_psql_q --set=fid="$fid" -tA 2>/dev/null <<'RF_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*)::text || '|' || COALESCE(MIN("user"), '')
+FROM dune.encrypted_accounts
+WHERE convert_from(encrypted_funcom_id, 'UTF8') = :'fid';
 RF_SQL
 )
-        if [ -z "$fls" ]; then
+        n="${row%%|*}"
+        fls="${row#*|}"
+        if [ -z "$row" ] || [ "${n:-0}" = "0" ] || [ -z "$fls" ]; then
             echo "[admin-publish] ERROR resolve-funcom: no account with chat identity '$fid'" >&2
+            exit 2
+        fi
+        if [ "$n" != "1" ]; then
+            echo "[admin-publish] ERROR resolve-funcom: $n accounts share chat identity '$fid' — refusing to pick one" >&2
             exit 2
         fi
         echo "fls=$fls"

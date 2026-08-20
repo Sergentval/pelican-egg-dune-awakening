@@ -134,15 +134,25 @@ class CooldownLedger:
                     continue
         self._now = 0.0
 
-    def allow(self, player: str, command: str, now: "float | None" = None) -> bool:
+    def ready(self, player: str, command: str, now: "float | None" = None) -> bool:
+        """Check WITHOUT stamping — a command whose delivery could not even
+        be attempted (identity unresolved) must not burn the cooldown."""
         ts = time.time() if now is None else float(now)
         self._now = max(self._now, ts)
-        key = f"{player}|{command}"
-        last = self._last.get(key)
-        if last is not None and ts - last < self.cooldown:
+        last = self._last.get(f"{player}|{command}")
+        return last is None or ts - last >= self.cooldown
+
+    def allow(self, player: str, command: str, now: "float | None" = None) -> bool:
+        ts = time.time() if now is None else float(now)
+        if not self.ready(player, command, now=ts):
             return False
-        self._last[key] = ts
+        self._last[f"{player}|{command}"] = ts
         return True
+
+    def stamp(self, player: str, command: str, now: "float | None" = None) -> None:
+        ts = time.time() if now is None else float(now)
+        self._now = max(self._now, ts)
+        self._last[f"{player}|{command}"] = ts
 
     def state(self) -> dict:
         cutoff = self._now - self.cooldown
@@ -154,10 +164,20 @@ class CooldownLedger:
 # --------------------------------------------------------------------------
 
 def _publish(base: str, argv: "list[str]", timeout: int = 30) -> "tuple[bool, str]":
-    res = subprocess.run(["bash", os.path.join(base, "scripts", "admin-publish.sh"), *argv],
-                         capture_output=True, text=True, timeout=timeout)
+    """Run one admin-publish subcommand. Returns (ok, FULL output) — the
+    chat-drain caller parses every MSG: line out of it, and its messages are
+    already NoAck-consumed: truncating here would permanently lose commands
+    the moment ordinary chat shares the tick (review-reproduced). Truncate at
+    the LOG sites instead. A hung subprocess surfaces as a failed call, never
+    an exception — one slow broker call must not discard the whole batch's
+    cooldown bookkeeping."""
+    try:
+        res = subprocess.run(["bash", os.path.join(base, "scripts", "admin-publish.sh"), *argv],
+                             capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"timeout after {timeout}s"
     out = (res.stdout or "") + (res.stderr or "")
-    return res.returncode == 0, out[-500:]
+    return res.returncode == 0, out
 
 
 def _load_json(path: str, fallback):
@@ -198,14 +218,14 @@ def run_tick(base: str, log=print) -> int:
     if not state.get("queue_ready"):
         ok, out = _publish(base, ["chat-queue-init"])
         if not ok:
-            log(f"[chat-commands] queue init failed: {out}")
+            log(f"[chat-commands] queue init failed: {out[-500:]}")
             return 0
         state["queue_ready"] = True
         _save_json(state_path, state)
 
     ok, out = _publish(base, ["chat-drain", str(DRAIN_MAX)])
     if not ok:
-        log(f"[chat-commands] drain failed: {out}")
+        log(f"[chat-commands] drain failed: {out[-500:]}")
         return 0
 
     import base64
@@ -229,24 +249,29 @@ def run_tick(base: str, log=print) -> int:
         spec = cfg["commands"].get(name)
         if not spec or not spec.get("enabled"):
             continue
-        if not ledger.allow(msg["sender"], name):
+        if not ledger.ready(msg["sender"], name):
             continue
         display = msg["sender"].split("#", 1)[0]
         if name == "ping":
+            ledger.stamp(msg["sender"], name)
             _publish(base, ["broadcast", "Chat commands", f"pong, {display}!", "5"])
             executed += 1
         elif name == "kit":
             fls = _resolve_funcom(base, msg["sender"])
             if not fls:
+                # No stamp: delivery was never attempted — the player may
+                # retry after the transient without waiting out a cooldown
+                # they never used.
                 log(f"[chat-commands] kit: could not resolve '{msg['sender']}' to an account")
                 continue
+            ledger.stamp(msg["sender"], name)
             granted = 0
             for it in spec.get("items", []):
                 gok, gout = _publish(base, ["give-item", fls, it["template"], str(it["qty"])])
                 if gok:
                     granted += 1
                 else:
-                    log(f"[chat-commands] kit item {it['template']} failed: {gout}")
+                    log(f"[chat-commands] kit item {it['template']} failed: {gout[-300:]}")
             _publish(base, ["broadcast", "Chat commands",
                             f"{display}: kit delivered ({granted} item type(s))", "8"])
             executed += 1

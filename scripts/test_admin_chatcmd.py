@@ -83,6 +83,16 @@ class TestCooldowns(unittest.TestCase):
         led2 = CooldownLedger(cooldown_secs=60, state=led.state())
         self.assertFalse(led2.allow("A#1", "kit", now=1030))
 
+    def test_ready_does_not_stamp(self):
+        # A delivery that could not even be attempted must not burn the
+        # cooldown: ready() is check-only, stamp() commits.
+        led = CooldownLedger(cooldown_secs=60)
+        self.assertTrue(led.ready("A#1", "kit", now=1000))
+        self.assertTrue(led.ready("A#1", "kit", now=1001))
+        led.stamp("A#1", "kit", now=1002)
+        self.assertFalse(led.ready("A#1", "kit", now=1030))
+        self.assertTrue(led.ready("A#1", "kit", now=1063))
+
     def test_state_is_pruned(self):
         led = CooldownLedger(cooldown_secs=60)
         led.allow("A#1", "kit", now=1000)
