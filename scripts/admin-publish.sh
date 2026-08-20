@@ -381,6 +381,26 @@ WHERE ps.account_id = :'aid'::bigint
 CT_SQL
 }
 
+# Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
+# subcommands talk to the GAME broker — chat.intercept lives there). Same
+# env recipe as the ServerCommand publish path at the bottom of this file.
+rmq_eval() {
+    local node="$1" erl="$2" home
+    if [ ! -x "$RMQ_SBIN/rabbitmqctl" ]; then
+        echo "[admin-publish] ERROR rabbitmqctl missing at $RMQ_SBIN/rabbitmqctl" >&2
+        return 1
+    fi
+    case "$node" in
+        rabbit-game@*)  home="$BASE/runtime/mq-game-home" ;;
+        *)              home="$BASE/runtime/mq-admin-home" ;;
+    esac
+    PATH="$RMQ_SBIN:$ERL_ROOT/erts-14.2.5.12/bin:$ERL_ROOT/bin:$PATH" \
+    ERL_LIBS="$ERL_ROOT/lib" \
+    LD_LIBRARY_PATH="$MQ_ROOT/usr/lib:$MQ_ROOT/usr/local/lib:${LD_LIBRARY_PATH:-}" \
+    HOME="$home" \
+        "$RMQ_SBIN/rabbitmqctl" --node "$node" eval "$erl" 2>&1
+}
+
 # FLS hex -> dune.encrypted_accounts.id (account id), or empty if none.
 dune_account_id() {
     dune_psql_q --set=fls="$1" -tA 2>/dev/null <<'SQL' | tr -d '\r\n'
@@ -1095,6 +1115,93 @@ except Exception:
             exit 0
         fi
         echo "[admin-publish] ERROR db-restore: pg_restore failed" >&2; exit 1
+        ;;
+
+    chat-queue-init)
+        # Bind a SECOND, BOUNDED queue to the game broker's `chat.intercept`
+        # TOPIC exchange (catch-all '#'): a COPY of every chat message,
+        # leaving Funcom's own queue.intercept consumer untouched. Bounded by
+        # construction (max-length 500 + 5 min TTL, drop-head) so a stopped
+        # drainer can never pressure the broker. Idempotent. Mechanism from
+        # DST v13.4 (Apache-2.0), proven live by them 2026-08-04.
+        out=$(rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+Args = [{<<"x-max-length">>, long, 500},
+        {<<"x-message-ttl">>, long, 300000},
+        {<<"x-overflow">>, longstr, <<"drop-head">>}],
+rabbit_amqqueue:declare(QName, false, false, Args, none, <<"admin">>),
+XName = rabbit_misc:r(<<"/">>, exchange, <<"chat.intercept">>),
+rabbit_binding:add({binding, XName, <<"#">>, QName, []}, <<"admin">>).
+') || { echo "[admin-publish] ERROR chat-queue-init: $out" >&2; exit 1; }
+        echo "[admin-publish] OK chat-queue-init"
+        echo "publish=db-write chat-queue-init queue=admin.chat.commands"
+        exit 0
+        ;;
+
+    chat-queue-drop)
+        # Remove the copy-queue. Called when the feature is switched off, so
+        # a disabled panel is not quietly accumulating everything players type.
+        out=$(rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+case rabbit_amqqueue:lookup(QName) of
+  {ok, Q} -> rabbit_amqqueue:delete(Q, false, false, <<"admin">>), io:format("removed~n");
+  _ -> io:format("absent~n")
+end.
+') || { echo "[admin-publish] ERROR chat-queue-drop: $out" >&2; exit 1; }
+        echo "[admin-publish] OK chat-queue-drop ($(printf '%s' "$out" | grep -o 'removed\|absent' | head -1))"
+        echo "publish=db-write chat-queue-drop queue=admin.chat.commands"
+        exit 0
+        ;;
+
+    chat-drain)
+        # Drain up to N messages from the copy-queue, one base64 body per
+        # MSG: line (bodies carry UTF-8 + newlines). NoAck: the queue is ours
+        # alone and a command already read but failed must NOT redeliver
+        # forever — at-most-once is the right semantic for a chat command.
+        max="${1:-25}"
+        case "$max" in *[!0-9]*|"") max=25;; esac
+        [ "$max" -gt 200 ] && max=200
+        rmq_eval "rabbit-game@localhost" '
+QName = rabbit_misc:r(<<"/">>, queue, <<"admin.chat.commands">>),
+case rabbit_amqqueue:lookup(QName) of
+  {ok, Q} ->
+    F = fun(Loop, N) ->
+      case N of
+        0 -> ok;
+        _ ->
+          case rabbit_amqqueue:basic_get(Q, true, 0, <<"admin">>, rabbit_queue_type:init()) of
+            {ok, _C, {_QN, _QP, _MI, _RD, Msg}, _S} ->
+              Content = mc:protocol_state(Msg),
+              Body = iolist_to_binary(lists:reverse(element(6, Content))),
+              io:format("MSG:~s~n", [base64:encode(Body)]),
+              Loop(Loop, N - 1);
+            _ -> ok
+          end
+      end
+    end,
+    F(F, '"$max"');
+  _ -> io:format("NOQUEUE~n")
+end.
+'
+        exit 0
+        ;;
+
+    resolve-funcom)
+        # Chat identity ("Name#1234", m_FuncomIdFrom) -> FLS id. The column
+        # is plain UTF-8 bytes when user-data encryption is As-is, same as
+        # the character name.
+        fid="${1:?usage: resolve-funcom <Name#1234>}"
+        fls=$({ dune_psql_q --set=fid="$fid" -tA 2>/dev/null <<'RF_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT "user" FROM dune.encrypted_accounts
+WHERE convert_from(encrypted_funcom_id, 'UTF8') = :'fid' LIMIT 1;
+RF_SQL
+)
+        if [ -z "$fls" ]; then
+            echo "[admin-publish] ERROR resolve-funcom: no account with chat identity '$fid'" >&2
+            exit 2
+        fi
+        echo "fls=$fls"
+        exit 0
         ;;
 
     bases)
