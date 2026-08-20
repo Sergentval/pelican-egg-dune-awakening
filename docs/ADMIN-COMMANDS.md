@@ -744,7 +744,11 @@ reshaped for this single-container stack; see ATTRIBUTION.md.
   is ever lost). Retention: 2 newest `pg.pre-reset-*`, 1 `pg.rolled-back-*`.
 - **Characters**: a world reset wipes characters with the world. The
   `with-char-backups` sweep pairs with `char-restore` — restore any
-  player's character into the fresh world on request.
+  player's character into the fresh world on request. Order matters: the
+  player must JOIN the fresh world once first (FLS recreates their
+  account; they'll spawn as a new character), then `char-restore`
+  replaces that new character with the backup. On a world the player has
+  never joined, the restore refuses with "no account for <fls>".
 - **Interactions**: the wipe-guard (base-guard) is part of the DB, so a
   reset reverts it — the armed boot re-apply re-patches automatically right
   after `migrate-db` on the same boot. `db-backup` retention (default 7)
