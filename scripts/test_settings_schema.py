@@ -100,12 +100,14 @@ class TestSettingsSchema(unittest.TestCase):
                                   f"{s['id']} declares env {s['env']} but {egg_name} has no such variable")
 
     def test_catalogue_size(self):
-        # 51 original (25 env + 26 cvar) + 144 verified UClass knobs
+        # 51 original (25 env + 26 cvar) + 144 UClass knobs
         # + pvp_enabled_partitions (issue #106)
-        self.assertEqual(len(self.settings), 196)
-        # the 144 API-managed UClass knobs sink to UserOverrides, no env var
+        # + 5 QoL keys from the 2026-08 ecosystem survey (reconnect grace ×2,
+        #   ping system ×3) — all verified against the shipped DefaultGame.ini
+        self.assertEqual(len(self.settings), 201)
+        # the API-managed UClass knobs sink to UserOverrides, no env var
         uclass = [s for s in self.settings if s["file"] == "UserOverrides"]
-        self.assertEqual(len(uclass), 144)
+        self.assertEqual(len(uclass), 149)
         for s in uclass:
             self.assertFalse(s.get("env"), f"{s['id']} UserOverrides knob must not be env/boot-applied")
         # untested knobs ship verified:false; only live-tested ones are flipped
