@@ -20,6 +20,7 @@ import {
 } from "./api";
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { TaskEditor, newTask, taskScheduleSummary, taskParamsSummary } from "./SchedulerTaskEditor";
+import { WorldResetCard } from "./WorldResetCard";
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -311,6 +312,8 @@ export function SchedulerTab({ setConsoleEntries }: { setConsoleEntries: Dispatc
           </table>
         </div>
       </div>
+
+      <WorldResetCard setConsoleEntries={setConsoleEntries} />
     </div>
   );
 }

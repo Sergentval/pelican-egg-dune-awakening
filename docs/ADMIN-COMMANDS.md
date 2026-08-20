@@ -714,6 +714,48 @@ commands answer straight. HTTP: `GET /api/bases[?q=]`,
 `GET /api/bases/<id>/water`, `POST /api/bases/<id>/water-refill`
 (force-confirmed). UI: 🏠 Bases tab.
 
+## World reset (season restart, reversible)
+
+```text
+admin world-reset-arm "RESET WORLD" [with-char-backups]   # gates + backup + durable marker
+admin world-reset-cancel                                  # disarm any pending marker
+admin world-rollback-arm "ROLL BACK WORLD" [pg.pre-reset-<ts>]  # arm the reverse swap
+```
+
+Ported from coastal-ms/DST-DuneServerTool's worldreset-2 (Apache-2.0),
+reshaped for this single-container stack; see ATTRIBUTION.md.
+
+- **Nothing is destroyed at arm time.** Arming verifies zero players online
+  (fail closed on an unreadable count), takes a `db-backup` (verified size,
+  recorded in the marker), optionally backs up every character
+  (`with-char-backups`, aborts if any fails), and writes a durable marker
+  under `server/state/`. The world is untouched until the next restart.
+- **The boot executes.** `apply-world-reset.sh` runs BEFORE prestart: it
+  re-verifies the marker's backup (missing/short ⇒ refuse, boot the old
+  world untouched), then MOVES `server/state/pg` to `pg.pre-reset-<ts>` —
+  one atomic rename, never a delete — and lets prestart's ordinary
+  first-boot path initdb + load the schema: a fresh, empty world under the
+  same battlegroup identity, tokens, and config.
+- **Rollback is a swap, not a restore.** `world-rollback-arm` marks a
+  preserved datadir; the next boot parks the current (fresh) world as
+  `pg.rolled-back-<ts>` and moves the preserved one back. Progress on the
+  fresh world is parked, not lost. The logical backup taken at arm time is
+  the second line of defence (`pg_restore` by hand if a preserved datadir
+  is ever lost). Retention: 2 newest `pg.pre-reset-*`, 1 `pg.rolled-back-*`.
+- **Characters**: a world reset wipes characters with the world. The
+  `with-char-backups` sweep pairs with `char-restore` — restore any
+  player's character into the fresh world on request.
+- **Interactions**: the wipe-guard (base-guard) is part of the DB, so a
+  reset reverts it — the armed boot re-apply re-patches automatically right
+  after `migrate-db` on the same boot. `db-backup` retention (default 7)
+  also prunes the reset's backup file: don't leave a reset armed across
+  many backups, or re-arm to take a fresh one.
+- HTTP: `GET /api/world-reset` (armed markers, last boot result, preserved
+  dirs, live online count), `POST /api/world-reset/arm` `{phrase,
+  char_backups}`, `POST /api/world-reset/cancel`,
+  `POST /api/world-reset/rollback` `{phrase, target?}`. UI: 🌍 card in the
+  Scheduler tab, chained to the existing restart-now flow.
+
 ## Player chat commands (!ping / !kit)
 
 Players trigger actions from in-game chat. OFF by default — flip `enabled`
