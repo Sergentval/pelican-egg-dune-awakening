@@ -121,6 +121,14 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Bases + water management (2026-08) ports, with thanks, Red-Blink/
+dune-awakening-selfhost-docker's bases feature (MIT: the listBases claim
+model incl. the picked-up-base exclusion, the baseWater device resolution
+with its guarded ContainerInventory lateral, the water-type capacity table,
+and the jsonb_set refill write), reimplemented as the `bases` /
+`base-water` / `base-water-refill` subcommands with an explicit
+fail-closed map-down gate in place of their queue/flush system.
+
 Connection doctor (2026-08) ports, with thanks, the check catalogue of
 coastal-ms/DST-DuneServerTool's P34 connection doctor (Apache-2.0: advertised
 vs real IP, per-map address drift, port-range misconfig) and

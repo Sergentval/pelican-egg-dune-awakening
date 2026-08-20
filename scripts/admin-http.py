@@ -615,6 +615,21 @@ def _run_helper(script: str, argv: list[str], timeout: int, env: dict | None = N
     return {"ok": ok, "exit_code": res.returncode, "data": data, "stderr": res.stderr[:500]}
 
 
+def _csv_rows(text: str) -> list[dict]:
+    """First line = header, rest = rows — the shape every CSV-emitting
+    subcommand (bases, base-water, db-*) prints. The text goes to the csv
+    parser UNfiltered: RFC4180-quoted fields legally contain embedded (even
+    blank) newlines, and psql --csv emits them that way — a blank-line
+    pre-filter would corrupt those values (review-caught). Numeric-looking
+    cells stay strings; the UI formats."""
+    import csv as _csv
+    import io as _io
+    if not text.strip():
+        return []
+    reader = _csv.DictReader(_io.StringIO(text))
+    return [dict(r) for r in reader]
+
+
 def run_publish(argv: list[str], timeout: int = 30) -> dict:
     result = _run_command([PUBLISH_SH, *argv], timeout)
     ok = result.returncode == 0 and (
@@ -626,7 +641,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
-            "char-backup", "char-backup-list", "doctor",
+            "char-backup", "char-backup-list", "doctor", "bases", "base-water",
         )
     )
     entry = {
@@ -1417,6 +1432,36 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
+        # Claimed bases (Red-Blink listBases port): owner, map, piece and
+        # placeable counts. ?q= filters on owner name or map.
+        if path == "/api/bases":
+            q = (query.get("q", [""])[0] if isinstance(query, dict) else "") or ""
+            entry = run_publish(["bases", q] if q else ["bases"], timeout=20)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "bases": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Per-type water storage of one base.
+        if path.startswith("/api/bases/") and path.endswith("/water"):
+            bid = path[len("/api/bases/"):-len("/water")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-water", bid], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "water": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
         # World-partition topology (warm dim=0 + dimensional dim>0) joined to
         # farm_state liveness. Powers the Instances tab alongside /api/status.
         if path == "/api/partitions":
@@ -2133,6 +2178,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._write(400, {"error": "actor_id (positive int) required"})
                 return
             entry = run_publish(["vehicle-delete", str(actor_id)], timeout=10)
+            self._write(200, entry)
+            return
+
+        # Fill one base's water devices to capacity. The subcommand FAILS
+        # CLOSED unless the base's map has zero live instances (a running map
+        # rewrites base state from memory on flush).
+        # POST /api/bases/<id>/water-refill  body {"force"?: bool}
+        if path.startswith("/api/bases/") and path.endswith("/water-refill"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/water-refill")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            forced = isinstance(body, dict) and bool(body.get("force"))
+            if not forced:
+                self._write(200, {"ok": False, "requiresConfirmation": True,
+                                  "message": "Refilling writes to player property and requires the "
+                                             "base's map to be fully stopped. Re-send with force:true."})
+                return
+            entry = run_publish(["base-water-refill", bid], timeout=30)
             self._write(200, entry)
             return
 

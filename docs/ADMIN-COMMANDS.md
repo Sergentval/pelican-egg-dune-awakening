@@ -574,6 +574,30 @@ admin char-restore <file>                      # FULL REPLACE of that FLS id's c
   `POST /api/char-backups/restore` (force-confirmed), `POST /api/char-backups/delete`.
   UI: Players → Character → "Character backups".
 
+## Bases
+
+Claimed-base inventory + water management, ported from
+Red-Blink/dune-awakening-selfhost-docker (MIT); see ATTRIBUTION.md.
+
+```text
+admin bases [search]              # CSV: base_id, owner, map, pieces, placeables
+admin base-water <base_id>        # CSV: per-type water storage (+ blood levels)
+admin base-water-refill <base_id> # fill every water device to capacity
+```
+
+- Water lives in `fgl_entities.components → FWaterStorageComponent[1].m_WaterStored`;
+  the read is guarded against the duplicate ContainerInventory fgl row that
+  double-counts devices (upstream confirmed live).
+- **The refill FAILS CLOSED twice**: it refuses while the base's map has any
+  live instance (a running map rewrites base state from memory on flush — the
+  write would silently vanish), and it refuses a map name `farm_state` has
+  never seen (can't prove it's down). Stop the server or park the sietch first.
+- Blood (purifier) levels are read but never granted — blood is a harvested
+  resource.
+- Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
+- HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
+  `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
+
 ## Connection doctor
 
 Read-only diagnosis of the "boots fine, nobody can join" family. Run it

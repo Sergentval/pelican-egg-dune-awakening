@@ -1097,6 +1097,226 @@ except Exception:
         echo "[admin-publish] ERROR db-restore: pg_restore failed" >&2; exit 1
         ;;
 
+    bases)
+        # Base inventory: every claimed base (a dune.buildings row whose owner
+        # actor is placed in the world), with owner (lowest-rank permission
+        # holder), map, piece + placeable counts. Picked-up bases (unclaimed
+        # AND base_backup-linked) are excluded — the base-backup tool leaves
+        # every row intact, so unfiltered they list as ordinary ownerless
+        # bases. Read-only. Ported from Red-Blink listBases (MIT).
+        search="${1:-}"
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.placeables dune.base_backup_linked_actors || exit 3
+        dune_psql_q --set=q="%${search}%" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BASES_SQL'
+SELECT b.id AS base_id,
+       a.id AS base_actor_id,
+       a.map AS map,
+       COUNT(DISTINCT bi.instance_id)::int AS pieces,
+       COALESCE(pl.placeables, 0) AS placeables,
+       COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') AS owner
+FROM dune.buildings b
+JOIN dune.building_instances bi ON bi.building_id = b.id
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+JOIN dune.actors a ON a.id = afe.actor_id
+LEFT JOIN dune.permission_actor pa ON pa.actor_id = a.id
+LEFT JOIN LATERAL (
+    SELECT ps.encrypted_character_name
+    FROM dune.permission_actor_rank par
+    JOIN dune.actors player_a ON player_a.id = par.player_id
+    JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
+    WHERE par.permission_actor_id = a.id
+    ORDER BY par.rank ASC, par.player_id ASC LIMIT 1
+) owner_ps ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COUNT(DISTINCT p.id)::int AS placeables
+    FROM dune.actor_fgl_entities cafe
+    JOIN dune.placeables p ON p.owner_entity_id = cafe.entity_id
+    WHERE cafe.actor_id = a.id
+) pl ON TRUE
+WHERE a.transform IS NOT NULL
+  AND NOT (pa.actor_id IS NULL AND EXISTS (
+        SELECT 1 FROM dune.base_backup_linked_actors bbla WHERE bbla.actor_id = a.id))
+  AND (:'q' = '%%' OR COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') ILIKE :'q'
+       OR a.map ILIKE :'q')
+GROUP BY b.id, a.id, a.map, owner_ps.encrypted_character_name, pl.placeables
+ORDER BY pieces DESC
+LIMIT 200;
+BASES_SQL
+        exit 0
+        ;;
+
+    base-water)
+        # Per-type water storage of ONE base: cisterns (5k/25k/100k),
+        # windtraps (500 — the large windtrap stores the same 500, confirmed
+        # upstream against a production backup), blood purifiers (1000 water
+        # + blood amounts read from the actor's own properties). Levels live
+        # in fgl_entities.components->FWaterStorageComponent[1].m_WaterStored;
+        # the lateral is guarded LIMIT 1 because some water placeables carry a
+        # second ContainerInventory fgl row and an unguarded join double-counts
+        # (upstream confirmed live: a Windtrap count read 7 instead of 4).
+        # Read-only. Ported from Red-Blink baseWater (MIT).
+        bid="${1:?usage: base-water <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BW_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), water_types(water_type, building_type, capacity, blood_key, blood_capacity) AS (
+    VALUES ('Water Cistern'::text, 'watercistern_placeable'::text, 5000, NULL::text, NULL::int),
+           ('Medium Water Cistern', 'mediumwatercistern_placeable', 25000, NULL, NULL),
+           ('Large Water Cistern', 'largewatercistern_placeable', 100000, NULL, NULL),
+           ('Windtrap', 'windtrap_placeable', 500, NULL, NULL),
+           ('Large Windtrap', 'largewindtrap_placeable', 500, NULL, NULL),
+           ('Blood Purifier', 'bloodwaterextractor_placeable', 1000, 'BP_BloodWaterExtractor_C', 6000),
+           ('Improved Blood Purifier', 'bloodwaterextractionadvanced_placeable', 1000, 'BP_BloodWaterExtractor_Advanced_C', 24000)
+), devices AS (
+    SELECT p.id AS placeable_id, wt.water_type, wt.capacity,
+           COALESCE(state.stored, 0) AS stored,
+           CASE WHEN wt.blood_key IS NOT NULL
+                THEN (a.properties -> wt.blood_key ->> 'm_CurrentAmount')::numeric END AS blood,
+           wt.blood_capacity
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN dune.actors a ON a.id = p.id
+    JOIN water_types wt ON wt.building_type = lower(p.building_type)
+    LEFT JOIN LATERAL (
+        SELECT (fe.components->'FWaterStorageComponent'->1->>'m_WaterStored')::int AS stored
+        FROM dune.actor_fgl_entities afe
+        JOIN dune.fgl_entities fe ON fe.entity_id = afe.entity_id
+        WHERE afe.actor_id = p.id AND fe.components ? 'FWaterStorageComponent'
+        LIMIT 1
+    ) state ON TRUE
+)
+SELECT water_type,
+       COUNT(*)::int AS devices,
+       SUM(stored)::int AS stored,
+       SUM(capacity)::int AS capacity,
+       COALESCE(SUM(blood), 0)::int AS blood_stored,
+       COALESCE(SUM(blood_capacity), 0)::int AS blood_capacity
+FROM devices GROUP BY water_type ORDER BY water_type;
+BW_SQL
+        exit 0
+        ;;
+
+    base-water-refill)
+        # Fill every water device of ONE base to capacity (water only — blood
+        # is a harvested resource, deliberately not granted). HARD GATE: the
+        # base's map must have NO live instance — a running map rewrites base
+        # state from memory on its next flush, silently undoing the write
+        # (the memory-flush rule DST learned on claims and cisterns). Stop the
+        # server (or park the sietch) first. Ported from Red-Blink's refill
+        # write (MIT), without their queue: the gate is explicit here.
+        bid="${1:?usage: base-water-refill <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-water-refill: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.fgl_entities dune.farm_state || exit 3
+        # By-id paths deliberately skip the picked-up-base exclusion the list
+        # applies: an operator addressing a base by number gets a straight
+        # answer; the exclusion exists to keep NOISE out of the list.
+        bmap=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT a.map
+FROM dune.buildings b
+JOIN dune.building_instances bi ON bi.building_id = b.id
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+JOIN dune.actors a ON a.id = afe.actor_id
+WHERE b.id = :'bid'::bigint LIMIT 1;
+BWR_SQL
+)
+        if [ -z "$bmap" ]; then
+            echo "[admin-publish] ERROR base-water-refill: no base with id $bid" >&2
+            exit 2
+        fi
+        # FAIL CLOSED, twice: (1) any live instance of the base's map refuses
+        # the write — a running map rewrites base state from memory on flush;
+        # (2) a map name farm_state has never seen refuses too — if actors.map
+        # and farm_state.map ever use different namespaces on a build, a naive
+        # "0 alive rows" would wrongly read as "map is down".
+        gate=$({ dune_psql_q --set=m="$bmap" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
+BWR_SQL
+)
+        alive="${gate%%/*}"
+        known="${gate##*/}"
+        if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+            echo "[admin-publish] ERROR base-water-refill: map '$bmap' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+            exit 1
+        fi
+        if [ "${alive:-1}" != "0" ]; then
+            echo "[admin-publish] ERROR base-water-refill: map $bmap has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+            exit 1
+        fi
+        updated=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), water_types(building_type, capacity) AS (
+    VALUES ('watercistern_placeable'::text, 5000),
+           ('mediumwatercistern_placeable', 25000),
+           ('largewatercistern_placeable', 100000),
+           ('windtrap_placeable', 500),
+           ('largewindtrap_placeable', 500),
+           ('bloodwaterextractor_placeable', 1000),
+           ('bloodwaterextractionadvanced_placeable', 1000)
+), devices AS (
+    SELECT wt.capacity,
+           (SELECT afe.entity_id
+            FROM dune.actor_fgl_entities afe
+            JOIN dune.fgl_entities fe ON fe.entity_id = afe.entity_id
+            WHERE afe.actor_id = p.id AND fe.components ? 'FWaterStorageComponent'
+            LIMIT 1) AS entity_id
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN water_types wt ON wt.building_type = lower(p.building_type)
+), updated AS (
+    UPDATE dune.fgl_entities fe
+    SET components = jsonb_set(fe.components, '{FWaterStorageComponent,1,m_WaterStored}',
+                               to_jsonb(d.capacity))
+    FROM devices d
+    WHERE d.entity_id IS NOT NULL AND fe.entity_id = d.entity_id
+    RETURNING 1
+)
+SELECT (SELECT COUNT(DISTINCT entity_id) FROM devices WHERE entity_id IS NOT NULL)::text
+       || '/' || COUNT(*)::text FROM updated;
+BWR_SQL
+)
+        expected="${updated%%/*}"
+        written="${updated##*/}"
+        if [ -z "$updated" ]; then
+            echo "[admin-publish] ERROR base-water-refill: refill query failed" >&2
+            exit 1
+        fi
+        # UPDATE ... FROM silently applies ONE arbitrary row per target when
+        # two devices resolve to the same entity — an undercount here must be
+        # a loud failure, not a cheerful partial success (review-caught).
+        if [ "$expected" != "$written" ]; then
+            echo "[admin-publish] ERROR base-water-refill: expected to fill $expected device entit(ies) but wrote $written — partial write, inspect the base's actor_fgl_entities rows" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-water-refill base=$bid map=$bmap devices_filled=$written"
+        echo "publish=db-write base-water-refill base=$bid devices=$written"
+        exit 0
+        ;;
+
     doctor)
         # READ-ONLY connection doctor: gathers the connectivity facts (the
         # advertised identity, what every live map registers in farm_state,

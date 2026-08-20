@@ -40,7 +40,7 @@ READ_ONLY_SUBCOMMANDS = frozenset({
     "player-state", "char-xp-read", "inventory-list", "tags-get",
     "server-status", "farm-player-count", "map-markers", "db-backup-list",
     "spice-list", "world-partition-list", "market-bot-status",
-    "char-backup-list", "doctor",
+    "char-backup-list", "doctor", "bases", "base-water",
 })
 
 DEFAULT_KEEP = 500          # rows retained; ~13 months of real actions in practice
