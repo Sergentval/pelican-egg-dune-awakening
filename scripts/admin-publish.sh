@@ -1492,7 +1492,12 @@ BEGIN
         INSERT INTO _fuel_report VALUES (
             dev.pid, dev.fuel_template, before_units, dev.total_cap - deficit,
             (dev.total_cap - deficit) - before_units,
-            CASE WHEN deficit > 0 THEN 'capped-by-slots' ELSE '' END);
+            -- 'capped', not 'capped-by-slots': the WHILE above also exits on
+            -- stacks_allowed=0, and although every gen_types row is calibrated
+            -- so max_stacks*stack_sz >= total_cap (slots are the only bottleneck
+            -- this tool can produce), an externally-anomalous inventory could
+            -- hit the stack bound — the label must not over-claim (review note).
+            CASE WHEN deficit > 0 THEN 'capped' ELSE '' END);
     END LOOP;
 END
 \$do\$;
