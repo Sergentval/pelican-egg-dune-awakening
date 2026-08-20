@@ -1054,42 +1054,6 @@ except Exception:
         exit 0
         ;;
 
-    char-delete)
-        # Delete a character THE SAFE WAY: a verified pre-delete backup first
-        # (a failure there — including "player must be offline" — aborts the
-        # whole delete rather than proceeding without the safety net), then
-        # dune.delete_account, then the same orphan cleanup as char-restore.
-        raw="${1:?usage: char-delete <fls_id|me|steam:<id>|name:<n>> [reason]}"
-        reason="${2:-admin delete}"
-        fls_id=$(resolve_player_id "$raw") || exit 1
-        if [ "$fls_id" = "*" ]; then
-            echo "[admin-publish] ERROR char-delete: needs a single player, not '*'" >&2
-            exit 2
-        fi
-        old_aid=$(dune_account_id "$fls_id")
-        if [ -z "$old_aid" ]; then
-            echo "[admin-publish] ERROR char-delete: no account for $fls_id" >&2
-            exit 2
-        fi
-        if ! "$0" char-backup "$fls_id" "pre-delete" "$reason"; then
-            echo "[admin-publish] ERROR char-delete: pre-delete backup failed — delete aborted" >&2
-            exit 1
-        fi
-        deleted=$({ dune_psql_q --set=fls="$fls_id" --set=rsn="$reason" -tA 2>/dev/null <<'CD_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT dune.delete_account(:'fls', :'rsn');
-CD_SQL
-)
-        if [ "$deleted" != "t" ]; then
-            echo "[admin-publish] ERROR char-delete: dune.delete_account returned '$deleted'" >&2
-            exit 1
-        fi
-        char_teardown_account "$old_aid"
-        char_state_sweep
-        echo "[admin-publish] OK char-delete fls=$fls_id account=$old_aid (backup taken first)"
-        echo "publish=db-delete char-delete fls=$fls_id account=$old_aid"
-        exit 0
-        ;;
-
     db-restore)
         # DESTRUCTIVE, CLI-ONLY. pg_restore --clean a backup into the dune DB.
         # Hard-gated: confirm token must be RESTORE, and NO UE5 game server may be
@@ -2951,6 +2915,14 @@ EOF2
         fi
         dune_require_tables dune.accounts dune.player_state || exit 3
         assert_player_offline "$fls_id" || exit $?
+        old_aid=$(dune_account_id "$fls_id")
+        # Safety net (dune-admin v0.46.0 semantics): a verified pre-delete
+        # character backup FIRST. A failure there aborts the whole delete
+        # rather than proceeding without the net the admin asked for.
+        if ! "$0" char-backup "$fls_id" "pre-delete" "$reason"; then
+            echo "[admin-publish] ERROR account-delete: pre-delete backup failed — delete aborted (see char-backup error above)" >&2
+            exit 1
+        fi
         # dune.delete_account keys on dune.accounts."user" (the hex FLS id) and
         # resolves the 3 player actors via dune.player_state. Confirmed live that
         # accounts."user" == encrypted_accounts."user" on this build.
@@ -2970,7 +2942,14 @@ SQL
         if [ "$result" != "t" ]; then
             echo "[admin-publish] WARN account-delete: proc returned '$result' (no matching player_state actors — nothing cascaded)" >&2
         fi
-        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason"
+        # delete_account is known to leave the player actor trio and the
+        # now link-dead player_state row behind (live-reproduced 2026-08-20);
+        # run the same teardown + sweep char-restore uses.
+        if [ -n "$old_aid" ]; then
+            char_teardown_account "$old_aid"
+        fi
+        char_state_sweep
+        echo "[admin-publish] OK account-delete fls=$fls_id found=$result reason=$reason (pre-delete backup taken)"
         echo "publish=db-write account-delete fls=$fls_id found=$result"
         exit 0
         ;;

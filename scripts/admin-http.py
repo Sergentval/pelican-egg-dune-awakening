@@ -2175,31 +2175,6 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, entry)
             return
 
-        # Delete a character SAFELY: verified pre-delete backup first (a
-        # backup failure aborts the delete), then dune.delete_account + the
-        # orphan cleanup. Offline-gated through the backup.
-        # POST /api/players/<id>/char-delete  body {"reason"?: str, "force"?: bool}
-        if path.startswith("/api/players/") and path.endswith("/char-delete"):
-            if not self._auth_ok():
-                self._write(401, {"error": "auth required"})
-                return
-            if not self._csrf_ok():
-                self._write(403, {"error": "csrf token missing or invalid"})
-                return
-            player = unquote(path[len("/api/players/"):-len("/char-delete")])
-            reason = body.get("reason") if isinstance(body, dict) else ""
-            if not player:
-                self._write(400, {"error": "player id required"})
-                return
-            if not bool(body.get("force")):
-                self._write(200, {"ok": False, "requiresConfirmation": True,
-                                  "message": "Deleting a character is destructive (a pre-delete "
-                                             "backup is taken first). Re-send with force:true."})
-                return
-            entry = run_publish(["char-delete", player, str(reason or "admin delete")], timeout=180)
-            self._write(200, entry)
-            return
-
         # Player WRITE: adjust Solaris balance. Offline-gated + reversible.
         # POST /api/players/<id>/give-currency  body {"amount": <int>}
         if path.startswith("/api/players/") and path.endswith("/give-currency"):
@@ -3071,7 +3046,9 @@ class Handler(BaseHTTPRequestHandler):
             if not player:
                 self._write(400, {"error": "player id required"})
                 return
-            entry = run_publish(["account-delete", player, confirm, reason], timeout=20)
+            # Takes a verified pre-delete character backup first (v0.46
+            # semantics) — the export of a big character needs headroom.
+            entry = run_publish(["account-delete", player, confirm, reason], timeout=120)
             self._write(200, entry)
             return
 

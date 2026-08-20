@@ -121,6 +121,15 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Character backup/restore (2026-08) ports, with thanks, the v0.46.0
+native-transfer flow (`cmd/dune-admin/db.go`: processCaptureCharacterBackup /
+processRestoreCharacterBackup / cleanupOrphanActorsForAccount, and
+`character_backups_store.go`), reimplemented as the `char-backup*` /
+`char-restore` subcommands + `scripts/admin_charbackup.py`. Our flow
+additionally tears the current character down BEFORE the import (their
+post-import cleanup collides on self-restore) and adds the same-account
+stale player_state sweep.
+
 Phase 1 (Database tab) lifts, with thanks:
 - the read-only SQL guard `is_read_only_sql()` in `scripts/admin-http.py`
   (from `cmd/dune-admin/handlers_database.go`), and
