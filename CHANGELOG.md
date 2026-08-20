@@ -23,6 +23,33 @@ here on the log is maintained with each merge.
   on branch `feat/106-deep-desert-pvp` (PR #109), in-game labels confirmed by
   the reporter, final soak in progress before merge. (#106)
 
+## 2026-08-20 — Base backup wipe-guard (C3.5)
+
+- **Stored base backups can now survive the weekly Deep Desert reset.** A
+  base backup is not a blob: the game keeps the actor rows in state
+  `'BaseBackup'`, and Funcom's season cleanup deletes every actor whose
+  state is not Travel/VehicleBackup/VehicleRecovery — `'BaseBackup'` is
+  missing from that list, so allowing the backup tool in the Deep Desert
+  fed stored backups to the wipe. The guard adds the one missing
+  exclusion to the live cleanup function: anchored (refuses a function
+  body it does not recognise), byte-preserving, idempotent, verified by
+  re-reading the definition after every write. `base-guard-status` /
+  `base-guard-apply` / `base-guard-revert`, plus a 🛡 card in the Bases
+  tab. Commit `9a42b8d`.
+- Optional **boot re-apply** (`data/admin/base-guard.json`, off by
+  default): the guarded function is Funcom-owned and a game update can
+  replace it, so the entrypoint re-patches right after `migrate-db` when
+  armed. Never blocks the boot.
+- The setting that makes this matter — **Base Backup Tool Allowed Maps**
+  (`m_BaseBackupToolMapRestriction`) — joins the settings catalogue (196
+  entries); add `DeepDesert` to it to let players use the backup tool
+  there.
+- Behaviour proven against Funcom's real cleanup function on a live
+  server: with the guard, a `BaseBackup` actor survives the wipe; without
+  it, it is deleted.
+- Ported from coastal-ms/DST-DuneServerTool v13.3.0 BaseBackupGuard
+  (Apache-2.0) — see ATTRIBUTION.md.
+
 ## 2026-08-20 — Base permission writes (C3.4)
 
 - Edit base permissions from the panel and CLI: set/add a player's rank
