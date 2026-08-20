@@ -9,12 +9,16 @@ import type { ConsoleEntry } from "./components";
 import { LogsTab } from "./LogsTab";
 import { HistoryTab } from "./tabs";
 import { Icon } from "./icons";
+import { PlayerEventsPanel } from "./PlayerEventsPanel";
+import { BattlepassPanel } from "./BattlepassPanel";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
-type Sub = "logs" | "audit";
+type Sub = "live" | "battlepass" | "logs" | "audit";
 
 const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
+  { id: "live", label: "Player events", icon: "target", hint: "Zone races + milestone events that watch the world and pay rewards" },
+  { id: "battlepass", label: "Battlepass", icon: "skills", hint: "188-tier progression pass over levels, quests and exploration" },
   { id: "logs", label: "Service logs", icon: "terminal", hint: "Live per-service log tail + restart a single service" },
   { id: "audit", label: "Command audit", icon: "history", hint: "Every admin action run from this panel (who ran what)" },
 ];
@@ -46,6 +50,8 @@ export function EventsTab({ setConsoleEntries, entries, onClearSession }: { setC
         <p className="px-4 py-2 text-xs text-slate-500 border-t border-slate-800">{active.hint}.</p>
       </div>
 
+      {sub === "live" && <PlayerEventsPanel setConsoleEntries={setConsoleEntries} />}
+      {sub === "battlepass" && <BattlepassPanel setConsoleEntries={setConsoleEntries} />}
       {sub === "logs" && <LogsTab setConsoleEntries={setConsoleEntries} />}
       {sub === "audit" && <HistoryTab sessionEntries={entries} onClearSession={onClearSession} />}
     </div>

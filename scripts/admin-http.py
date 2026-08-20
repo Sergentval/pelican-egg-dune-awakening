@@ -60,6 +60,8 @@ import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
 import admin_baseguard  # noqa: E402  # type: ignore[import-not-found]  (sys.path; base-guard boot-reapply config, no DB/network)
 import admin_worldreset  # noqa: E402  # type: ignore[import-not-found]  (sys.path; world-reset marker/state files, no DB/network)
+import admin_events  # noqa: E402  # type: ignore[import-not-found]  (sys.path; player-events store + engine; DB access via admin-publish)
+import admin_battlepass  # noqa: E402  # type: ignore[import-not-found]  (sys.path; battlepass store + engine; DB access via admin-publish)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
@@ -1436,6 +1438,58 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
+        # Player-events: definitions + claim summaries + engine switch.
+        if path == "/api/player-events":
+            self._write(200, {"ok": True,
+                              "enabled": admin_events.load_enabled(BASE_DIR),
+                              "events": admin_events.list_events(BASE_DIR)})
+            return
+
+        if path.startswith("/api/player-events/") and path.endswith("/claims"):
+            eid = path[len("/api/player-events/"):-len("/claims")]
+            if not eid.isdigit():
+                self._write(400, {"error": "event id must be numeric"})
+                return
+            self._write(200, {"ok": True,
+                              "claims": admin_events.list_claims(BASE_DIR, int(eid))})
+            return
+
+        # Battlepass: config + tiers + claim/ledger summaries.
+        if path == "/api/battlepass":
+            with admin_battlepass.connect(BASE_DIR) as conn:
+                claim_counts = {r["status"]: r["n"] for r in conn.execute(
+                    "SELECT status, COUNT(*) n FROM battlepass_claims"
+                    " GROUP BY status").fetchall()}
+                ledger_counts = {r["status"]: r["n"] for r in conn.execute(
+                    "SELECT status, COUNT(*) n FROM battlepass_grant_ledger"
+                    " GROUP BY status").fetchall()}
+                tier_count = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(intel),0) FROM battlepass_tiers"
+                    " WHERE enabled=1").fetchone()
+            self._write(200, {"ok": True,
+                              "config": admin_battlepass.load_config(BASE_DIR),
+                              "tiers_enabled": tier_count[0],
+                              "intel_total": tier_count[1],
+                              "claims": claim_counts,
+                              "ledger": ledger_counts})
+            return
+
+        if path == "/api/battlepass/tiers":
+            self._write(200, {"ok": True,
+                              "tiers": admin_battlepass.list_tiers(BASE_DIR)})
+            return
+
+        if path == "/api/battlepass/claims":
+            account = (query.get("account", [""])[0]
+                       if isinstance(query, dict) else "")
+            if account and not account.isdigit():
+                self._write(400, {"error": "account must be numeric"})
+                return
+            self._write(200, {"ok": True,
+                              "claims": admin_battlepass.list_claims(
+                                  BASE_DIR, int(account) if account else None)})
+            return
+
         # World-reset state: armed markers, last boot result, preserved
         # datadirs, live online count. The mutation routes only ARM durable
         # markers — the next boot executes (see apply-world-reset.sh).
@@ -2408,6 +2462,213 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["base-transfer-custodian", bid], timeout=20)
             self._write(200, entry)
+            return
+
+        # ---- player-events + battlepass mutations (auth + CSRF; audited
+        # ---- via admin_history.note — they mutate admin-side SQLite, and
+        # ---- game grants flow through the audited publish subcommands).
+        if path == "/api/player-events/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+                self._write(400, {"error": "body must be {\"enabled\": true|false}"})
+                return
+            if not admin_events.save_enabled(BASE_DIR, body["enabled"]):
+                self._write(500, {"ok": False, "error": "could not write events-engine.json"})
+                return
+            admin_history.note(BASE_DIR, "player-events-config",
+                               f"engine {'enabled' if body['enabled'] else 'disabled'}")
+            self._write(200, {"ok": True, "enabled": body["enabled"]})
+            return
+
+        if path == "/api/player-events":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            b = body if isinstance(body, dict) else {}
+            try:
+                eid = admin_events.create_event(
+                    BASE_DIR, str(b.get("name", "")), str(b.get("type", "")),
+                    str(b.get("config", "{}")), str(b.get("reward", "")),
+                    str(b.get("announce_template", "")),
+                    int(b.get("poll_seconds", 7)), int(b.get("jitter_seconds", 3)))
+            except (ValueError, TypeError) as exc:
+                self._write(400, {"error": str(exc)})
+                return
+            admin_history.note(BASE_DIR, "player-event-create",
+                               f"#{eid} {b.get('name', '')} ({b.get('type', '')})")
+            self._write(200, {"ok": True, "id": eid})
+            return
+
+        if path.startswith("/api/player-events/"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            rest = path[len("/api/player-events/"):]
+            parts = rest.split("/")
+            if not parts[0].isdigit():
+                self._write(400, {"error": "event id must be numeric"})
+                return
+            eid = int(parts[0])
+            action = parts[1] if len(parts) > 1 else "update"
+            b = body if isinstance(body, dict) else {}
+            try:
+                if action == "enable":
+                    if not isinstance(b.get("enabled"), bool):
+                        self._write(400, {"error": "body must be {\"enabled\": bool}"})
+                        return
+                    ok = admin_events.set_enabled(BASE_DIR, eid, b["enabled"])
+                    note = f"#{eid} {'enabled' if b['enabled'] else 'disabled'}"
+                elif action == "delete":
+                    ok = admin_events.delete_event(BASE_DIR, eid)
+                    note = f"#{eid} deleted"
+                elif action == "reset":
+                    n = admin_events.reset_claims(BASE_DIR, eid)
+                    ok, note = True, f"#{eid} claims reset ({n})"
+                elif action == "update":
+                    fields = {}
+                    for key, target in (("name", "name"), ("config", "config_json"),
+                                        ("reward", "reward_json"),
+                                        ("announce_template", "announce_template"),
+                                        ("poll_seconds", "poll_seconds"),
+                                        ("jitter_seconds", "jitter_seconds")):
+                        if key in b:
+                            fields[target] = b[key]
+                    ok = admin_events.update_event(BASE_DIR, eid, **fields)
+                    note = f"#{eid} updated"
+                else:
+                    self._write(404, {"error": f"unknown action {action}"})
+                    return
+            except (ValueError, TypeError) as exc:
+                self._write(400, {"error": str(exc)})
+                return
+            if not ok:
+                self._write(404, {"ok": False, "error": "no such event"})
+                return
+            admin_history.note(BASE_DIR, "player-event", note)
+            self._write(200, {"ok": True})
+            return
+
+        if path == "/api/battlepass/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            b = body if isinstance(body, dict) else {}
+            cfg = admin_battlepass.load_config(BASE_DIR)
+            for key in ("enabled", "award_past", "auto_grant"):
+                if key in b:
+                    if not isinstance(b[key], bool):
+                        self._write(400, {"error": f"{key} must be a boolean"})
+                        return
+                    cfg[key] = b[key]
+            if "poll_seconds" in b:
+                if not isinstance(b["poll_seconds"], int) or isinstance(b["poll_seconds"], bool):
+                    self._write(400, {"error": "poll_seconds must be an integer"})
+                    return
+                cfg["poll_seconds"] = b["poll_seconds"]
+            if not admin_battlepass.save_config(BASE_DIR, cfg):
+                self._write(500, {"ok": False, "error": "could not write battlepass.json"})
+                return
+            admin_history.note(BASE_DIR, "battlepass-config", json.dumps(cfg))
+            self._write(200, {"ok": True, "config": admin_battlepass.load_config(BASE_DIR)})
+            return
+
+        if path.startswith("/api/battlepass/tiers/"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            tid = path[len("/api/battlepass/tiers/"):]
+            if not tid.isdigit():
+                self._write(400, {"error": "tier id must be numeric"})
+                return
+            b = body if isinstance(body, dict) else {}
+            fields = {k: v for k, v in b.items()
+                      if k in ("label", "intel", "enabled", "reward_items",
+                               "category", "signal", "signal_key", "threshold")}
+            try:
+                ok = admin_battlepass.update_tier(BASE_DIR, int(tid), **fields)
+            except (ValueError, TypeError) as exc:
+                self._write(400, {"error": str(exc)})
+                return
+            if not ok:
+                self._write(404, {"ok": False, "error": "no such tier"})
+                return
+            admin_history.note(BASE_DIR, "battlepass-tier", f"#{tid} updated")
+            self._write(200, {"ok": True})
+            return
+
+        if path == "/api/battlepass/reseed":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            try:
+                n = admin_battlepass.reseed_tiers(BASE_DIR)
+            except (OSError, ValueError) as exc:
+                self._write(400, {"error": str(exc)})
+                return
+            admin_history.note(BASE_DIR, "battlepass-reseed",
+                               f"catalog reset to {n} default tiers (claims kept)")
+            self._write(200, {"ok": True, "tiers": n})
+            return
+
+        if path == "/api/battlepass/grant":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            b = body if isinstance(body, dict) else {}
+            account = b.get("account_id")
+            if not isinstance(account, int) or isinstance(account, bool) or account <= 0:
+                self._write(400, {"error": "account_id must be a positive integer"})
+                return
+            result = admin_battlepass.grant_account(
+                BASE_DIR, admin_events.make_publish(BASE_DIR), account)
+            admin_history.note(BASE_DIR, "battlepass-grant",
+                               f"account {account}: {json.dumps(result)}",
+                               ok=not result["failed"])
+            self._write(200, {"ok": not result["failed"], **result})
+            return
+
+        if path == "/api/battlepass/reset":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            b = body if isinstance(body, dict) else {}
+            mode = str(b.get("mode", ""))
+            account = b.get("account_id", 0)
+            if mode not in ("demote", "purge"):
+                self._write(400, {"error": "mode must be demote or purge"})
+                return
+            if not isinstance(account, int) or isinstance(account, bool) or account < 0:
+                self._write(400, {"error": "account_id must be a non-negative integer"})
+                return
+            result = admin_battlepass.reset_claims(BASE_DIR, mode, account)
+            admin_history.note(BASE_DIR, "battlepass-reset", json.dumps(result))
+            self._write(200, {"ok": True, **result})
             return
 
         # Arm a reversible world reset: verified backup + durable marker;

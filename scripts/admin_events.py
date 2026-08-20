@@ -161,6 +161,22 @@ def load_enabled(base: str) -> bool:
         return False
 
 
+
+
+def save_enabled(base: str, enabled: bool) -> bool:
+    path = os.path.join(base, CONFIG_PATH)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"enabled": bool(enabled)}, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 # ---- definition CRUD ------------------------------------------------------
 
 def validate_definition(name: str, ev_type: str, config_json: str,
