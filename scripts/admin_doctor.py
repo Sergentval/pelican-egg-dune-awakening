@@ -111,10 +111,23 @@ def analyze(facts: dict) -> "list[dict]":
         checks.append(_check("igw-addresses", "ok", "All live maps advertise the external IGW address"))
 
     ports_seen: "dict[int, list[str]]" = {}
+    portless: "list[str]" = []
     for r in alive:
         p = r.get("game_port")
-        if isinstance(p, int):
+        if isinstance(p, int) and not isinstance(p, bool):
             ports_seen.setdefault(p, []).append(str(r.get("map")))
+        else:
+            portless.append(str(r.get("map")))
+    # A row the port checks CANNOT examine must be surfaced, not silently
+    # exempted — an alive map without a numeric port is unreachable anyway.
+    if portless:
+        checks.append(_check("port-validity", "warn",
+                             f"{len(portless)} alive map(s) register no valid port: "
+                             f"{', '.join(sorted(portless))}",
+                             hint="The registration is incomplete — that map can't be checked "
+                                  "for collisions or listeners, and clients may not reach it."))
+    else:
+        checks.append(_check("port-validity", "ok", "Every alive map registers a numeric port"))
     collisions = {p: maps for p, maps in ports_seen.items() if len(maps) > 1}
     if collisions:
         detail = "; ".join(f"{p}: {', '.join(m)}" for p, m in sorted(collisions.items()))

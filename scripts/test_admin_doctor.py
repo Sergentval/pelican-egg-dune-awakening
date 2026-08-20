@@ -44,9 +44,9 @@ class TestIpChecks(unittest.TestCase):
     def test_all_green(self):
         checks = by_id(analyze(facts()))
         for cid in ("external-ip-set", "external-ip-public", "external-vs-real",
-                    "advertised-addresses", "igw-addresses", "port-collisions",
-                    "ports-bound", "ready-stuck", "farm-partition-coherence",
-                    "fls-heartbeat"):
+                    "advertised-addresses", "igw-addresses", "port-validity",
+                    "port-collisions", "ports-bound", "ready-stuck",
+                    "farm-partition-coherence", "fls-heartbeat"):
             self.assertEqual(checks[cid]["status"], "ok", cid)
 
     def test_missing_external_ip_is_error(self):
@@ -110,6 +110,14 @@ class TestFarmChecks(unittest.TestCase):
         f = facts(farm=[row(alive=False, ready=False)], udp_ports=[])
         checks = by_id(analyze(f))
         self.assertEqual(checks["ports-bound"]["status"], "ok")
+        self.assertEqual(checks["port-collisions"]["status"], "ok")
+
+    def test_alive_row_without_port_warns(self):
+        # A row the port checks cannot examine must be surfaced, not silently
+        # exempted from both collision and listener checks.
+        f = facts(farm=[row(game_port=None)])
+        checks = by_id(analyze(f))
+        self.assertEqual(checks["port-validity"]["status"], "warn")
         self.assertEqual(checks["port-collisions"]["status"], "ok")
 
     def test_ready_stuck_warns(self):

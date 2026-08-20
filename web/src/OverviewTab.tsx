@@ -41,11 +41,17 @@ function DoctorCard() {
     const res = await fetchDoctor().catch(() => null);
     setBusy(false);
     const b: unknown = res?.body;
-    if (res?.ok && typeof b === "object" && b !== null && "checks" in b) {
-      setChecks((b as { checks: DoctorCheck[] }).checks);
+    const body = typeof b === "object" && b !== null ? (b as {
+      ok?: boolean; checks?: DoctorCheck[]; error?: string; stderr?: string;
+    }) : null;
+    // The endpoint always answers HTTP 200 — the SEMANTIC ok and a non-empty
+    // check list are what distinguish a diagnosis from a backend failure. An
+    // empty list must never render as "all clear" on a diagnostic tool.
+    if (res?.ok && body?.ok && (body.checks?.length ?? 0) > 0) {
+      setChecks(body.checks ?? []);
     } else {
       setChecks(null);
-      setErr("diagnosis failed — see the console/logs");
+      setErr(body?.error || body?.stderr || "diagnosis failed — see the console/logs");
     }
   }
 
@@ -74,7 +80,7 @@ function DoctorCard() {
         {(checks ?? []).map((c) => (
           <div key={c.id} className="py-1 border-b border-slate-800/60 last:border-0 text-xs">
             <div className="flex items-center gap-2">
-              <span className={"px-1.5 rounded text-[10px] uppercase " + DOCTOR_PILL[c.status]}>{c.status}</span>
+              <span className={"px-1.5 rounded text-[10px] uppercase " + (DOCTOR_PILL[c.status] ?? DOCTOR_PILL.skip)}>{c.status}</span>
               <span className="text-slate-200">{c.summary}</span>
             </div>
             {c.detail && <p className="text-slate-400 mt-0.5 font-mono break-all">{c.detail}</p>}

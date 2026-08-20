@@ -1117,7 +1117,10 @@ except Exception:
         # No -H: the runtime image's ss build rejects it (empty output). The
         # header line carries no trailing digits, so the port grep skips it.
         udp=$({ ss -uln 2>/dev/null || true; } | awk '{print $4}' | grep -o '[0-9]*$' | sort -un | paste -sd, - || true)
-        hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2)
+        # Trailing || true: grep exits 1 on zero matches, and under pipefail
+        # a bare assignment would abort the whole doctor exactly when the
+        # heartbeat is missing — the very case it exists to diagnose.
+        hb=$({ tail -c 300000 "$BASE/logs/director.log" 2>/dev/null || true; } | grep -o '"reportTimestamp":[0-9]*' | tail -n1 | cut -d: -f2 || true)
         now=$(date -u +%s)
         python3 "$BASE/scripts/admin_doctor.py" analyze <<DOCTOR_FACTS
 {"external_ip": "$ext", "real_ip": "$real", "farm": ${farm:-[]},

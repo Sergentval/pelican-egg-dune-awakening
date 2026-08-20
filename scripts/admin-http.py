@@ -1412,6 +1412,8 @@ class Handler(BaseHTTPRequestHandler):
                               "summary": data.get("summary", {}),
                               "checks": data.get("checks", []),
                               "facts": data.get("facts", {}),
+                              "error": data.get("error", ""),
+                              "context": data.get("context", ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
