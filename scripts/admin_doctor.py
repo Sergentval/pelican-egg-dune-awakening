@@ -191,20 +191,19 @@ def _main(argv: "list[str]") -> int:
     if len(argv) > 1 and argv[1] == "analyze":
         raw = sys.stdin.read()
         try:
-            with open("/tmp/doctor-raw.json", "w", encoding="utf-8") as _f:
-                _f.write(raw)
-        except OSError:
-            pass
-        try:
             facts = json.loads(raw)
         except ValueError as exc:
             # Surface WHERE it broke — the facts line is machine-assembled,
-            # so a parse error means a gathering bug worth pinpointing fast.
+            # so a parse error means a gathering bug worth pinpointing fast
+            # (this is how the json_agg pretty-print bug was found).
             at = getattr(exc, "pos", 0) or 0
             ctx = raw[max(0, at - 80):at + 40].replace("\n", "⏎")
-            window = raw[max(0, at - 20):at + 20]
-            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}", "context": ctx,
-                              "bytes": [hex(b) for b in window.encode("utf-8", "replace")]}))
+            try:
+                with open("/tmp/doctor-facts-failed.json", "w", encoding="utf-8") as f:
+                    f.write(raw)
+            except OSError:
+                pass
+            print(json.dumps({"ok": False, "error": f"bad facts json: {exc}", "context": ctx}))
             return 1
         checks = analyze(facts if isinstance(facts, dict) else {})
         print(json.dumps({"ok": True, "summary": summarize(checks), "checks": checks,
