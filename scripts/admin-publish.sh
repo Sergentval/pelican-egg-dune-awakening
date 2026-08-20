@@ -1460,7 +1460,7 @@ BP_SQL
         # $bid/$pid/$rank/$cap are digits-only (validated above): safe to
         # inline into the DO body, where :'var' interpolation does not reach.
         perm_ok=true
-        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BPS_SQL 2>&1
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BPS_SQL 2>&1
 BEGIN;
 -- The shipped procedures reference their tables unqualified and carry no
 -- search_path of their own; they resolve today because we connect as the
@@ -1542,7 +1542,7 @@ BPS_SQL
             dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
             dune.base_backup_linked_actors || exit 3
         perm_ok=true
-        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BPR_SQL 2>&1
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BPR_SQL 2>&1
 BEGIN;
 SET LOCAL search_path TO dune, public;
 CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
@@ -1605,7 +1605,7 @@ BPR_SQL
             dune.encrypted_player_state dune.encrypted_accounts dune.base_backup_linked_actors || exit 3
         cap=$(permission_cap)
         perm_ok=true
-        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BTC_SQL 2>&1
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BTC_SQL 2>&1
 BEGIN;
 SET LOCAL search_path TO dune, public;
 CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
@@ -1861,7 +1861,7 @@ BF_SQL
         # $bid is digits-only (validated above): safe to inline into the DO
         # body, where psql :'var' interpolation does not reach ($$-quoted).
         refill_ok=true
-        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
 BEGIN;
 CREATE TEMP TABLE _fuel_report (
     placeable_id BIGINT, fuel TEXT, before_units INT, after_units INT,
