@@ -963,6 +963,25 @@ export const baseWaterRefill = (baseId: string) =>
   api<PublishResult & { error?: string }>(
     "POST", `/api/bases/${encodeURIComponent(baseId)}/water-refill`, { force: true });
 
+export interface BaseFuelRow {
+  placeable_id: string;
+  generator: string;
+  fuel: string;
+  units: string;
+  cap: string;
+  percent: string;
+  runtime_hours: string;
+}
+
+export const fetchBaseFuel = (baseId: string) =>
+  api<{ ok: boolean; fuel: BaseFuelRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/fuel`);
+
+/** Same fail-closed map-down contract as the water refill. */
+export const baseFuelRefill = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/fuel-refill`, { force: true });
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {
