@@ -4,12 +4,15 @@
 // rewrites base state from memory on flush, silently undoing DB writes (the
 // memory-flush rule). Ported from Red-Blink's bases feature (MIT).
 
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
 import {
+  baseFuelRefill,
   baseWaterRefill,
+  fetchBaseFuel,
   fetchBases,
   fetchBaseWater,
+  type BaseFuelRow,
   type BaseRow,
   type BaseWaterRow,
   type PublishResult,
@@ -25,6 +28,11 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   const [selected, setSelected] = useState<BaseRow | null>(null);
   const [water, setWater] = useState<BaseWaterRow[]>([]);
   const [waterLoading, setWaterLoading] = useState(false);
+  const [fuel, setFuel] = useState<BaseFuelRow[]>([]);
+  const [fuelLoading, setFuelLoading] = useState(false);
+  // Selection token: a slow response for base A must never render under
+  // base B's header after a quick re-selection (review-caught display race).
+  const selectedIdRef = useRef<string>("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
 
@@ -43,14 +51,32 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
 
   async function loadWater(base: BaseRow) {
     setSelected(base);
+    selectedIdRef.current = base.base_id;
+    setWater([]);
+    setFuel([]);
     setWaterLoading(true);
     const res = await fetchBaseWater(base.base_id).catch(() => null);
+    if (selectedIdRef.current !== base.base_id) return; // superseded selection
     setWaterLoading(false);
     const b: unknown = res?.body;
     if (res?.ok && typeof b === "object" && b !== null && "water" in b) {
       setWater((b as { water: BaseWaterRow[] }).water ?? []);
     } else {
       setWater([]);
+    }
+    void loadFuel(base);
+  }
+
+  async function loadFuel(base: BaseRow) {
+    setFuelLoading(true);
+    const res = await fetchBaseFuel(base.base_id).catch(() => null);
+    if (selectedIdRef.current !== base.base_id) return; // superseded selection
+    setFuelLoading(false);
+    const b: unknown = res?.body;
+    if (res?.ok && typeof b === "object" && b !== null && "fuel" in b) {
+      setFuel((b as { fuel: BaseFuelRow[] }).fuel ?? []);
+    } else {
+      setFuel([]);
     }
   }
 
@@ -153,7 +179,7 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
             {!waterLoading && water.length === 0 && (
               <p className="text-sm text-slate-500 italic">No water devices at this base.</p>
             )}
-            {water.length > 0 && (
+            {!waterLoading && water.length > 0 && (
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-slate-500">
@@ -176,6 +202,72 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                       <td className="pr-3 font-mono">
                         {Number(w.blood_capacity) > 0 ? `${w.blood_stored}/${w.blood_capacity}` : "—"}
                       </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div className="card">
+          <header className="card-header">
+            <div>
+              <h2 className="card-title">⚡ Generators — base #{selected.base_id}</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Fuel lives as item stacks inside each device. Refill tops every device to its cap
+                (Oil ×499, SpicedFuelCell ×499, lubricants ×499) and requires the base's map to be
+                fully stopped.
+              </p>
+            </div>
+            <button className="btn-primary text-xs" disabled={busy || fuelLoading || fuel.length === 0}
+              onClick={() => setConfirm({
+                title: "Refill generators?",
+                message: `Top every generator/turbine of base #${selected.base_id} up to its fuel cap. The server refuses unless the base's map has zero live instances.`,
+                confirmLabel: "Refill fuel",
+                onConfirm: async () => {
+                  setBusy(true);
+                  const res = await baseFuelRefill(selected.base_id).catch(() => null);
+                  setBusy(false);
+                  const rb: unknown = res?.body;
+                  const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+                    && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+                  pushToConsole(setConsoleEntries, `base-fuel-refill ${selected.base_id}`,
+                    typeof rb === "string" ? rb : (rb as PublishResult), ok);
+                  void loadFuel(selected);
+                },
+              })}>
+              {busy ? "…" : "Refill fuel…"}
+            </button>
+          </header>
+          <div className="card-body">
+            {fuelLoading && <p className="text-xs text-slate-500">loading…</p>}
+            {!fuelLoading && fuel.length === 0 && (
+              <p className="text-sm text-slate-500 italic">No generators or wind turbines at this base.</p>
+            )}
+            {!fuelLoading && fuel.length > 0 && (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="pr-3 py-1">Device</th>
+                    <th className="pr-3">Type</th>
+                    <th className="pr-3">Fuel</th>
+                    <th className="pr-3">Units</th>
+                    <th className="pr-3">Fill</th>
+                    <th className="pr-3">Runtime</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fuel.map((f) => (
+                    <tr key={f.placeable_id} className="border-t border-slate-800">
+                      <td className="pr-3 py-1 font-mono">#{f.placeable_id}</td>
+                      <td className="pr-3">{f.generator}</td>
+                      <td className="pr-3">{f.fuel}</td>
+                      <td className="pr-3 font-mono">{f.units}/{f.cap}</td>
+                      <td className="pr-3">{f.percent}%</td>
+                      <td className="pr-3">{f.runtime_hours} h</td>
                     </tr>
                   ))}
                 </tbody>

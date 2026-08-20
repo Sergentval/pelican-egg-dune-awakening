@@ -641,7 +641,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "vehicle-list", "db-tables", "db-describe", "db-sample", "db-search", "db-sql",
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
-            "char-backup", "char-backup-list", "doctor", "bases", "base-water",
+            "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
         )
     )
     entry = {
@@ -1446,6 +1446,22 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
+        # Per-device generator fuel of one base.
+        if path.startswith("/api/bases/") and path.endswith("/fuel"):
+            bid = path[len("/api/bases/"):-len("/fuel")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-fuel", bid], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "fuel": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
         # Per-type water storage of one base.
         if path.startswith("/api/bases/") and path.endswith("/water"):
             bid = path[len("/api/bases/"):-len("/water")]
@@ -2203,6 +2219,31 @@ class Handler(BaseHTTPRequestHandler):
                                              "base's map to be fully stopped. Re-send with force:true."})
                 return
             entry = run_publish(["base-water-refill", bid], timeout=30)
+            self._write(200, entry)
+            return
+
+        # Top one base's generators/turbines up to their fuel caps. The
+        # subcommand FAILS CLOSED unless the base's map is fully stopped.
+        # POST /api/bases/<id>/fuel-refill  body {"force"?: bool}
+        if path.startswith("/api/bases/") and path.endswith("/fuel-refill"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/fuel-refill")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            forced = isinstance(body, dict) and bool(body.get("force"))
+            if not forced:
+                self._write(200, {"ok": False, "requiresConfirmation": True,
+                                  "message": "Refilling grants fuel items into player property and "
+                                             "requires the base's map to be fully stopped. "
+                                             "Re-send with force:true."})
+                return
+            entry = run_publish(["base-fuel-refill", bid], timeout=30)
             self._write(200, entry)
             return
 

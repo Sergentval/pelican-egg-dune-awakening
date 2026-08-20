@@ -381,6 +381,45 @@ WHERE ps.account_id = :'aid'::bigint
 CT_SQL
 }
 
+# Map-down gate shared by every base write (water/fuel refill). Resolves the
+# base's map into $BASE_GATE_MAP and returns 0 only when that map provably has
+# ZERO live instances. FAILS CLOSED twice: any live instance refuses (a
+# running map rewrites base state from memory on flush — the write would
+# silently vanish), and a map name farm_state has never seen refuses too (it
+# cannot be proven down). $1 = numeric base id, $2 = label for messages.
+base_map_down_gate() {
+    local bid="$1" label="$2" gate alive known
+    BASE_GATE_MAP=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT a.map
+FROM dune.buildings b
+JOIN dune.building_instances bi ON bi.building_id = b.id
+JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+JOIN dune.actors a ON a.id = afe.actor_id
+WHERE b.id = :'bid'::bigint LIMIT 1;
+BG_SQL
+)
+    if [ -z "$BASE_GATE_MAP" ]; then
+        echo "[admin-publish] ERROR $label: no base with id $bid" >&2
+        return 2
+    fi
+    gate=$({ dune_psql_q --set=m="$BASE_GATE_MAP" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
+BG_SQL
+)
+    alive="${gate%%/*}"
+    known="${gate##*/}"
+    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+        echo "[admin-publish] ERROR $label: map '$BASE_GATE_MAP' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+        return 1
+    fi
+    if [ "${alive:-1}" != "0" ]; then
+        echo "[admin-publish] ERROR $label: map $BASE_GATE_MAP has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+        return 1
+    fi
+    return 0
+}
+
 # Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
 # subcommands talk to the GAME broker — chat.intercept lives there). Same
 # env recipe as the ServerCommand publish path at the bottom of this file.
@@ -1264,6 +1303,229 @@ BASES_SQL
         exit 0
         ;;
 
+    base-fuel)
+        # Per-DEVICE generator fuel for ONE base: fuel-powered (Oil, 1h/unit),
+        # spice-powered (SpicedFuelCell, 1.5h), omni/directional wind turbines
+        # (lubricants 1h/1.5h). Fuel lives as ITEM STACKS in the generator's
+        # own inventory (inventories.actor_id = placeable id); only the type's
+        # accepted template counts — an incompatible lubricant in a turbine
+        # contributes nothing. Per-device (not per-type) on purpose: one
+        # starved device among full siblings is exactly what a refill decision
+        # turns on. Burn seconds are upstream's measured values WITHOUT event
+        # multipliers (Funcom occasionally runs 2x uptime events; we report
+        # base rates). Read-only. Ported from Red-Blink baseGeneratorFuelLevels
+        # (MIT).
+        bid="${1:?usage: base-fuel <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-fuel: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BF_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+), gen_types(gen_name, building_type, fuel_template, burn_secs, stack_sz, max_stacks, total_cap) AS (
+    VALUES ('Fuel-Powered Generator'::text, 'generator_placeable'::text, 'Oil'::text, 3600, 499, 1, 499),
+           ('Spice-Powered Generator', 'spicegenerator_placeable', 'SpicedFuelCell', 5400, 499, 1, 499),
+           ('Omnidirectional Wind Turbine', 'windturbineomnidirectional_placeable', 'WindTurbineLubricant1', 3600, 100, 5, 499),
+           ('Directional Wind Turbine', 'windturbinedirectional_placeable', 'WindTurbineLubricant2', 5400, 100, 5, 499)
+), devices AS (
+    SELECT p.id AS placeable_id, gt.gen_name, gt.fuel_template, gt.burn_secs, gt.total_cap,
+           inv.id AS inventory_id
+    FROM base_entities be
+    JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+    JOIN gen_types gt ON gt.building_type = lower(p.building_type)
+    LEFT JOIN LATERAL (
+        SELECT id FROM dune.inventories WHERE actor_id = p.id ORDER BY id LIMIT 1
+    ) inv ON TRUE
+)
+SELECT d.placeable_id,
+       d.gen_name AS generator,
+       d.fuel_template AS fuel,
+       COALESCE(stock.units, 0) AS units,
+       d.total_cap AS cap,
+       ROUND(COALESCE(stock.units, 0) * 100.0 / d.total_cap, 1) AS percent,
+       ROUND(COALESCE(stock.units, 0) * d.burn_secs / 3600.0, 1) AS runtime_hours
+FROM devices d
+LEFT JOIN LATERAL (
+    SELECT SUM(i.stack_size)::int AS units
+    FROM dune.items i
+    WHERE i.inventory_id = d.inventory_id
+      AND lower(i.template_id) = lower(d.fuel_template)
+) stock ON TRUE
+ORDER BY d.placeable_id;
+BF_SQL
+        exit 0
+        ;;
+
+    base-fuel-refill)
+        # Top every generator/turbine of ONE base up to its cap, the way the
+        # game stores fuel: fill partial stacks first, then insert new item
+        # stacks (house 6-column recipe, the one give-item's offline path is
+        # live-proven on), bounded by the per-type stack size and max stacks
+        # and by the inventory's max_item_count. One transaction; the
+        # inventory row is locked BEFORE its fuel rows so a device with zero
+        # rows still gives a concurrent refill something to queue behind
+        # (upstream's technique). Same fail-closed map-down gate as water.
+        # Ported from Red-Blink refillBaseGenerators (MIT), with our explicit
+        # gate in place of their pending-refill queue.
+        bid="${1:?usage: base-fuel-refill <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-fuel-refill: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items dune.farm_state || exit 3
+        base_map_down_gate "$bid" "base-fuel-refill" || exit $?
+        # $bid is digits-only (validated above): safe to inline into the DO
+        # body, where psql :'var' interpolation does not reach ($$-quoted).
+        refill_ok=true
+        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
+BEGIN;
+CREATE TEMP TABLE _fuel_report (
+    placeable_id BIGINT, fuel TEXT, before_units INT, after_units INT,
+    added INT, note TEXT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    dev RECORD;
+    itemrow RECORD;
+    before_units INT;
+    stacks_now INT;
+    deficit INT;
+    room INT;
+    addn INT;
+    slots_used INT;
+    free_slots INT;
+    stacks_allowed INT;
+    next_pos BIGINT;
+BEGIN
+    FOR dev IN
+        WITH base_actor AS (
+            SELECT DISTINCT afe.actor_id
+            FROM dune.buildings b
+            JOIN dune.building_instances bi ON bi.building_id = b.id
+            JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+            WHERE b.id = ${bid}::bigint
+        ), base_entities AS (
+            SELECT cafe.entity_id
+            FROM base_actor ba
+            JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+        ), gen_types(building_type, fuel_template, stack_sz, max_stacks, total_cap) AS (
+            VALUES ('generator_placeable'::text, 'Oil'::text, 499, 1, 499),
+                   ('spicegenerator_placeable', 'SpicedFuelCell', 499, 1, 499),
+                   ('windturbineomnidirectional_placeable', 'WindTurbineLubricant1', 100, 5, 499),
+                   ('windturbinedirectional_placeable', 'WindTurbineLubricant2', 100, 5, 499)
+        )
+        SELECT p.id AS pid, gt.fuel_template, gt.stack_sz, gt.max_stacks, gt.total_cap,
+               inv.id AS inv_id, COALESCE(inv.max_item_count, 0) AS max_items
+        FROM base_entities be
+        JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+        JOIN gen_types gt ON gt.building_type = lower(p.building_type)
+        LEFT JOIN LATERAL (
+            SELECT id, max_item_count FROM dune.inventories
+            WHERE actor_id = p.id ORDER BY id LIMIT 1
+        ) inv ON TRUE
+        ORDER BY p.id
+    LOOP
+        IF dev.inv_id IS NULL THEN
+            INSERT INTO _fuel_report VALUES (dev.pid, dev.fuel_template, 0, 0, 0, 'no-inventory');
+            CONTINUE;
+        END IF;
+        -- Lock the inventory row BEFORE its fuel rows: FOR UPDATE only locks
+        -- rows it selects, so a fully drained device would otherwise leave a
+        -- concurrent refill nothing to serialize against.
+        PERFORM 1 FROM dune.inventories WHERE id = dev.inv_id FOR UPDATE;
+        before_units := 0;
+        stacks_now := 0;
+        deficit := dev.total_cap;
+        FOR itemrow IN
+            SELECT id, stack_size FROM dune.items
+            WHERE inventory_id = dev.inv_id
+              AND lower(template_id) = lower(dev.fuel_template)
+            ORDER BY position_index
+            FOR UPDATE
+        LOOP
+            before_units := before_units + COALESCE(itemrow.stack_size, 0)::int;
+            stacks_now := stacks_now + 1;
+        END LOOP;
+        deficit := GREATEST(0, dev.total_cap - before_units);
+        IF deficit = 0 THEN
+            INSERT INTO _fuel_report VALUES (dev.pid, dev.fuel_template, before_units, before_units, 0, 'full');
+            CONTINUE;
+        END IF;
+        -- Fill partial stacks first (rows already locked above).
+        FOR itemrow IN
+            SELECT id, stack_size FROM dune.items
+            WHERE inventory_id = dev.inv_id
+              AND lower(template_id) = lower(dev.fuel_template)
+            ORDER BY position_index
+        LOOP
+            EXIT WHEN deficit = 0;
+            room := dev.stack_sz - COALESCE(itemrow.stack_size, 0)::int;
+            CONTINUE WHEN room <= 0;
+            addn := LEAST(room, deficit);
+            UPDATE dune.items SET stack_size = stack_size + addn WHERE id = itemrow.id;
+            deficit := deficit - addn;
+        END LOOP;
+        -- New stacks, bounded by per-type max stacks AND the inventory's slots.
+        SELECT COUNT(*)::int INTO slots_used FROM dune.items WHERE inventory_id = dev.inv_id;
+        IF dev.max_items > 0 THEN
+            free_slots := GREATEST(0, dev.max_items - slots_used);
+        ELSE
+            free_slots := 2147483647;
+        END IF;
+        stacks_allowed := GREATEST(0, dev.max_stacks - stacks_now);
+        SELECT COALESCE(MAX(position_index), -1)::bigint + 1 INTO next_pos
+            FROM dune.items WHERE inventory_id = dev.inv_id;
+        WHILE deficit > 0 AND stacks_allowed > 0 AND free_slots > 0 LOOP
+            INSERT INTO dune.items (inventory_id, stack_size, position_index, template_id, quality_level, stats)
+            VALUES (dev.inv_id, LEAST(dev.stack_sz, deficit), next_pos, dev.fuel_template, 0, '{}'::jsonb);
+            deficit := deficit - LEAST(dev.stack_sz, deficit);
+            next_pos := next_pos + 1;
+            stacks_allowed := stacks_allowed - 1;
+            free_slots := free_slots - 1;
+        END LOOP;
+        INSERT INTO _fuel_report VALUES (
+            dev.pid, dev.fuel_template, before_units, dev.total_cap - deficit,
+            (dev.total_cap - deficit) - before_units,
+            -- 'capped', not 'capped-by-slots': the WHILE above also exits on
+            -- stacks_allowed=0, and although every gen_types row is calibrated
+            -- so max_stacks*stack_sz >= total_cap (slots are the only bottleneck
+            -- this tool can produce), an externally-anomalous inventory could
+            -- hit the stack bound — the label must not over-claim (review note).
+            CASE WHEN deficit > 0 THEN 'capped' ELSE '' END);
+    END LOOP;
+END
+\$do\$;
+SELECT placeable_id || '|' || fuel || '|' || before_units || '|' || after_units || '|' || added || '|' || note
+FROM _fuel_report ORDER BY placeable_id;
+COMMIT;
+BFR_SQL
+) || refill_ok=false
+        if [ "$refill_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-fuel-refill: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        rows=$(printf '%s\n' "$report" | grep -c '|' || true)
+        if [ "${rows:-0}" = "0" ]; then
+            echo "[admin-publish] ERROR base-fuel-refill: no generators or wind turbines at base $bid" >&2
+            exit 2
+        fi
+        total=0
+        while IFS='|' read -r _pid _fuel _before _after added _note; do
+            case "$added" in *[!0-9-]*|"") continue;; esac
+            total=$((total + added))
+        done <<< "$(printf '%s\n' "$report" | grep '|')"
+        echo "[admin-publish] OK base-fuel-refill base=$bid map=$BASE_GATE_MAP devices=$rows units_added=$total"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/device=/'
+        echo "publish=db-write base-fuel-refill base=$bid devices=$rows units_added=$total"
+        exit 0
+        ;;
+
     base-water)
         # Per-type water storage of ONE base: cisterns (5k/25k/100k),
         # windtraps (500 — the large windtrap stores the same 500, confirmed
@@ -1342,39 +1604,8 @@ BW_SQL
         # By-id paths deliberately skip the picked-up-base exclusion the list
         # applies: an operator addressing a base by number gets a straight
         # answer; the exclusion exists to keep NOISE out of the list.
-        bmap=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT a.map
-FROM dune.buildings b
-JOIN dune.building_instances bi ON bi.building_id = b.id
-JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
-JOIN dune.actors a ON a.id = afe.actor_id
-WHERE b.id = :'bid'::bigint LIMIT 1;
-BWR_SQL
-)
-        if [ -z "$bmap" ]; then
-            echo "[admin-publish] ERROR base-water-refill: no base with id $bid" >&2
-            exit 2
-        fi
-        # FAIL CLOSED, twice: (1) any live instance of the base's map refuses
-        # the write — a running map rewrites base state from memory on flush;
-        # (2) a map name farm_state has never seen refuses too — if actors.map
-        # and farm_state.map ever use different namespaces on a build, a naive
-        # "0 alive rows" would wrongly read as "map is down".
-        gate=$({ dune_psql_q --set=m="$bmap" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
-FROM dune.farm_state WHERE map = :'m';
-BWR_SQL
-)
-        alive="${gate%%/*}"
-        known="${gate##*/}"
-        if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
-            echo "[admin-publish] ERROR base-water-refill: map '$bmap' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
-            exit 1
-        fi
-        if [ "${alive:-1}" != "0" ]; then
-            echo "[admin-publish] ERROR base-water-refill: map $bmap has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
-            exit 1
-        fi
+        base_map_down_gate "$bid" "base-water-refill" || exit $?
+        bmap="$BASE_GATE_MAP"
         updated=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BWR_SQL' || true; } | tail -n1 | tr -d '\r\n'
 WITH base_actor AS (
     SELECT DISTINCT afe.actor_id

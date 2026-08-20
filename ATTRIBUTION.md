@@ -121,6 +121,13 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Generator fuel (2026-08, C3.2) ports, with thanks, Red-Blink's
+baseGenerators / baseGeneratorFuelLevels / refillBaseGenerators (MIT): the
+generator allowlist + accepted-fuel table with measured burn rates, the
+per-device (not per-type) level model, and the refill's locking + top-up +
+bounded-insert discipline — reimplemented as one plpgsql transaction behind
+our shared fail-closed map-down gate instead of their pending-refill queue.
+
 Player chat commands (2026-08) port, with thanks,
 coastal-ms/DST-DuneServerTool v13.4's ChatCommands mechanism (Apache-2.0):
 the chat.intercept copy-queue discovery (bounded declare + catch-all bind +
