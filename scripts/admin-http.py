@@ -1465,7 +1465,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             rows = _csv_rows(entry.get("stdout") or "") if entry.get("ok") else []
             view = admin_wickmaps.deepdesert_view(BASE_DIR, rows)
-            self._write(200, {"ok": True, "available": True, **view})
+            # Coriolis seed control: the effective forced-seed override from
+            # UserOverrides.ini (default -1 = weekly rotation), so the picker
+            # can show what's pinned. read_setting_value returns None when the
+            # key is unset, i.e. the schema default (-1) applies.
+            forced_seed = -1
+            forced_explicit = False
+            fs_entry = next((s for s in load_settings_schema()
+                             if s.get("id") == "coriolissubsystem_m_forcedcoriolisworldseed"), None)
+            if fs_entry is not None:
+                raw = read_setting_value(fs_entry)
+                if raw is None:
+                    default = fs_entry.get("default")
+                    if isinstance(default, str) and default.lstrip("-").isdigit():
+                        forced_seed = int(default)
+                elif str(raw).strip().lstrip("-").isdigit():
+                    forced_seed = int(str(raw).strip())
+                    forced_explicit = True
+            self._write(200, {"ok": True, "available": True, **view,
+                              "forcedSeed": forced_seed,
+                              "forcedSeedExplicit": forced_explicit,
+                              "summaries": admin_wickmaps.layouts_summary(BASE_DIR)})
             return
 
         # Player-events: definitions + claim summaries + engine switch.

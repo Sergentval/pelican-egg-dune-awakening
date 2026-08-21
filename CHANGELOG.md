@@ -16,6 +16,22 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Coriolis seed control
+
+- The Deep Desert side panel gained a **Coriolis seed control**. It reads the
+  effective `m_ForcedCoriolisWorldSeed` override and lets you pin one of the
+  12 fixed layouts (or restore automatic weekly rotation) from a picker that
+  previews each seed's POI composition — count, large-spice sectors and
+  confidence — drawn from the same Wick Maps catalogue. The setting was
+  already writable in the Settings tab as a bare integer; this turns it into
+  an informed choice tied to the map. Applying writes through the validated
+  settings path (no new endpoint) and **takes effect at the next Deep Desert
+  regeneration** (cycle end / DB wipe), not on the running map; picking is a
+  two-step (select → Apply) to prevent an accidental repin. Backend adds
+  `admin_wickmaps.layouts_summary` (unit-tested) and enriches
+  `GET /api/map/deepdesert-layout` with `forcedSeed`, `forcedSeedExplicit`
+  and `summaries`.
+
 ## 2026-08-21 — Deep Desert sector map (Wick Maps)
 
 - The Live Map's Deep Desert now draws a proper **9x9 sector grid** (A-I ×

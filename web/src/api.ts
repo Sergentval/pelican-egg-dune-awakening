@@ -1135,17 +1135,39 @@ export interface WickLayout {
   pois: WickPoi[];
 }
 
+// Compact per-seed preview for the Coriolis seed picker (backend
+// admin_wickmaps.layouts_summary — no full POI payload).
+export interface WickSummary {
+  seed: number;
+  confidence?: string | null;
+  reliability?: string | null;
+  poiCount: number;
+  spiceSectors: number;
+  legend: WickLegendEntry[];
+}
+
 export interface DeepDesertLayout {
   ok: boolean;
   available: boolean;
   reason?: string;
-  seed: number | null;
+  seed: number | null;             // live seed the running DD partition reports
   layout_available: boolean;
   layout: WickLayout | null;
+  forcedSeed?: number;             // effective UserOverrides.ini override (-1 = auto rotation)
+  forcedSeedExplicit?: boolean;    // true when the INI key is set (vs schema default)
+  summaries?: WickSummary[];       // one per catalogued seed, for the picker
 }
 
 export const fetchDeepDesertLayout = () =>
   api<DeepDesertLayout>("GET", "/api/map/deepdesert-layout");
+
+// The Forced Coriolis seed pins one of the 12 Deep Desert layouts (0-11);
+// -1 restores weekly rotation. It's a plain server setting, so we write it
+// through the validated settings path (no dedicated endpoint). Takes effect
+// at the next Deep Desert regeneration (cycle end / DB wipe), not live.
+export const FORCED_CORIOLIS_SEED_ID = "coriolissubsystem_m_forcedcoriolisworldseed";
+export const setForcedCoriolisSeed = (seed: number) =>
+  saveSettings({ [FORCED_CORIOLIS_SEED_ID]: String(seed) });
 
 // ---- Player events + battlepass (dune-admin port) ------------------------
 

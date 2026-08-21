@@ -771,14 +771,22 @@ and shows that seed's pre-collected POIs (wrecks, caves, spice fields,
 testing stations, titanium, stravidium, taxi). No terrain image is used —
 the grid is drawn, so nothing goes stale.
 
-- If no Coriolis seed is forced, the game picks a fresh layout each cycle and
-  the panel says so (no POIs shown). Force a seed (Game Config → Forced
-  Coriolis World Seed) to pin one and get its POIs.
+- **Coriolis seed control** (in the Deep Desert side panel): the "Forced
+  seed" row shows the effective `m_ForcedCoriolisWorldSeed` override
+  (`-1` = automatic weekly rotation). "Change forced seed" opens a picker of
+  the 12 layouts + Automatic; each shows that seed's POI count, large-spice
+  sectors and confidence so the choice is informed. Applying writes the
+  setting through the validated settings path (same as the Settings tab, no
+  separate endpoint). **The change takes effect at the next Deep Desert
+  regeneration** (cycle end / DB wipe), not on the running map — the picker
+  is a two-step (select → Apply) so a stray click can't repin the world.
 - POI data covers all 12 seeds, ported from DST (Apache-2.0); it's compiled
   from community sources and may drift as the game updates.
 - The sector grid bounds are being calibrated against real player positions;
   live player dots share the grid's coordinate space.
-- HTTP: `GET /api/map/deepdesert-layout` → `{seed, layout}`.
+- HTTP: `GET /api/map/deepdesert-layout` → `{seed, layout, forcedSeed,
+  forcedSeedExplicit, summaries}`. Writing the forced seed reuses
+  `POST /api/settings` with `coriolissubsystem_m_forcedcoriolisworldseed`.
 
 ## Player events + battlepass
 

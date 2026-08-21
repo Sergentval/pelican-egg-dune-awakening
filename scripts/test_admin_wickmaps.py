@@ -112,5 +112,54 @@ class RealCatalogTests(unittest.TestCase):
                 self.assertTrue(p["type"])
 
 
+class SummaryTests(unittest.TestCase):
+    def setUp(self):
+        self.base = tempfile.mkdtemp(prefix="wm-sum-")
+        os.makedirs(os.path.join(self.base, "data", "admin"))
+        import json
+        doc = {"seeds": {
+            "0": {"seed": 0, "confidence": "CONFIRMED", "reliability": "high",
+                  "largeSpiceSectors": ["F1", "H5"],
+                  "legend": [{"type": "wreck", "label": "Wreck", "count": 14}],
+                  "pois": [{"sector": "I5", "subx": 3, "suby": 3, "type": "wreck"}]},
+            # deliberately unordered + a seed with no legend/spice
+            "2": {"seed": 2, "pois": []},
+        }}
+        with open(os.path.join(self.base, wm.CATALOG_PATH), "w") as f:
+            json.dump(doc, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_sorted_and_shaped(self):
+        rows = wm.layouts_summary(self.base)
+        self.assertEqual([r["seed"] for r in rows], [0, 2])
+        s0 = rows[0]
+        self.assertEqual(s0["poiCount"], 1)
+        self.assertEqual(s0["spiceSectors"], 2)
+        self.assertEqual(s0["confidence"], "CONFIRMED")
+        self.assertEqual(s0["legend"], [{"type": "wreck", "label": "Wreck", "count": 14}])
+
+    def test_seed_without_legend_or_spice(self):
+        rows = wm.layouts_summary(self.base)
+        s2 = next(r for r in rows if r["seed"] == 2)
+        self.assertEqual(s2["poiCount"], 0)
+        self.assertEqual(s2["spiceSectors"], 0)
+        self.assertEqual(s2["legend"], [])
+        self.assertIsNone(s2["confidence"])
+
+    def test_missing_catalog_is_empty(self):
+        os.remove(os.path.join(self.base, wm.CATALOG_PATH))
+        self.assertEqual(wm.layouts_summary(self.base), [])
+
+    def test_shipped_catalog_has_all_12(self):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        rows = wm.layouts_summary(repo)
+        self.assertEqual([r["seed"] for r in rows], list(range(12)))
+        for r in rows:
+            self.assertGreaterEqual(r["poiCount"], 0)
+            self.assertIsInstance(r["legend"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

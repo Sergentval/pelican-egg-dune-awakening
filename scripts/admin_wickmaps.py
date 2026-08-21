@@ -63,6 +63,45 @@ def load_layout(base: str, seed: int) -> dict | None:
     return seeds.get(str(seed))
 
 
+def layouts_summary(base: str) -> list[dict]:
+    """Compact per-seed preview for the Coriolis seed picker: one entry per
+    catalogued seed with its POI total, large-spice sector count, confidence
+    and legend (type/label/count). Lets the admin see what each of the 12
+    fixed layouts contains BEFORE forcing it — no need to ship all 579 POIs to
+    the client. Sorted by seed; always well-formed (empty on missing/broken
+    catalog)."""
+    try:
+        with open(os.path.join(base, CATALOG_PATH), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return []
+    seeds = doc.get("seeds")
+    if not isinstance(seeds, dict):
+        return []
+    out: list[dict] = []
+    for key in sorted(seeds, key=lambda k: int(k) if str(k).lstrip("-").isdigit() else 0):
+        if not str(key).lstrip("-").isdigit():
+            continue
+        layout = seeds.get(key)
+        if not isinstance(layout, dict):
+            continue
+        legend = layout.get("legend")
+        pois = layout.get("pois")
+        spice = layout.get("largeSpiceSectors")
+        out.append({
+            "seed": int(key),
+            "confidence": layout.get("confidence"),
+            "reliability": layout.get("reliability"),
+            "poiCount": len(pois) if isinstance(pois, list) else 0,
+            "spiceSectors": len(spice) if isinstance(spice, list) else 0,
+            "legend": [
+                {"type": e.get("type"), "label": e.get("label"), "count": e.get("count")}
+                for e in legend if isinstance(e, dict)
+            ] if isinstance(legend, list) else [],
+        })
+    return out
+
+
 def deepdesert_view(base: str, rows: list[dict]) -> dict:
     """What the HTTP layer returns to the map UI: the active seed (or null),
     and its layout when one is known. Always well-formed."""

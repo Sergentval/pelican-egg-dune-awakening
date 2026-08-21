@@ -29,6 +29,7 @@ import { pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import { useAutoRefresh } from "./live";
 import { DeepDesertGrid } from "./DeepDesertGrid";
+import { DeepDesertSeedControl } from "./DeepDesertSeedControl";
 
 interface MapCfg {
   key: string;
@@ -123,6 +124,13 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
     }).catch(() => { if (live) setDd(null); });
     return () => { live = false; };
   }, [mapKey]);
+  // Re-pull the layout after the operator repins the forced seed, so the
+  // "Forced seed" status reflects the write immediately.
+  const reloadDd = useCallback(() => {
+    fetchDeepDesertLayout()
+      .then((res) => { if (res.ok) setDd(res.body as DeepDesertLayout); })
+      .catch(() => { /* keep the prior view on a transient failure */ });
+  }, []);
   // reset view + picker when changing map
   useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }); setPending(null); }, [mapKey]);
 
@@ -307,16 +315,16 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
           {mapKey === "DeepDesert" && dd?.available && (
             <div className="card p-3 space-y-2 text-xs">
               <div className="flex items-center justify-between">
-                <span className="font-medium text-slate-300">Deep Desert layout</span>
+                <span className="font-medium text-slate-300">Active layout</span>
                 {dd.seed !== null
                   ? <span className="font-mono text-spice-300">seed {dd.seed}
                       {dd.layout?.confidence ? ` · ${dd.layout.confidence.toLowerCase()}` : ""}</span>
-                  : <span className="text-amber-400">no forced seed</span>}
+                  : <span className="text-amber-400">auto — not pinned</span>}
               </div>
               {dd.seed === null && (
                 <p className="text-slate-500">
-                  No Coriolis seed is forced, so the game picks a fresh layout each cycle —
-                  set a Forced Coriolis seed to pin one and show its POIs.
+                  The live Deep Desert reports no pinned seed, so its layout is unknown —
+                  force one below to draw its POIs and keep it fixed across cycles.
                 </p>
               )}
               {dd.layout_available && dd.layout?.legend && (
@@ -330,6 +338,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
                   ))}
                 </div>
               )}
+              <DeepDesertSeedControl dd={dd} onChanged={reloadDd} />
               <p className="text-[10px] text-slate-600 leading-tight">
                 12 fixed layouts rotate by Coriolis seed; POI data compiled from community
                 sources (may drift) — via DST (Apache-2.0).
