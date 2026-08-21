@@ -16,6 +16,31 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Player events + battlepass
+
+- **Live player events** (🎯 sub-tab in Events & Diagnostics): zone races
+  pay listed participants who reach a sphere (first in list order, one
+  per tick); milestones pay every online player crossing a level or
+  holding an achievement tag. Rewards are a shared spec (solaris, items,
+  specialization XP) delivered in order with a claim ledger — each player
+  is paid exactly once, partial failures resume without re-paying, and a
+  daemon restart never re-announces past deeds.
+- **Battlepass** (🎖 sub-tab): a 188-tier catalog (1,619 intel + 86
+  schematic tiers, extracted from dune-admin's own generator) over
+  levels, quests and exploration. Pre-existing progress baselines and is
+  never paid; a tier earns only when the engine watches it happen
+  (`award_past` opts out — set it BEFORE a player's first scan). Intel
+  delivery is money-safe and waits for the player to be offline;
+  demote/purge resets ship with the storm-safe semantics upstream
+  documented the hard way.
+- Both engines are OFF by default, run in one self-pacing daemon, touch
+  the game only through the audited command layer, and were proven
+  single-payer under 6-way process races. New grant subcommands:
+  `award-intel` (clamped ≤2779, offline-gated) and `award-track-xp`
+  (clamped ≤44,182).
+- Ported from Icehunter/dune-admin's events + battlepass engines (MIT) —
+  see ATTRIBUTION.md.
+
 ## 2026-08-21 — Deep Desert per-partition PvP
 
 - **Per-instance PvP designation** via `DUNE_PVP_PARTITIONS` (e.g.
