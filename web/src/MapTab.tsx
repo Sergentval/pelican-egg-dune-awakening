@@ -28,7 +28,7 @@ import {
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import { useAutoRefresh } from "./live";
-import { DeepDesertGrid } from "./DeepDesertGrid";
+import { DeepDesertGrid, sectorForPct } from "./DeepDesertGrid";
 import { DeepDesertSeedControl } from "./DeepDesertSeedControl";
 
 interface MapCfg {
@@ -273,7 +273,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
               return (
                 <button
                   key={m.id}
-                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition}${m.fls ? "" : " · no linked account (cannot target)"}`}
+                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition} · (${Math.round(m.x)}, ${Math.round(m.y)})${m.fls ? "" : " · no linked account (cannot target)"}`}
                   onPointerDown={(e) => e.stopPropagation()}
                   onPointerUp={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); if (m.fls) target.setPlayerId(m.fls); }}
@@ -345,6 +345,50 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
               </p>
             </div>
           )}
+
+          {/* Grid calibration (issue #116): every live player's RAW world
+              coordinates + the sector the current projection lands them in, so
+              an operator can hand over calibration points from the panel — no
+              database query needed. Compare the "grid" sector here against your
+              in-game sector; if they differ, the raw coords are the fix input. */}
+          {mapKey === "DeepDesert" && markers.length > 0 && (
+            <div className="card p-3 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-slate-300">Grid calibration</span>
+                <span className="text-slate-500">{markers.length} players</span>
+              </div>
+              <p className="text-[10px] text-slate-600 leading-tight">
+                Raw coords are ground truth; the “grid” sector is what the current
+                projection shows. If it disagrees with your in-game sector, post
+                the coords + your real sector.
+              </p>
+              <table className="w-full">
+                <thead>
+                  <tr className="text-slate-500 text-left">
+                    <th className="font-normal">Player</th>
+                    <th className="font-normal">x, y</th>
+                    <th className="font-normal text-right">grid</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono">
+                  {markers.map((m) => {
+                    const p = worldToPct(m.x, m.y, cfg);
+                    const sec = sectorForPct(p.left, p.top);
+                    return (
+                      <tr key={`cal-${m.id}`} className="border-t border-slate-800/70">
+                        <td className="py-0.5 pr-2 truncate max-w-[8rem]" title={m.name}>
+                          <span className={m.online ? "text-emerald-400" : "text-slate-500"}>●</span> {m.name}
+                        </td>
+                        <td className="py-0.5 pr-2 text-slate-300">{Math.round(m.x)}, {Math.round(m.y)}</td>
+                        <td className="py-0.5 text-right text-spice-300">{sec ?? "off-grid"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {pending && (
             <div className="card p-3 space-y-2">
               <div className="text-xs text-slate-400">

@@ -16,6 +16,17 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Live Map shows player coordinates (self-service calibration)
+
+- Player markers now expose their **raw world (x, y)** on hover, on every map —
+  the data was always fetched to plot the dot, just never shown. On Deep Desert
+  a new **Grid calibration** side-panel readout lists each live player with
+  their raw coords and the sector the current projection lands them in. This
+  closes a gap: grid calibration (#116) previously meant asking an operator to
+  run a `db-sql` query, but the panel exposes no database tool — now the two
+  calibration points (raw coords + real in-game sector) can be read straight
+  from the panel with no SQL.
+
 ## 2026-08-21 — Item edit (quantity / quality)
 
 - New `item-edit <item_id> [stack=N] [quality=N]` — the missing verb between

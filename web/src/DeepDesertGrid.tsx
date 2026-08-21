@@ -23,6 +23,17 @@ const ICON: Record<string, string> = {
   "large-spice-field": "/wickmaps/large-spice-field.svg",
 };
 
+// Which 9x9 sector a point at (left%, top%) falls in — e.g. "D4" — or null if
+// it's outside the grid. Same row order the grid draws (I..A top→bottom, cols
+// 1..9 left→right), so a live player dot and this label always agree. Used by
+// the Live Map's calibration readout (issue #116).
+export function sectorForPct(left: number, top: number): string | null {
+  if (left < 0 || left > 100 || top < 0 || top > 100) return null;
+  const col = Math.min(N, Math.max(1, Math.floor((left / 100) * N) + 1));
+  const ri = Math.min(N - 1, Math.max(0, Math.floor((top / 100) * N)));
+  return `${ROWS[ri]}${col}`;
+}
+
 // POI centre in % of the map image, mirroring DST's pixel math.
 function poiPct(p: WickPoi): { left: number; top: number } | null {
   const row = p.sector[0];
