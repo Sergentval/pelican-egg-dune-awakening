@@ -163,7 +163,9 @@ class TestSettingsSchema(unittest.TestCase):
         self.assertEqual(st["type"], "intlist")
         self.assertIs(st.get("repeated"), True)
         self.assertIs(st.get("empty_ok"), True)
-        self.assertIs(st["verified"], False)
+        # verified flipped 2026-08-20: the issue reporter confirmed the PvP
+        # badge and rules in game on all four partitions.
+        self.assertIs(st["verified"], True)
         self.assertFalse(st["advanced"])
 
     def test_repeated_only_on_sectioned_intlists(self):
