@@ -16,6 +16,16 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Live map: Deep Desert pins were vertically mirrored
+
+- A player at the Deep Desert southern arrival zone rendered at the top
+  of the live map (#116): world Y grows southward in this game and the
+  DD map config was missing the vertical flip that Hagga Basin and
+  Arrakeen already carry. Harko Village had the same latent flaw — both
+  fixed; the click-to-teleport picker follows the same transform. DD
+  bounds remain estimates: report any residual offset with a known
+  in-game position and they'll be calibrated from it.
+
 ## 2026-08-21 — Player events + battlepass
 
 - **Live player events** (🎯 sub-tab in Events & Diagnostics): zone races
