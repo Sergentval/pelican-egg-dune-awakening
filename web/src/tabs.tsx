@@ -3328,7 +3328,7 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
 // ever hidden. Ids not present in the live schema are simply skipped.
 const CORE_SETTING_IDS = new Set<string>([
   "server_display_name", "server_password", "server_player_hard_cap",
-  "force_pvp_everywhere", "security_zones_enabled", "disable_pvp_damage", "damage_enabled",
+  "force_pvp_everywhere", "pvp_enabled_partitions", "security_zones_enabled", "disable_pvp_damage", "damage_enabled",
   "mining_output", "vehicle_mining_output", "pvp_zone_resource_mult",
   "sandworms_enabled", "sandworm_danger_zones",
   "player_death_loot", "loot_double_difficulty",
