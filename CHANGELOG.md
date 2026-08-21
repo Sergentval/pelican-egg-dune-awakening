@@ -31,6 +31,12 @@ here on the log is maintained with each merge.
   UPDATE — no game proc or notify verb exists, so it shows in-game after the
   next restart. Every write is verified by re-read. Beyond dune-admin's
   surface: kick, disband and create are new.
+- Fix (live-e2e-caught, same day): faction ids are data-driven —
+  `guilds.guild_faction` is an FK into `dune.factions` (1=Atreides,
+  2=Harkonnen, 3=None, 4=Smuggler), so guild-create resolves the neutral id
+  from the table and the guild list joins it for the display name instead of
+  hardcoding. Full live e2e: 14/14 (create → roster → describe → rename →
+  four expected refusals → disband + DB cleanup).
 
 ## 2026-08-21 — Database tab + base owner resolution survives the DD wipe
 
