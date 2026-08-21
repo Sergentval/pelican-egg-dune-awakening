@@ -2063,7 +2063,22 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             self._write(500, {"error": "io", "detail": str(exc)})
             return
-        self._write(200, data, content_type=ctype)
+        # SPA cache strategy: index.html (and any HTML) must NOT be cached —
+        # Vite gives every build content-hashed asset names, so a stale
+        # index.html keeps pointing at the previous build's JS and a
+        # reinstall silently serves the old UI (a real operator hit this on
+        # the live-map fix, #116). Hashed assets under /assets/ are safe to
+        # cache forever precisely because their name changes when content
+        # does. Without any header the browser applies heuristic freshness,
+        # which is exactly the trap.
+        if candidate.name.endswith(".html"):
+            cache = "no-cache, must-revalidate"
+        elif "/assets/" in str(candidate).replace("\\", "/"):
+            cache = "public, max-age=31536000, immutable"
+        else:
+            cache = "no-cache"
+        self._write(200, data, content_type=ctype,
+                    extra_headers=[("Cache-Control", cache)])
 
     # ------ Database tab (read-only inspection) --------------------------
     # Ported from Icehunter/dune-admin handlers_database.go (MIT). Each
