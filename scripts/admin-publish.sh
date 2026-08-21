@@ -3981,6 +3981,31 @@ SQL
         echo "publish=ok svc-restart $svc"
         exit 0
         ;;
+    coriolis-seed)
+        # Read-only: the active Coriolis world seed per Deep Desert map, so
+        # the Wick Maps view can pick the matching pre-collected POI layout
+        # (the DD cycles through 12 fixed layouts, seed 0-11). Emits CSV
+        # `map,seed`, DeepDesert first. seed = -1 means "auto" (game picks).
+        dune_require_tables dune.farm_state || exit 3
+        if [ -z "$(dune_psql_q -tA <<'CHK'
+SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'dune' AND p.proname = 'debug_get_coriolis_seeds' LIMIT 1;
+CHK
+)" ]; then
+            echo "[admin-publish] ERROR coriolis-seed: dune.debug_get_coriolis_seeds() not present on this build" >&2
+            exit 3
+        fi
+        dune_psql_q -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'CS_SQL'
+SELECT m AS map, sd AS seed
+FROM dune.debug_get_coriolis_seeds() g
+CROSS JOIN LATERAL unnest(g.map_names, g.map_seeds) AS t(m, sd)
+WHERE m LIKE 'DeepDesert%'
+ORDER BY (m = 'DeepDesert') DESC, m;
+CS_SQL
+        exit 0
+        ;;
+
     world-partition-list)
         # Read-only: the world_partition topology (warm dim=0 + dimensional dim>0
         # rows) joined to farm_state liveness. Powers the Instances tab. Emits pipe

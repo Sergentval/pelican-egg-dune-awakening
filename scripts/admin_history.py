@@ -42,7 +42,7 @@ READ_ONLY_SUBCOMMANDS = frozenset({
     "spice-list", "world-partition-list", "market-bot-status",
     "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
     "base-containers", "base-permissions", "base-permission-candidates",
-    "base-guard-status",
+    "base-guard-status", "coriolis-seed",
 })
 
 DEFAULT_KEEP = 500          # rows retained; ~13 months of real actions in practice

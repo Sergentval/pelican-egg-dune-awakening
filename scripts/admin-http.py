@@ -63,6 +63,7 @@ import admin_baseguard  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_worldreset  # noqa: E402  # type: ignore[import-not-found]  (sys.path; world-reset marker/state files, no DB/network)
 import admin_events  # noqa: E402  # type: ignore[import-not-found]  (sys.path; player-events store + engine; DB access via admin-publish)
 import admin_battlepass  # noqa: E402  # type: ignore[import-not-found]  (sys.path; battlepass store + engine; DB access via admin-publish)
+import admin_wickmaps  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Deep Desert seed→POI layout; no DB/network)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
@@ -648,7 +649,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
             "base-containers", "base-permissions", "base-permission-candidates",
-            "base-guard-status",
+            "base-guard-status", "coriolis-seed",
         )
     )
     entry = {
@@ -1452,6 +1453,19 @@ class Handler(BaseHTTPRequestHandler):
                               "error": data.get("error", ""),
                               "context": data.get("context", ""),
                               "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Deep Desert Wick Maps: active Coriolis seed + the matching
+        # pre-collected POI layout (the DD cycles through 12 fixed layouts).
+        if path == "/api/map/deepdesert-layout":
+            entry = run_publish(["coriolis-seed"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "Coriolis seed routine not present on this build"})
+                return
+            rows = _csv_rows(entry.get("stdout") or "") if entry.get("ok") else []
+            view = admin_wickmaps.deepdesert_view(BASE_DIR, rows)
+            self._write(200, {"ok": True, "available": True, **view})
             return
 
         # Player-events: definitions + claim summaries + engine switch.
