@@ -762,6 +762,9 @@ def read_setting_value(st: dict) -> str | None:
     if text is None:
         return None
     section = st.get("section")
+    if st.get("repeated"):
+        # UE array key (issue #106): the value is the comma-joined +key= lines.
+        return admin_ini_merge.read_repeated(text, section or "", st["key"])
     if section is None:
         val = admin_ini_merge.read_flat(text, st["key"])
     else:
@@ -783,7 +786,13 @@ def pin_setting_to_egg(st: dict, value):
     env = st.get("env")
     if not env:
         return None
-    rendered = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    try:
+        rendered = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
+    except ValueError as exc:
+        # A malformed value must be a refusal, not an exception: do_POST's
+        # per-setting try only wraps write_setting, so a raise here would
+        # drop the HTTP connection instead of returning a scoped error.
+        return False, f"invalid value: {exc}"
     return admin_pelican.set_variable(env, rendered)
 
 
@@ -809,9 +818,12 @@ def write_setting(st: dict, value) -> None:
     """Validate + write one setting to its INI sink. Raises ValueError on an
     invalid value or a missing target file."""
     norm = admin_ini_merge.normalize_value(value, st["type"], st.get("enum"))
-    rendered = admin_ini_merge.render_value(norm, st.get("quoted", False))
-    if rendered is None:
-        raise ValueError("value contains a double quote, which UE5 cannot parse")
+    if st.get("repeated"):
+        rendered = None  # UE array key: written as one +key= line per element
+    else:
+        rendered = admin_ini_merge.render_value(norm, st.get("quoted", False))
+        if rendered is None:
+            raise ValueError("value contains a double quote, which UE5 cannot parse")
     path = INI_FILES.get(st.get("file") or "")
     if not path or not os.path.isfile(path):
         raise ValueError(f"target INI sink {st.get('file')!r} is missing")
@@ -821,7 +833,10 @@ def write_setting(st: dict, value) -> None:
     with COMMAND_LOCK:
         text = _read_ini_text(path) or ""
         section = st.get("section")
-        if section is None:
+        if st.get("repeated"):
+            vals = [p for p in norm.split(",") if p]
+            new = admin_ini_merge.upsert_repeated(text, section or "", st["key"], vals)
+        elif section is None:
             new = admin_ini_merge.upsert_flat(text, st["key"], rendered)
         else:
             new = admin_ini_merge.upsert_keyed(text, section, st["key"], rendered)

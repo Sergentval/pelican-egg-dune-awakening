@@ -16,12 +16,24 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
-## Unreleased
+## 2026-08-21 — Deep Desert per-partition PvP
 
-- Deep Desert per-partition PvP (`DUNE_PVP_PARTITIONS`) + Deep Desert picker
-  routing (`DUNE_DD_PICKER_ROUTING`) + 5 reconnect/ping QoL settings — built
-  on branch `feat/106-deep-desert-pvp` (PR #109), in-game labels confirmed by
-  the reporter, final soak in progress before merge. (#106)
+- **Per-instance PvP designation** via `DUNE_PVP_PARTITIONS` (e.g.
+  `8,101,102,103` for the hot Deep Desert and the three tunnels): rendered
+  as Funcom's own `+m_PvpEnabledPartitions=<id>` lines in the shared
+  UserGame.ini — the syntax their template documents in a comment. In-game
+  PvP labels and rules confirmed on all four partitions by the issue
+  reporter, plus a full-day dual-Deep-Desert soak. Fixes #106. (#109)
+- `DUNE_DD_PICKER_ROUTING` flips the DeepDesert_1 matchmaker rule from
+  FirstOfGroup to HomeDimension so the in-game destination picker's choice
+  actually routes (Survival_1 already ships HomeDimension — the "honour
+  the choice" rule).
+- Five verified QoL settings join the catalogue (reconnect grace ×2, ping
+  system ×3); the settings engine gains repeated `+key=` handling and a
+  drift sentinel on the matchmaker tuples.
+- `DUNE_EGG_REF` is now a declared egg variable (default `main`) — it had
+  always been consumed by the install script without being declared.
+  **Upgrade: re-import the egg, then Reinstall.**
 
 ## 2026-08-20 — World reset, gated and reversible (C6)
 

@@ -557,7 +557,7 @@
     },
     {
       "name": "Deep Desert — Dimensional Partitions",
-      "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely.",
+      "description": "Number of per-player Sandstorm tunnel instances for Deep Desert travel. Each one is a full UE5 process (~1.5GB RAM). 3 covers typical S1/S2/S3 variants. Increase if you have many concurrent players doing DD travel. 0 disables DD travel entirely. Lowering the count later does NOT remove already-seeded tunnels (partition rows are append-only) — remove one with the admin panel's dimension-down instead.",
       "env_variable": "DUNE_DD_DIMENSIONS",
       "default_value": "3",
       "user_viewable": true,
@@ -904,6 +904,48 @@
         "between:1,100"
       ],
       "sort": 62
+    },
+    {
+      "name": "PvP-Enabled Partitions",
+      "description": "Comma-separated world partition ids that run as PvP instances — Funcom's per-instance PvP mechanism (one +m_PvpEnabledPartitions line per id in the shared UserGame.ini). 8 = the always-warm Deep Desert, 101-103 = the Deep Desert sandstorm tunnels (see the Instances tab for your ids). Empty = everything stays PvE. Restart required. Ignored while 'Force PvP On All Partitions' is True.",
+      "env_variable": "DUNE_PVP_PARTITIONS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "max:128"
+      ],
+      "sort": 63
+    },
+    {
+      "name": "Deep Desert Instance Picker Routing",
+      "description": "Whether the Deep Desert instance picker honors the player's choice. The game's default routing rule for DeepDesert_1 (FirstOfGroup) ignores the pick; True swaps it to HomeDimension (the rule Hagga Basin already uses), which routes players to the instance they select — recommended when running PvP-Enabled Partitions or multiple Deep Desert instances. False restores the game default. Leave empty to not touch the file. Restart required.",
+      "env_variable": "DUNE_DD_PICKER_ROUTING",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "nullable",
+        "string",
+        "in:True,False"
+      ],
+      "sort": 64
+    },
+    {
+      "name": "Egg Scripts Ref (advanced)",
+      "description": "Git ref (branch, tag or commit SHA) of the egg repo that Reinstall fetches scripts from. Default main. Set to a branch name to test an unreleased fix, then back to main and Reinstall again. The install script always honored this variable — it just was never declared in the egg (issue #106 feedback).",
+      "env_variable": "DUNE_EGG_REF",
+      "default_value": "main",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": [
+        "required",
+        "string",
+        "max:120"
+      ],
+      "sort": 65
     }
   ]
 }
