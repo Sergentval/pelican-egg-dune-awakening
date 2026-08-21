@@ -14,7 +14,8 @@ refused to run outside AMP), and added a panel-driven config-applier for
 25 game-side tunables (loot multipliers, sandstorms, sandworms, PvP zones,
 building limits, player hard cap, on-demand pool tuning) on top of a
 195-setting catalogue driven from the admin UI. See
-[`ATTRIBUTION.md`](./ATTRIBUTION.md) for the full credit + license discussion.
+[`ATTRIBUTION.md`](./ATTRIBUTION.md) for the full credit + license discussion,
+and [`CHANGELOG.md`](./CHANGELOG.md) for what changed when (with upgrade notes).
 
 ## How it works
 

@@ -54,6 +54,13 @@ echo "[entrypoint] [INFO]   World title: ${DUNE_WORLD_TITLE:-<unset>}"
 echo "[entrypoint] [INFO]   Region:      ${DUNE_REGION:-<unset>}"
 echo "[entrypoint] [INFO]   External IP: ${DUNE_EXTERNAL_IP:-<unset>}"
 
+# Consume a pending world-reset / world-rollback marker BEFORE prestart:
+# prestart initdb's + loads the schema whenever server/state/pg is fresh,
+# so the reset is a datadir set-aside and the ordinary first-boot path
+# builds the new empty world. No marker → no-op; any doubt → boots the
+# old world untouched. See scripts/admin_worldreset.py.
+bash scripts/apply-world-reset.sh "$BASE"
+
 bash scripts/prestart.sh         "$BASE"
 
 # Apply panel-driven overrides to Funcom's UE5 ini files after prestart
@@ -69,6 +76,10 @@ bash scripts/patch-world-template.sh "$BASE"
 
 bash scripts/start-pg.sh         "$BASE"
 bash scripts/migrate-db.sh       "$BASE"
+# Re-apply the BaseBackup wipe-guard AFTER migrations (they can replace the
+# guarded Funcom function). No-op while base-guard.json enabled:false, and
+# never blocks the boot. See scripts/admin_baseguard.py.
+bash scripts/apply-base-guard.sh "$BASE"
 bash scripts/start-mq-admin.sh   "$BASE"
 bash scripts/start-mq-game.sh    "$BASE"
 bash scripts/start-text-router.sh "$BASE"

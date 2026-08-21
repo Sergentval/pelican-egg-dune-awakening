@@ -121,6 +121,23 @@ Portions of the admin tooling are ported from
 reimplement against our own stack (admin-publish.sh + admin-http.py + the
 web SPA) rather than running dune-admin as a dependency.
 
+Base containers + permission roster (2026-08, C3.3) port, with thanks,
+Red-Blink's bases container feature and listBasePermissions read model (MIT),
+reimplemented as base-containers / base-permissions; the item-delete gate
+split (world inventories → map-down, player inventories → offline) is ours.
+
+Base permission writes (2026-08, C3.4) port, with thanks, Red-Blink's
+setBasePermissions / transferBaseToSystemCustodian / permission-candidates
+model (MIT): the shipped-procedure write path (never direct DML — the procs
+notify the running map), the one-Owner + roster-cap + controller-id-only
+invariants, the removals→ranks→Owner-last write order, the claim-actor row
+lock, the unclaimed/picked-up refusals, and the reserved Server persona
+tuple (account 9000002 / 900000201-3, kept identical to their Care Package
+identity for cross-stack compatibility) with GM fallback and
+create-on-first-use. Reimplemented as per-operation subcommands
+(base-permission-set / -remove / base-transfer-custodian) instead of their
+whole-roster PUT.
+
 Generator fuel (2026-08, C3.2) ports, with thanks, Red-Blink's
 baseGenerators / baseGeneratorFuelLevels / refillBaseGenerators (MIT): the
 generator allowlist + accepted-fuel table with measured burn rates, the
@@ -134,6 +151,32 @@ the chat.intercept copy-queue discovery (bounded declare + catch-all bind +
 basic_get drain via rabbitmqctl eval) and its safety posture (off by
 default, per-command opt-in, per-player cooldowns, bounded queue, drop on
 disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
+
+World reset (2026-08, C6) port, with thanks,
+coastal-ms/DST-DuneServerTool's worldreset-2 / WorldRestart.ps1
+(Apache-2.0): the reversible same-battlegroup restart shape — verified
+logical backup before anything destructive, admission gates (confirmation
+phrase, zero players online, fail-closed on every ambiguous read), the
+durable recovery marker that survives a reboot, and the
+preserve-don't-delete storage discipline. Reshaped for this
+single-container stack: the "storage replacement" is an atomic datadir
+set-aside consumed by a boot hook ordered before prestart (whose ordinary
+first-boot path builds the fresh world), and rollback is the reverse swap
+instead of a restore — their K8s StatefulSet/PVC dance and periodic
+research-recovery audit do not apply here (research/entitlement recovery
+deliberately not ported; per-character backups via our native
+char-backup/char-restore cover the operator need).
+
+Base backup wipe-guard (2026-08, C3.5) port, with thanks,
+coastal-ms/DST-DuneServerTool v13.3.0's BaseBackupGuard.ps1 (Apache-2.0):
+the discovery that base backups are live actor rows in state 'BaseBackup'
+which the weekly Deep Desert reset deletes (the state is missing from
+delete_actors_and_respawns_on_server's exclusion list), the one-predicate
+fix, the anchored fail-closed insertion, the verify-by-re-read discipline,
+and the re-apply posture against game updates replacing the Funcom-owned
+function — reimplemented as scripts/admin_baseguard.py + the base-guard-*
+subcommands, with a boot-time re-apply (after migrate-db) in place of
+their periodic tick, since on this stack migrations only run at boot.
 
 Bases + water management (2026-08) ports, with thanks, Red-Blink/
 dune-awakening-selfhost-docker's bases feature (MIT: the listBases claim

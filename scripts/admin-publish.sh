@@ -381,14 +381,35 @@ WHERE ps.account_id = :'aid'::bigint
 CT_SQL
 }
 
-# Map-down gate shared by every base write (water/fuel refill). Resolves the
-# base's map into $BASE_GATE_MAP and returns 0 only when that map provably has
-# ZERO live instances. FAILS CLOSED twice: any live instance refuses (a
-# running map rewrites base state from memory on flush — the write would
-# silently vanish), and a map name farm_state has never seen refuses too (it
-# cannot be proven down). $1 = numeric base id, $2 = label for messages.
+# Map-level down check: returns 0 only when $1 provably has ZERO live
+# instances. FAILS CLOSED twice: any live instance refuses (a running map
+# rewrites world state from memory on flush — the write would silently
+# vanish), and a map name farm_state has never seen refuses too (it cannot
+# be proven down). $1 = map name, $2 = label for messages.
+map_down_check() {
+    local m="$1" label="$2" gate alive known
+    gate=$({ dune_psql_q --set=m="$m" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
+FROM dune.farm_state WHERE map = :'m';
+BG_SQL
+)
+    alive="${gate%%/*}"
+    known="${gate##*/}"
+    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
+        echo "[admin-publish] ERROR $label: map '$m' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
+        return 1
+    fi
+    if [ "${alive:-1}" != "0" ]; then
+        echo "[admin-publish] ERROR $label: map $m has ${alive:-?} live instance(s) — a running map rewrites world state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Base-scoped wrapper: resolves the base's map into $BASE_GATE_MAP then runs
+# map_down_check. $1 = numeric base id, $2 = label for messages.
 base_map_down_gate() {
-    local bid="$1" label="$2" gate alive known
+    local bid="$1" label="$2"
     BASE_GATE_MAP=$({ dune_psql_q --set=bid="$bid" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
 SELECT a.map
 FROM dune.buildings b
@@ -402,22 +423,109 @@ BG_SQL
         echo "[admin-publish] ERROR $label: no base with id $bid" >&2
         return 2
     fi
-    gate=$({ dune_psql_q --set=m="$BASE_GATE_MAP" -tA 2>/dev/null <<'BG_SQL' || true; } | tail -n1 | tr -d '\r\n'
-SELECT COUNT(*) FILTER (WHERE alive)::text || '/' || COUNT(*)::text
-FROM dune.farm_state WHERE map = :'m';
-BG_SQL
-)
-    alive="${gate%%/*}"
-    known="${gate##*/}"
-    if [ -z "$gate" ] || [ "${known:-0}" = "0" ]; then
-        echo "[admin-publish] ERROR $label: map '$BASE_GATE_MAP' is unknown to farm_state — cannot prove it is down, refusing (fail closed)." >&2
-        return 1
-    fi
-    if [ "${alive:-1}" != "0" ]; then
-        echo "[admin-publish] ERROR $label: map $BASE_GATE_MAP has ${alive:-?} live instance(s) — a running map rewrites base state from memory on flush and would undo this write. Stop the server (or park the sietch) first." >&2
+    map_down_check "$BASE_GATE_MAP" "$label"
+}
+
+# Effective per-actor permission cap: m_MaxPermissionsPerActor under
+# [/Script/DuneSandbox.PermissionSettings] — operator override first, then the
+# depot default, then the shipped constant 32. The shipped permission
+# procedures never count rows, so this is the only place the game's cap is
+# enforced for our writes (upstream technique).
+permission_cap() {
+    local v f
+    for f in "$BASE/server/state/ue5-saved/UserSettings/UserGame.ini" \
+             "$BASE/extracted/game-server/home/dune/server/DuneSandbox/Config/DefaultGame.ini"; do
+        [ -f "$f" ] || continue
+        v=$(awk '
+            { sub(/\r$/, "") }
+            /^\[/ { s = $0; next }
+            s == "[/Script/DuneSandbox.PermissionSettings]" {
+                eq = index($0, "=")
+                if (eq > 0) {
+                    k = substr($0, 1, eq - 1); val = substr($0, eq + 1)
+                    gsub(/[ \t]/, "", k); gsub(/[ \t]/, "", val)
+                    if (k == "m_MaxPermissionsPerActor") { print val; exit }
+                }
+            }' "$f" 2>/dev/null) || true
+        case "$v" in ''|*[!0-9]*) ;; *) echo "$v"; return 0;; esac
+    done
+    echo 32
+}
+
+# Shared plpgsql preamble for the permission WRITE subcommands: resolves the
+# base's claim actor + numeric map id, row-locks the claim actor, and proves
+# the base is claimed. Emitted as text for inlining inside a DO body ($1 =
+# digits-only base id, $2 = label); callers DECLARE v_actor/v_map/v_map_id.
+#
+# The lock is on dune.actors, not the rank rows — a roster mid-edit may hold
+# zero rank rows and FOR UPDATE over zero rows serializes nothing. The claim
+# check runs AFTER the lock: an unclaimed base has the whole structural chain
+# intact and no permission_actor row, and handing its actor id to
+# permission_set_player_rank dies on the FK with raw constraint text. The
+# game's own claim/pickup paths do not take this lock, so a pickup landing
+# mid-edit can still hit the FK — that residual race is what the constraint
+# is for; the check removes the steady-state case operators actually hit.
+baseperm_guard_sql() {
+    local bid="$1" label="$2"
+    cat <<GUARD_SQL
+    SELECT a.id, COALESCE(a.map, ''), COALESCE(mn.map_name_id, 0)
+      INTO v_actor, v_map, v_map_id
+    FROM dune.buildings b
+    LEFT JOIN dune.building_instances bi ON bi.building_id = b.id
+    LEFT JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    LEFT JOIN dune.actors a ON a.id = afe.actor_id
+    LEFT JOIN dune.map_names mn ON mn.map_name = a.map
+    WHERE b.id = ${bid}::bigint
+    -- A base has several pieces and owner_entity_id is nullable (ON DELETE
+    -- SET NULL): prefer a piece whose link resolves, deterministically.
+    ORDER BY (a.id IS NULL) ASC, bi.instance_id ASC
+    LIMIT 1;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '${label}: no base with id ${bid}';
+    END IF;
+    IF v_actor IS NULL THEN
+        RAISE EXCEPTION '${label}: base ${bid} has no resolvable owner entity, so permission editing is unavailable for it';
+    END IF;
+    IF v_map_id = 0 THEN
+        RAISE EXCEPTION '${label}: map "%" of base ${bid} has no dune.map_names entry, so the running map cannot be notified of the change', v_map;
+    END IF;
+    PERFORM 1 FROM dune.actors WHERE id = v_actor FOR UPDATE;
+    IF NOT EXISTS (SELECT 1 FROM dune.permission_actor pa WHERE pa.actor_id = v_actor) THEN
+        IF EXISTS (SELECT 1 FROM dune.base_backup_linked_actors bbla WHERE bbla.actor_id = v_actor) THEN
+            RAISE EXCEPTION '${label}: base ${bid} is picked up (base-backup) — it must be redeployed in game before its permissions can change';
+        END IF;
+        RAISE EXCEPTION '${label}: base ${bid} is not claimed (no dune.permission_actor row), so the game has nothing to attach permissions to — a player must claim or redeploy it first';
+    END IF;
+GUARD_SQL
+}
+
+# Current definition of Funcom's season-cleanup delete function, verbatim
+# (empty when the function does not exist on this build). Read with -tA so
+# psql emits the single column raw — internal newlines preserved. Used by
+# the base-guard subcommands; the text surgery itself lives in
+# admin_baseguard.py.
+# The text engine is a sibling file, and partial volume syncs are a known
+# failure mode on this stack (the C3.4 lesson). A missing OR EMPTY
+# admin_baseguard.py would make every `python3 file …` exit 0 with empty
+# output — turning the apply into a fabricated success and defeating the
+# re-read verification one layer up. So: never trust the engine's exit
+# codes before proving the engine is present and non-empty (review-caught,
+# reproduced live).
+baseguard_engine_ok() {
+    if [ ! -s "$BASE/scripts/admin_baseguard.py" ]; then
+        echo "[admin-publish] ERROR $1: scripts/admin_baseguard.py is missing or empty (partial volume sync?) — refusing to touch the cleanup function. Reinstall the server to resync scripts." >&2
         return 1
     fi
     return 0
+}
+
+baseguard_read_def() {
+    { dune_psql -tA -q 2>/dev/null <<'BGD_SQL' || true; }
+SELECT pg_get_functiondef(p.oid)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'dune' AND p.proname = 'delete_actors_and_respawns_on_server';
+BGD_SQL
 }
 
 # Run one Erlang snippet on a broker node via rabbitmqctl eval (the chat
@@ -1253,6 +1361,673 @@ RF_SQL
         exit 0
         ;;
 
+    base-containers)
+        # Everything stored inside ONE base's placeables, flat: one CSV row
+        # per item stack with its container (placeable id + building_type).
+        # Covers chests AND powered devices — the UI groups by container and
+        # the dedicated water/fuel panels stay the levels view. Deleting a
+        # stack goes through the generic item-delete, which now applies the
+        # map-down gate to world inventories. Read-only. Ported from
+        # Red-Blink's bases container feature (MIT).
+        bid="${1:?usage: base-containers <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-containers: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.placeables dune.inventories dune.items || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BC_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+), base_entities AS (
+    SELECT cafe.entity_id
+    FROM base_actor ba
+    JOIN dune.actor_fgl_entities cafe ON cafe.actor_id = ba.actor_id
+)
+SELECT p.id AS placeable_id,
+       lower(p.building_type) AS container_type,
+       inv.id AS inventory_id,
+       COALESCE(inv.max_item_count, 0) AS slots,
+       i.id AS item_id,
+       i.template_id,
+       i.stack_size,
+       i.quality_level,
+       i.position_index
+FROM base_entities be
+JOIN dune.placeables p ON p.owner_entity_id = be.entity_id
+JOIN dune.inventories inv ON inv.actor_id = p.id
+LEFT JOIN dune.items i ON i.inventory_id = inv.id
+ORDER BY p.id, inv.id, i.position_index NULLS LAST;
+BC_SQL
+        exit 0
+        ;;
+
+    base-permissions)
+        # Permission roster of ONE base: every (rank, player) pair on the base
+        # actor, with the character name and FLS id. Rank semantics come from
+        # the game (lowest rank = owner); reading an unclaimed base yields an
+        # empty roster — that emptiness IS the diagnosis. Read-only. Ported
+        # from Red-Blink listBasePermissions (MIT); writes deliberately not
+        # ported yet (they mutate shared permission state).
+        bid="${1:?usage: base-permissions <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permissions: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.permission_actor_rank dune.encrypted_player_state \
+            dune.encrypted_accounts || exit 3
+        dune_psql_q --set=bid="$bid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BP_SQL'
+WITH base_actor AS (
+    SELECT DISTINCT afe.actor_id
+    FROM dune.buildings b
+    JOIN dune.building_instances bi ON bi.building_id = b.id
+    JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
+    WHERE b.id = :'bid'::bigint
+)
+SELECT par.rank,
+       -- Reserved system identities carry no readable character row on every
+       -- schema; label them by their stable controller id (Server = the
+       -- custodian base-transfer-custodian installs, GM = Funcom's persona).
+       CASE par.player_id
+           WHEN 900000201 THEN 'Server'
+           WHEN 900000101 THEN 'GM'
+           ELSE COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '')
+       END AS character,
+       COALESCE(ea."user", '') AS fls_id,
+       par.player_id,
+       -- False = this row names an actor that is NOT the account's
+       -- player_controller_id, so the game ignores it (a rank row written
+       -- against any other actor id of the same account renders fine here
+       -- and does nothing in game — surfaced rather than hidden).
+       EXISTS (SELECT 1 FROM dune.encrypted_player_state ceps
+               WHERE ceps.player_controller_id = par.player_id) AS canonical
+FROM base_actor ba
+JOIN dune.permission_actor_rank par ON par.permission_actor_id = ba.actor_id
+-- LEFT: char_teardown_account (account-delete / char-restore) deletes the
+-- player actor trio while leaving permission rows in place — an INNER join
+-- here made the whole roster vanish and falsely read as "unclaimed"
+-- (review-caught). A torn-down holder keeps its rank row, with player_id as
+-- the fallback identifier.
+LEFT JOIN dune.actors player_a ON player_a.id = par.player_id
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = player_a.owner_account_id
+ORDER BY par.rank ASC, character ASC;
+BP_SQL
+        exit 0
+        ;;
+
+    base-permission-set)
+        # Set (or add) one player's rank on a base: 1=Owner, 2=Co-Owner,
+        # 3=Associate (the in-game panel decorates these as 5/4/3 — display
+        # only, the rows always hold 1-3). Goes through the game's own stored
+        # procedures: they upsert the rank row, refresh the base marker and
+        # pg_notify('permission_notify_channel', …), which every running map
+        # LISTENs on — the change applies LIVE, no restart and no map-down
+        # gate. Direct DML on permission_actor_rank is the trap here: it
+        # skips the marker + notify and the running map reverts it on flush.
+        # Enforced in this transaction because the procedures do not:
+        #   - exactly one Owner (setting a new Owner demotes the old one to
+        #     Co-Owner first; the Owner row is written LAST because the
+        #     marker refresh resolves rank 1 with LIMIT 1),
+        #   - the roster cap from live server config (permission_cap),
+        #   - player_id must be a player_controller_id — any other actor id
+        #     of the same account is accepted by the procedure, renders fine
+        #     in rosters, and is silently ignored by the game.
+        # Ported from Red-Blink setBasePermissions (MIT), per-operation
+        # instead of their whole-roster PUT.
+        bid="${1:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        pid="${2:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        rank="${3:?usage: base-permission-set <base_id> <player_controller_id> <rank 1-3>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-set: base id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-set: player id must be numeric" >&2; exit 2;; esac
+        case "$rank" in 1|2|3) ;; *) echo "[admin-publish] ERROR base-permission-set: rank must be 1 (Owner), 2 (Co-Owner) or 3 (Associate)" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.base_backup_linked_actors || exit 3
+        cap=$(permission_cap)
+        # $bid/$pid/$rank/$cap are digits-only (validated above): safe to
+        # inline into the DO body, where :'var' interpolation does not reach.
+        perm_ok=true
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BPS_SQL 2>&1
+BEGIN;
+-- The shipped procedures reference their tables unqualified and carry no
+-- search_path of their own; they resolve today because we connect as the
+-- dune role ("\$user" path). Pinned anyway so the feature survives a
+-- differently-named role.
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cur INT;
+    v_count INT;
+    r RECORD;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-permission-set")
+    IF NOT EXISTS (SELECT 1 FROM dune.encrypted_player_state eps
+                   WHERE eps.player_controller_id = ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-set: ${pid} is not a player_controller_id — the game would silently ignore this permission (pick a player via base-permission-candidates)';
+    END IF;
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = ${pid}::bigint;
+    IF v_cur IS NULL THEN
+        SELECT COUNT(*) INTO v_count FROM dune.permission_actor_rank par
+         WHERE par.permission_actor_id = v_actor;
+        IF v_count >= ${cap} THEN
+            RAISE EXCEPTION 'base-permission-set: base ${bid} already holds % permissions, the configured maximum (m_MaxPermissionsPerActor=${cap})', v_count;
+        END IF;
+    END IF;
+    IF v_cur = ${rank} THEN
+        INSERT INTO _perm_report VALUES ('unchanged', ${pid}, v_cur, ${rank});
+        RETURN;
+    END IF;
+    IF ${rank} = 1 THEN
+        FOR r IN SELECT par.player_id FROM dune.permission_actor_rank par
+                  WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                    AND par.player_id <> ${pid}::bigint
+        LOOP
+            PERFORM dune.permission_set_player_rank(v_actor, r.player_id, 2::smallint, v_map_id::text);
+            INSERT INTO _perm_report VALUES ('demoted', r.player_id, 1, 2);
+        END LOOP;
+    ELSIF v_cur = 1 AND NOT EXISTS (SELECT 1 FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-set: demoting the only Owner would leave base ${bid} ownerless — promote another player to Owner instead (that demotes this one to Co-Owner automatically)';
+    END IF;
+    PERFORM dune.permission_set_player_rank(v_actor, ${pid}::bigint, ${rank}::smallint, v_map_id::text);
+    INSERT INTO _perm_report VALUES (CASE WHEN v_cur IS NULL THEN 'added' ELSE 'reranked' END, ${pid}, v_cur, ${rank});
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BPS_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-permission-set: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-permission-set base=$bid player=$pid rank=$rank"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-permission-set base=$bid player=$pid rank=$rank"
+        exit 0
+        ;;
+
+    base-permission-remove)
+        # Remove one player's permission row from a base, via the shipped
+        # procedure (deletes the rank row + the player's base marker, then
+        # notifies the running map — same live-write contract as
+        # base-permission-set above). Removing the only Owner is refused:
+        # the game expects exactly one rank-1 row per claimed base, and an
+        # ownerless base is exactly the state base-transfer-custodian exists
+        # to resolve. Ported from Red-Blink setBasePermissions (MIT).
+        bid="${1:?usage: base-permission-remove <base_id> <player_controller_id>}"
+        pid="${2:?usage: base-permission-remove <base_id> <player_controller_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-remove: base id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-permission-remove: player id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.base_backup_linked_actors || exit 3
+        perm_ok=true
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BPR_SQL 2>&1
+BEGIN;
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cur INT;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-permission-remove")
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = ${pid}::bigint;
+    IF v_cur IS NULL THEN
+        RAISE EXCEPTION 'base-permission-remove: player ${pid} holds no permission on base ${bid}';
+    END IF;
+    IF v_cur = 1 AND NOT EXISTS (SELECT 1 FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> ${pid}::bigint) THEN
+        RAISE EXCEPTION 'base-permission-remove: removing the only Owner would leave base ${bid} ownerless — transfer ownership first (base-permission-set rank 1 on another player, or base-transfer-custodian)';
+    END IF;
+    PERFORM dune.permission_remove_player_rank(v_actor, ${pid}::bigint);
+    INSERT INTO _perm_report VALUES ('removed', ${pid}, v_cur, NULL);
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BPR_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-permission-remove: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-permission-remove base=$bid player=$pid"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-permission-remove base=$bid player=$pid"
+        exit 0
+        ;;
+
+    base-transfer-custodian)
+        # Transfer a base's ownership to a reserved SYSTEM identity while
+        # preserving everyone's access: the outgoing Owner is demoted to
+        # Co-Owner and the custodian promoted to Owner LAST, in one locked
+        # transaction (reversible from base-permission-set). Detection
+        # prefers the reserved Server persona (account 9000002, controller
+        # 900000201 — the tuple Red-Blink's Care Packages reserve, kept
+        # identical so the two stacks stay compatible), then Funcom's GM
+        # persona (9000001/900000101); both matched by their full stable
+        # account/controller/state/pawn tuple, never by display name. If
+        # neither exists the Server persona is CREATED here (account + the
+        # controller/state/pawn actor trio + player-state row) — a partial
+        # 9000002xx identity is refused rather than guessed at.
+        # NOTE dune.permission_actor_takeover is NOT a transfer path: it
+        # returns quietly via RAISE NOTICE on any base that already has an
+        # Owner. Ported from Red-Blink transferBaseToSystemCustodian (MIT).
+        bid="${1:?usage: base-transfer-custodian <base_id>}"
+        case "$bid" in *[!0-9]*|"") echo "[admin-publish] ERROR base-transfer-custodian: base id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
+            dune.actors dune.map_names dune.permission_actor dune.permission_actor_rank \
+            dune.encrypted_player_state dune.encrypted_accounts dune.base_backup_linked_actors || exit 3
+        cap=$(permission_cap)
+        perm_ok=true
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BTC_SQL 2>&1
+BEGIN;
+SET LOCAL search_path TO dune, public;
+CREATE TEMP TABLE _perm_report (action TEXT, player_id BIGINT, from_rank INT, to_rank INT) ON COMMIT DROP;
+DO \$do\$
+DECLARE
+    v_actor BIGINT;
+    v_map TEXT;
+    v_map_id INT;
+    v_cust BIGINT;
+    v_n INT;
+    v_cur INT;
+    v_count INT;
+    v_created BOOLEAN := false;
+    r RECORD;
+BEGIN
+$(baseperm_guard_sql "$bid" "base-transfer-custodian")
+    SELECT COUNT(*), MIN(player_controller_id) INTO v_n, v_cust
+      FROM dune.encrypted_player_state
+     WHERE account_id = 9000002 AND player_controller_id = 900000201
+       AND player_state_id = 900000202 AND player_pawn_id = 900000203;
+    IF v_n > 1 THEN
+        RAISE EXCEPTION 'base-transfer-custodian: more than one canonical Server system identity exists — refusing an ambiguous transfer';
+    END IF;
+    IF v_n = 0 THEN
+        SELECT COUNT(*), MIN(player_controller_id) INTO v_n, v_cust
+          FROM dune.encrypted_player_state
+         WHERE account_id = 9000001 AND player_controller_id = 900000101
+           AND player_state_id = 900000102 AND player_pawn_id = 900000103;
+        IF v_n > 1 THEN
+            RAISE EXCEPTION 'base-transfer-custodian: more than one canonical GM system identity exists — refusing an ambiguous transfer';
+        END IF;
+    END IF;
+    IF v_n = 0 THEN
+        IF EXISTS (SELECT 1 FROM dune.encrypted_player_state WHERE account_id = 9000002)
+           OR EXISTS (SELECT 1 FROM dune.actors WHERE id IN (900000201, 900000202, 900000203)) THEN
+            RAISE EXCEPTION 'base-transfer-custodian: a conflicting partial Server identity (account 9000002 / actors 9000002xx) already exists — refusing to guess; inspect and remove it first';
+        END IF;
+        INSERT INTO dune.encrypted_accounts (id, "user", encrypted_funcom_id, takeoverable, platform_id, platform_name)
+        VALUES (9000002, '5E121CE000000001', dune.encrypt_user_data('Server#4242'), false, 'pelican-egg', 'Pelican Egg Admin')
+        ON CONFLICT (id) DO NOTHING;
+        INSERT INTO dune.actors (id, class, map, partition_id, dimension_index, owner_account_id) VALUES
+            (900000201, '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C', 'HaggaBasin', 1, 0, 9000002),
+            (900000202, '/Script/DuneSandbox.DunePlayerState', 'HaggaBasin', 1, 0, 9000002),
+            (900000203, '/Game/Dune/Characters/Player/BP_DunePlayerCharacter.BP_DunePlayerCharacter_C', 'HaggaBasin', 1, 0, 9000002);
+        INSERT INTO dune.encrypted_player_state
+            (account_id, encrypted_character_name, last_avatar_activity,
+             player_controller_id, player_pawn_id, player_state_id,
+             is_coriolis_processed, previous_server_partition_id,
+             return_dimension_index, home_dimension_index, server_id)
+        VALUES (9000002, dune.encrypt_user_data('Server'), to_timestamp(0),
+                900000201, 900000203, 900000202,
+                false, 1, 0, 0,
+                (SELECT eps.server_id FROM dune.encrypted_player_state eps
+                  WHERE eps.server_id IS NOT NULL LIMIT 1));
+        v_cust := 900000201;
+        v_created := true;
+        INSERT INTO _perm_report VALUES ('persona-created', v_cust, NULL, NULL);
+    END IF;
+    SELECT par.rank INTO v_cur FROM dune.permission_actor_rank par
+     WHERE par.permission_actor_id = v_actor AND par.player_id = v_cust;
+    IF v_cur = 1 THEN
+        INSERT INTO _perm_report VALUES ('unchanged', v_cust, 1, 1);
+        RETURN;
+    END IF;
+    IF v_cur IS NULL THEN
+        SELECT COUNT(*) INTO v_count FROM dune.permission_actor_rank par
+         WHERE par.permission_actor_id = v_actor;
+        IF v_count >= ${cap} THEN
+            RAISE EXCEPTION 'base-transfer-custodian: base ${bid} already holds % permissions, the configured maximum (m_MaxPermissionsPerActor=${cap})', v_count;
+        END IF;
+    END IF;
+    FOR r IN SELECT par.player_id FROM dune.permission_actor_rank par
+              WHERE par.permission_actor_id = v_actor AND par.rank = 1
+                AND par.player_id <> v_cust
+    LOOP
+        PERFORM dune.permission_set_player_rank(v_actor, r.player_id, 2::smallint, v_map_id::text);
+        INSERT INTO _perm_report VALUES ('demoted', r.player_id, 1, 2);
+    END LOOP;
+    PERFORM dune.permission_set_player_rank(v_actor, v_cust, 1::smallint, v_map_id::text);
+    INSERT INTO _perm_report VALUES (CASE WHEN v_cur IS NULL THEN 'owner-added' ELSE 'owner-promoted' END, v_cust, v_cur, 1);
+END
+\$do\$;
+SELECT action || '|' || player_id || '|' || COALESCE(from_rank::text, '-') || '|' || COALESCE(to_rank::text, '-') FROM _perm_report;
+COMMIT;
+BTC_SQL
+) || perm_ok=false
+        if [ "$perm_ok" != "true" ]; then
+            echo "[admin-publish] ERROR base-transfer-custodian: transaction failed: $(printf '%s' "$report" | head -c 600 | tr '\n' ' ')" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-transfer-custodian base=$bid"
+        printf '%s\n' "$report" | grep '|' | sed 's/^/change=/' || true
+        echo "publish=db-write base-transfer-custodian base=$bid"
+        exit 0
+        ;;
+
+    base-permission-candidates)
+        # Roster picker: real permission holders only, i.e. rows keyed by
+        # player_controller_id — one account owns several actors rows and the
+        # shipped procedure accepts any of them, but the game only honours the
+        # controller id. Reserved system identities (GM/Server/MOTD, accounts
+        # 9000001-3) stay out of ordinary search. Read-only. Ported from
+        # Red-Blink permissionCandidatesQuery (MIT).
+        search="${1:-}"
+        dune_require_tables dune.encrypted_player_state dune.encrypted_accounts || exit 3
+        dune_psql_q --set=q="%${search}%" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'BPC_SQL'
+SELECT eps.player_controller_id AS player_id,
+       btrim(convert_from(eps.encrypted_character_name, 'UTF8')) AS character,
+       COALESCE(ea."user", '') AS fls_id
+FROM dune.encrypted_player_state eps
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = eps.account_id
+WHERE COALESCE(eps.player_controller_id, 0) > 0
+  AND eps.account_id NOT IN (9000001, 9000002, 9000003)
+  AND btrim(convert_from(eps.encrypted_character_name, 'UTF8')) <> ''
+  AND (:'q' = '%%'
+       OR btrim(convert_from(eps.encrypted_character_name, 'UTF8')) ILIKE :'q'
+       OR eps.player_controller_id::text = btrim(:'q', '%'))
+ORDER BY character ASC
+LIMIT 25;
+BPC_SQL
+        exit 0
+        ;;
+
+    base-guard-status)
+        # Is the BaseBackup wipe-guard applied? A stored base backup is not a
+        # blob: dune.base_backup_save keeps the actor rows in state
+        # 'BaseBackup', and the weekly Deep Desert reset
+        # (coriolis_cleanup_partition → delete_actors_and_respawns_on_server)
+        # deletes every actor whose state is not Travel/VehicleBackup/
+        # VehicleRecovery — 'BaseBackup' is missing from that list, so the
+        # wipe eats stored backups the moment the backup tool is allowed in
+        # the Deep Desert. The guard adds the missing predicate. Read-only.
+        # Ported from DST v13.3.0 BaseBackupGuard (Apache-2.0).
+        dune_require_tables dune.base_backups dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-status || exit 1
+        def=$(baseguard_read_def)
+        found=f; applied=f
+        if [ -n "$def" ]; then
+            found=t
+            if printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+                applied=t
+            fi
+        fi
+        counts=$({ dune_psql -tA -q 2>/dev/null <<'BGC_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT (SELECT COUNT(*) FROM dune.base_backups)::text || ',' ||
+       (SELECT COUNT(*) FROM dune.actor_state WHERE state = 'BaseBackup')::text;
+BGC_SQL
+)
+        echo "function_found,applied,base_backups,backup_state_actors"
+        echo "$found,$applied,${counts:-0,0}"
+        exit 0
+        ;;
+
+    base-guard-apply)
+        # Idempotent apply of the wipe-guard predicate: read the LIVE
+        # definition, insert `AND s.state IS DISTINCT FROM 'BaseBackup'`
+        # after the VehicleRecovery exclusion (anchored — a body without
+        # that anchor is REFUSED, never guessed at), CREATE OR REPLACE, then
+        # RE-READ and verify; the write call alone is never trusted.
+        # The function is Funcom-owned: a game update can replace it via a
+        # boot migration, which is why apply-base-guard.sh re-runs this
+        # after migrate-db when the operator has opted in
+        # (data/admin/base-guard.json).
+        dune_require_tables dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-apply || exit 1
+        def=$(baseguard_read_def)
+        if [ -z "$def" ]; then
+            echo "[admin-publish] ERROR base-guard-apply: dune.delete_actors_and_respawns_on_server not found on this build" >&2
+            exit 3
+        fi
+        rc=0
+        patched=$(printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" patch 2>&1) || rc=$?
+        if [ "$rc" = "4" ]; then
+            echo "[admin-publish] OK base-guard-apply: already applied"
+            echo "publish=ok base-guard-apply already-applied"
+            exit 0
+        fi
+        if [ "$rc" != "0" ]; then
+            echo "[admin-publish] ERROR base-guard-apply: refusing — ${patched:-unknown reason}. This build's cleanup function no longer matches the expected shape; not guessing where to inject SQL." >&2
+            exit 1
+        fi
+        # Belt over the engine check: rc=0 with no function text means the
+        # engine is broken in a way the file-size probe missed — an empty
+        # script piped to psql -f - would "succeed" while writing nothing.
+        case "$patched" in
+            *"CREATE OR REPLACE FUNCTION"*) ;;
+            *) echo "[admin-publish] ERROR base-guard-apply: patch engine returned no function text — refusing to execute an empty script" >&2; exit 1;;
+        esac
+        out=$(printf '%s\n' "$patched" | dune_psql -q -v ON_ERROR_STOP=1 -f - 2>&1) || {
+            echo "[admin-publish] ERROR base-guard-apply: CREATE OR REPLACE failed: $(printf '%s' "$out" | head -c 400 | tr '\n' ' ')" >&2
+            exit 1
+        }
+        def2=$(baseguard_read_def)
+        if [ -z "$def2" ] || ! printf '%s' "$def2" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+            echo "[admin-publish] ERROR base-guard-apply: wrote the patched function but the re-read does not show the BaseBackup exclusion" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-guard-apply: BaseBackup exclusion added to dune.delete_actors_and_respawns_on_server"
+        echo "publish=db-write base-guard-apply"
+        exit 0
+        ;;
+
+    base-guard-revert)
+        # Inverse of apply: strip exactly the line we added, write back,
+        # re-read to verify it is gone. Refuses when the predicate is not on
+        # a line of its own (someone merged it into different SQL — blind
+        # surgery there could leave the function unparseable).
+        dune_require_tables dune.actor_state || exit 3
+        baseguard_engine_ok base-guard-revert || exit 1
+        def=$(baseguard_read_def)
+        if [ -z "$def" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: dune.delete_actors_and_respawns_on_server not found on this build" >&2
+            exit 3
+        fi
+        rc=0
+        stripped=$(printf '%s' "$def" | python3 "$BASE/scripts/admin_baseguard.py" unpatch 2>&1) || rc=$?
+        if [ "$rc" = "4" ]; then
+            echo "[admin-publish] OK base-guard-revert: already absent"
+            echo "publish=ok base-guard-revert already-absent"
+            exit 0
+        fi
+        if [ "$rc" != "0" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: refusing — ${stripped:-unknown reason}" >&2
+            exit 1
+        fi
+        case "$stripped" in
+            *"CREATE OR REPLACE FUNCTION"*) ;;
+            *) echo "[admin-publish] ERROR base-guard-revert: unpatch engine returned no function text — refusing to execute an empty script" >&2; exit 1;;
+        esac
+        out=$(printf '%s\n' "$stripped" | dune_psql -q -v ON_ERROR_STOP=1 -f - 2>&1) || {
+            echo "[admin-publish] ERROR base-guard-revert: CREATE OR REPLACE failed: $(printf '%s' "$out" | head -c 400 | tr '\n' ' ')" >&2
+            exit 1
+        }
+        # An empty re-read must fail the verify — `check` on empty input
+        # exits non-zero, which this branch would otherwise read as "the
+        # predicate is gone" and report success (review-caught edge).
+        def2=$(baseguard_read_def)
+        if [ -z "$def2" ]; then
+            echo "[admin-publish] ERROR base-guard-revert: could not re-read the function after the write — verification failed" >&2
+            exit 1
+        fi
+        if printf '%s' "$def2" | python3 "$BASE/scripts/admin_baseguard.py" check; then
+            echo "[admin-publish] ERROR base-guard-revert: wrote the reverted function but the re-read still shows the BaseBackup exclusion" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK base-guard-revert: BaseBackup exclusion removed"
+        echo "publish=db-write base-guard-revert"
+        exit 0
+        ;;
+
+    world-reset-arm)
+        # Arm a REVERSIBLE world reset (DST worldreset-2 port, reshaped for
+        # this single-container stack). NOTHING is destroyed here: verify
+        # zero players online (fail closed), take a verified logical backup
+        # (optionally per-character backups too), and write the durable
+        # marker apply-world-reset.sh consumes at the NEXT BOOT — where the
+        # current datadir is set aside (moved, never deleted) and prestart
+        # builds a fresh empty world under the same battlegroup identity
+        # and config. Reverse any time with world-rollback-arm. $1 must be
+        # the exact confirmation phrase; $2 optionally 'with-char-backups'.
+        phrase="${1:-}"
+        with_chars="${2:-}"
+        if [ "$phrase" != "RESET WORLD" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: confirmation phrase mismatch — pass exactly: RESET WORLD" >&2
+            exit 2
+        fi
+        case "$with_chars" in ""|with-char-backups) ;; *)
+            echo "[admin-publish] ERROR world-reset-arm: second argument must be omitted or 'with-char-backups'" >&2
+            exit 2;; esac
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        dune_require_tables dune.farm_state dune.encrypted_accounts dune.encrypted_player_state || exit 3
+        online=$({ dune_psql -tA -q 2>/dev/null <<'WRA_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(SUM(connected_players), 0)::text FROM dune.farm_state;
+WRA_SQL
+)
+        if [ -z "$online" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: cannot read the online-player count — refusing (fail closed)" >&2
+            exit 1
+        fi
+        if [ "$online" != "0" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: $online player(s) are connected — have everyone log out and retry" >&2
+            exit 1
+        fi
+        chars_csv=""
+        if [ "$with_chars" = "with-char-backups" ]; then
+            fls_list=$({ dune_psql -tA -q 2>/dev/null <<'WRC_SQL' || true; }
+SELECT DISTINCT ea."user"
+FROM dune.encrypted_accounts ea
+JOIN dune.encrypted_player_state eps ON eps.account_id = ea.id
+WHERE ea.id NOT IN (9000001, 9000002, 9000003)
+  AND COALESCE(ea."user", '') <> '';
+WRC_SQL
+)
+            while IFS= read -r fls; do
+                [ -n "$fls" ] || continue
+                if ! bash "$BASE/scripts/admin-publish.sh" char-backup "$fls" world-reset "pre-reset sweep" >/dev/null 2>&1; then
+                    echo "[admin-publish] ERROR world-reset-arm: character backup failed for $fls — aborting, no marker written (fix it or retry without with-char-backups)" >&2
+                    exit 1
+                fi
+                chars_csv="${chars_csv:+$chars_csv,}$fls"
+            done <<< "$fls_list"
+        fi
+        bk_out=$(bash "$BASE/scripts/admin-publish.sh" db-backup) || {
+            echo "[admin-publish] ERROR world-reset-arm: database backup failed — aborting, no marker written" >&2
+            exit 1
+        }
+        bk_line=$(printf '%s\n' "$bk_out" | grep '^backup=ok' | head -n1 || true)
+        bk_file=$(printf '%s' "$bk_line" | sed -n 's/.*file=\([^ ]*\).*/\1/p')
+        bk_bytes=$(printf '%s' "$bk_line" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
+        if [ -z "$bk_file" ] || [ -z "$bk_bytes" ]; then
+            echo "[admin-publish] ERROR world-reset-arm: could not parse the backup result — aborting" >&2
+            exit 1
+        fi
+        if ! python3 "$BASE/scripts/admin_worldreset.py" arm-reset "$BASE" "$bk_file" "$bk_bytes" "$chars_csv"; then
+            echo "[admin-publish] ERROR world-reset-arm: marker refused — the backup did not re-verify" >&2
+            exit 1
+        fi
+        nchars=0
+        [ -n "$chars_csv" ] && nchars=$(printf '%s' "$chars_csv" | awk -F, '{print NF}')
+        echo "[admin-publish] OK world-reset-arm: backup $bk_file ($bk_bytes bytes), $nchars character backup(s). RESTART THE SERVER to execute the reset — until then nothing changes; disarm with world-reset-cancel."
+        echo "publish=db-write world-reset-arm backup=$bk_file chars=$nchars"
+        exit 0
+        ;;
+
+    world-reset-cancel)
+        # Disarm: remove any pending reset/rollback marker. The world is
+        # untouched either way until a boot consumes a marker.
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-reset-cancel: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        had=""
+        python3 "$BASE/scripts/admin_worldreset.py" pending "$BASE" >/dev/null 2>&1 && had="reset"
+        python3 "$BASE/scripts/admin_worldreset.py" rollback-pending "$BASE" >/dev/null 2>&1 && had="${had:+$had+}rollback"
+        python3 "$BASE/scripts/admin_worldreset.py" clear-pending "$BASE" || true
+        python3 "$BASE/scripts/admin_worldreset.py" clear-rollback "$BASE" || true
+        echo "[admin-publish] OK world-reset-cancel: cleared ${had:-nothing (no marker was armed)}"
+        echo "publish=db-write world-reset-cancel cleared=${had:-none}"
+        exit 0
+        ;;
+
+    world-rollback-arm)
+        # Arm the reverse swap: at the next boot the current (fresh) datadir
+        # is set aside and the preserved pre-reset datadir moved back —
+        # progress made on the fresh world since the reset is parked, not
+        # lost (kept as pg.rolled-back-<ts>). Same phrase + zero-online
+        # gates as the reset; nothing happens until the restart.
+        # $2 = preserved dir name (world-reset status lists them), default
+        # newest.
+        phrase="${1:-}"
+        target="${2:-}"
+        if [ "$phrase" != "ROLL BACK WORLD" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: confirmation phrase mismatch — pass exactly: ROLL BACK WORLD" >&2
+            exit 2
+        fi
+        if [ ! -s "$BASE/scripts/admin_worldreset.py" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: scripts/admin_worldreset.py is missing or empty — Reinstall the server to resync scripts" >&2
+            exit 1
+        fi
+        dune_require_tables dune.farm_state || exit 3
+        online=$({ dune_psql -tA -q 2>/dev/null <<'WRB_SQL' || true; } | tail -n1 | tr -d '\r\n'
+SELECT COALESCE(SUM(connected_players), 0)::text FROM dune.farm_state;
+WRB_SQL
+)
+        if [ -z "$online" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: cannot read the online-player count — refusing (fail closed)" >&2
+            exit 1
+        fi
+        if [ "$online" != "0" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: $online player(s) are connected — have everyone log out and retry" >&2
+            exit 1
+        fi
+        if [ -z "$target" ]; then
+            target=$(python3 "$BASE/scripts/admin_worldreset.py" preserved "$BASE" \
+                | python3 -c 'import json,sys; l=json.load(sys.stdin); print(l[0] if l else "")')
+        fi
+        if [ -z "$target" ]; then
+            echo "[admin-publish] ERROR world-rollback-arm: no preserved pre-reset datadir exists — nothing to roll back to" >&2
+            exit 1
+        fi
+        if ! python3 "$BASE/scripts/admin_worldreset.py" arm-rollback "$BASE" "$target"; then
+            echo "[admin-publish] ERROR world-rollback-arm: '$target' is not a valid preserved datadir" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK world-rollback-arm: $target will be restored at the next boot. RESTART THE SERVER to execute; disarm with world-reset-cancel."
+        echo "publish=db-write world-rollback-arm target=$target"
+        exit 0
+        ;;
+
     bases)
         # Base inventory: every claimed base (a dune.buildings row whose owner
         # actor is placed in the world), with owner (lowest-rank permission
@@ -1384,7 +2159,7 @@ BF_SQL
         # $bid is digits-only (validated above): safe to inline into the DO
         # body, where psql :'var' interpolation does not reach ($$-quoted).
         refill_ok=true
-        report=$(dune_psql -tA -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
+        report=$(dune_psql -tA -q -v ON_ERROR_STOP=1 <<BFR_SQL 2>&1
 BEGIN;
 CREATE TEMP TABLE _fuel_report (
     placeable_id BIGINT, fuel TEXT, before_units INT, after_units INT,
@@ -3413,7 +4188,11 @@ SQL
         # Resolve item -> template/stack + owning FLS (via inventory.actor_id ->
         # actor.owner_account_id). Empty result => item (or its inventory) absent.
         row=$(dune_psql_q --set=iid="$item_id" -tAF'|' <<'SQL'
-SELECT i.template_id, i.stack_size, COALESCE(ea."user", '')
+SELECT i.template_id, i.stack_size, COALESCE(ea."user", ''),
+       CASE WHEN ac.class ILIKE '%PlayerCharacter%'
+              OR ac.class ILIKE '%PlayerController%'
+              OR ac.class ILIKE '%PlayerState%' THEN 'player' ELSE 'world' END,
+       COALESCE(ac.map, '')
 FROM dune.items i
 JOIN dune.inventories inv ON inv.id = i.inventory_id
 JOIN dune.actors ac ON ac.id = inv.actor_id
@@ -3425,12 +4204,21 @@ SQL
             echo "[admin-publish] ERROR item-delete: no item with id $item_id (or it has no valid inventory)" >&2
             exit 1
         fi
-        IFS='|' read -r it_template it_stack it_fls <<EOF2
+        IFS='|' read -r it_template it_stack it_fls it_kind it_map <<EOF2
 $row
 EOF2
-        # Offline-gate the owning character when one is resolvable (skip for
-        # container/vehicle inventories with no player owner).
-        if [ -n "$it_fls" ]; then
+        if [ "$it_kind" = "world" ]; then
+            # The inventory hangs off a PLACEABLE (base container, generator,
+            # vehicle...) — world state the RUNNING MAP caches and rewrites on
+            # flush. The owner being offline is NOT enough here: the map-down
+            # gate is (same memory-flush rule as the base refills).
+            if [ -z "$it_map" ]; then
+                echo "[admin-publish] ERROR item-delete: item $item_id sits in a world inventory with no resolvable map — refusing (fail closed)." >&2
+                exit 1
+            fi
+            map_down_check "$it_map" "item-delete" || exit $?
+        elif [ -n "$it_fls" ]; then
+            # Player-carried inventory: the offline gate is the right one.
             assert_player_offline "$it_fls" || exit $?
         fi
         rc=0

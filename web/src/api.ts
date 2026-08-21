@@ -229,8 +229,10 @@ export interface PlayerTable {
 export const fetchInventory = (playerId: string) =>
   api<PlayerTable>("GET", `/api/players/${encodeURIComponent(playerId)}/inventory`);
 
-// DESTRUCTIVE: hard-delete one item stack by dune.items.id. Offline-gated on
-// the backend (rejects while the owning character is connected).
+// DESTRUCTIVE: hard-delete one item stack by dune.items.id. Backend-gated by
+// inventory kind: player-carried items reject while the owner is connected;
+// WORLD items (base containers, vehicles) reject unless the map is fully
+// stopped (the running map caches world inventories and rewrites on flush).
 export const deleteItem = (itemId: string) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/delete`);
 
@@ -981,6 +983,133 @@ export const fetchBaseFuel = (baseId: string) =>
 export const baseFuelRefill = (baseId: string) =>
   api<PublishResult & { error?: string }>(
     "POST", `/api/bases/${encodeURIComponent(baseId)}/fuel-refill`, { force: true });
+
+export interface BaseContainerItem {
+  placeable_id: string;
+  container_type: string;
+  inventory_id: string;
+  slots: string;
+  item_id: string;
+  template_id: string;
+  stack_size: string;
+  quality_level: string;
+  position_index: string;
+}
+
+export interface BasePermissionRow {
+  rank: string;
+  character: string;
+  fls_id: string;
+  player_id: string;
+  /** "f" = this row names an actor the game ignores (not the account's
+   *  player_controller_id) — shown, but rank edits are pointless on it. */
+  canonical: string;
+}
+
+export interface PermissionCandidate {
+  player_id: string;
+  character: string;
+  fls_id: string;
+}
+
+export const fetchBaseContainers = (baseId: string) =>
+  api<{ ok: boolean; items: BaseContainerItem[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/containers`);
+
+export const fetchBasePermissions = (baseId: string) =>
+  api<{ ok: boolean; roster: BasePermissionRow[] }>(
+    "GET", `/api/bases/${encodeURIComponent(baseId)}/permissions`);
+
+export const fetchPermissionCandidates = (q: string) =>
+  api<{ ok: boolean; candidates: PermissionCandidate[] }>(
+    "GET", `/api/bases/permission-candidates${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+/** Live write: the game's stored procedures notify the running map — no
+ *  map-down gate, the change applies immediately. Promoting a new Owner
+ *  demotes the current one to Co-Owner in the same transaction. */
+export const basePermissionSet = (baseId: string, playerId: string, rank: 1 | 2 | 3) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/permission-set`,
+    { player_id: playerId, rank });
+
+export const basePermissionRemove = (baseId: string, playerId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/permission-remove`,
+    { player_id: playerId });
+
+export const baseTransferCustodian = (baseId: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", `/api/bases/${encodeURIComponent(baseId)}/transfer-custodian`, {});
+
+// ---- Base backup wipe-guard (DST port) ----------------------------------
+
+export interface BaseGuardState {
+  ok: boolean;
+  available: boolean;
+  function_found: boolean;
+  applied: boolean;
+  base_backups: number;
+  backup_state_actors: number;
+  boot_reapply: boolean;
+}
+
+export const fetchBaseGuard = () => api<BaseGuardState>("GET", "/api/base-guard");
+
+export const baseGuardApply = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/base-guard/apply", {});
+
+export const baseGuardRevert = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/base-guard/revert", {});
+
+export const baseGuardConfig = (enabled: boolean) =>
+  api<{ ok: boolean; boot_reapply: boolean }>("POST", "/api/base-guard/config", { enabled });
+
+// ---- World reset (DST worldreset-2 port) --------------------------------
+
+export interface WorldResetPending {
+  backup_file: string;
+  backup_bytes: number;
+  char_backups: string[];
+  requested_at: number;
+}
+
+export interface WorldRollbackPending {
+  restore_dir: string;
+  requested_at: number;
+}
+
+export interface WorldResetResult {
+  operation: string;
+  ok: boolean;
+  detail: string;
+  preserved: string;
+  at: number;
+}
+
+export interface WorldResetState {
+  ok: boolean;
+  pending: WorldResetPending | null;
+  rollback: WorldRollbackPending | null;
+  last_result: WorldResetResult | null;
+  preserved: string[];
+  online_players: number | null;
+}
+
+export const fetchWorldReset = () => api<WorldResetState>("GET", "/api/world-reset");
+
+/** Arms only — the phrase is re-validated server-side and the next boot
+ *  executes. Long timeout territory: backup + optional character sweep. */
+export const worldResetArm = (phrase: string, charBackups: boolean) =>
+  api<PublishResult & { error?: string }>(
+    "POST", "/api/world-reset/arm", { phrase, char_backups: charBackups });
+
+export const worldResetCancel = () =>
+  api<PublishResult & { error?: string }>("POST", "/api/world-reset/cancel", {});
+
+export const worldRollbackArm = (phrase: string, target?: string) =>
+  api<PublishResult & { error?: string }>(
+    "POST", "/api/world-reset/rollback",
+    target ? { phrase, target } : { phrase });
 
 // ---- Connection doctor --------------------------------------------------
 

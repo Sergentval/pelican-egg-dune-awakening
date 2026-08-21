@@ -58,6 +58,8 @@ import admin_locations  # noqa: E402  # type: ignore[import-not-found]  (sys.pat
 import admin_logs  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure log path-safety + secret redaction, no DB/network)
 import admin_instances  # noqa: E402  # type: ignore[import-not-found]  (sys.path; CA-pinned mock-k8s transport + ServerSetScale key resolution, shared with the scheduler)
 import admin_market  # noqa: E402  # type: ignore[import-not-found]  (sys.path; market config loader — single source for the persistent config path)
+import admin_baseguard  # noqa: E402  # type: ignore[import-not-found]  (sys.path; base-guard boot-reapply config, no DB/network)
+import admin_worldreset  # noqa: E402  # type: ignore[import-not-found]  (sys.path; world-reset marker/state files, no DB/network)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
@@ -642,6 +644,8 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "player-state", "char-xp-read", "inventory-list", "tags-get",
             "server-status", "farm-player-count", "map-markers", "db-backup", "db-backup-list", "spice-list",
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
+            "base-containers", "base-permissions", "base-permission-candidates",
+            "base-guard-status",
         )
     )
     entry = {
@@ -1447,6 +1451,63 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
+        # World-reset state: armed markers, last boot result, preserved
+        # datadirs, live online count. The mutation routes only ARM durable
+        # markers — the next boot executes (see apply-world-reset.sh).
+        if path == "/api/world-reset":
+            entry = run_publish(["farm-player-count"], timeout=15)
+            online = None
+            if entry.get("ok"):
+                try:
+                    online = sum(int(r.get("players") or 0)
+                                 for r in _csv_rows(entry.get("stdout") or ""))
+                except (TypeError, ValueError):
+                    online = None
+            self._write(200, {"ok": True,
+                              "pending": admin_worldreset.read_pending(BASE_DIR),
+                              "rollback": admin_worldreset.read_rollback(BASE_DIR),
+                              "last_result": admin_worldreset.read_result(BASE_DIR),
+                              "preserved": admin_worldreset.preserved_dirs(BASE_DIR),
+                              "online_players": online})
+            return
+
+        # BaseBackup wipe-guard state: is Funcom's season-cleanup function
+        # patched to spare stored base backups from the weekly Deep Desert
+        # reset, plus how many backups are at stake and whether the boot
+        # re-apply is armed.
+        if path == "/api/base-guard":
+            entry = run_publish(["base-guard-status"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "base backup tables not present on this build"})
+                return
+            rows = _csv_rows(entry.get("stdout") or "")
+            row = rows[0] if rows else {}
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "function_found": row.get("function_found") == "t",
+                              "applied": row.get("applied") == "t",
+                              "base_backups": int(row.get("base_backups") or 0),
+                              "backup_state_actors": int(row.get("backup_state_actors") or 0),
+                              "boot_reapply": admin_baseguard.load_enabled(BASE_DIR),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Roster picker for permission edits: players keyed by their
+        # player_controller_id (the only id the game honours in
+        # permission_actor_rank). Reserved system identities excluded.
+        if path == "/api/bases/permission-candidates":
+            q = (query.get("q", [""])[0] if isinstance(query, dict) else "") or ""
+            entry = run_publish(["base-permission-candidates", q] if q
+                                else ["base-permission-candidates"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "permission tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "candidates": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
         # Claimed bases (Red-Blink listBases port): owner, map, piece and
         # placeable counts. ?q= filters on owner name or map.
         if path == "/api/bases":
@@ -1458,6 +1519,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._write(200, {"ok": bool(entry.get("ok")), "available": True,
                               "bases": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Everything stored inside one base's placeables (flat item rows).
+        if path.startswith("/api/bases/") and path.endswith("/containers"):
+            bid = path[len("/api/bases/"):-len("/containers")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-containers", bid], timeout=20)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "bases tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "items": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Permission roster of one base (rank, character, fls).
+        if path.startswith("/api/bases/") and path.endswith("/permissions"):
+            bid = path[len("/api/bases/"):-len("/permissions")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-permissions", bid], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "permission tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "roster": _csv_rows(entry.get("stdout") or ""),
                               "stderr": entry.get("stderr", "")[:300]})
             return
 
@@ -2260,6 +2353,164 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["base-fuel-refill", bid], timeout=30)
             self._write(200, entry)
+            return
+
+        # Set (or add) one player's rank on a base (1=Owner, 2=Co-Owner,
+        # 3=Associate). Applies LIVE — unlike the refills there is no map-down
+        # gate: the shipped procedures notify the running map, which adopts
+        # the change immediately. Promoting a new Owner demotes the current
+        # one to Co-Owner in the same transaction (server-enforced).
+        # POST /api/bases/<id>/permission-set  body {"player_id", "rank"}
+        if path.startswith("/api/bases/") and path.endswith("/permission-set"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/permission-set")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            pid = str(body.get("player_id", "")) if isinstance(body, dict) else ""
+            rank = str(body.get("rank", "")) if isinstance(body, dict) else ""
+            if not pid.isdigit():
+                self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                return
+            if rank not in ("1", "2", "3"):
+                self._write(400, {"error": "rank must be 1 (Owner), 2 (Co-Owner) or 3 (Associate)"})
+                return
+            entry = run_publish(["base-permission-set", bid, pid, rank], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Remove one player's permission from a base. Removing the only Owner
+        # is refused by the subcommand (transfer ownership first).
+        # POST /api/bases/<id>/permission-remove  body {"player_id"}
+        if path.startswith("/api/bases/") and path.endswith("/permission-remove"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/permission-remove")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            pid = str(body.get("player_id", "")) if isinstance(body, dict) else ""
+            if not pid.isdigit():
+                self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                return
+            entry = run_publish(["base-permission-remove", bid, pid], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Transfer a base's ownership to the reserved system custodian
+        # (Server/GM persona), preserving every existing permission; the
+        # Server persona is created on first use. Reversible from
+        # permission-set. POST /api/bases/<id>/transfer-custodian  body {}
+        if path.startswith("/api/bases/") and path.endswith("/transfer-custodian"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            bid = path[len("/api/bases/"):-len("/transfer-custodian")]
+            if not bid.isdigit():
+                self._write(400, {"error": "base id must be numeric"})
+                return
+            entry = run_publish(["base-transfer-custodian", bid], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Arm a reversible world reset: verified backup + durable marker;
+        # the next boot executes. The confirmation phrase is validated by
+        # the subcommand (server-side), never trusted from the client alone.
+        # POST /api/world-reset/arm  body {"phrase", "char_backups"?: bool}
+        if path == "/api/world-reset/arm":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            phrase = str(body.get("phrase", "")) if isinstance(body, dict) else ""
+            with_chars = bool(body.get("char_backups")) if isinstance(body, dict) else False
+            argv = ["world-reset-arm", phrase] + (["with-char-backups"] if with_chars else [])
+            # pg_dump plus a per-character sweep can take a while on a big
+            # world; the arm is otherwise idle-safe to wait on.
+            entry = run_publish(argv, timeout=600)
+            self._write(200, entry)
+            return
+
+        # Disarm any pending world reset/rollback marker.
+        # POST /api/world-reset/cancel  body {}
+        if path == "/api/world-reset/cancel":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            entry = run_publish(["world-reset-cancel"], timeout=20)
+            self._write(200, entry)
+            return
+
+        # Arm the reverse swap back to a preserved pre-reset datadir.
+        # POST /api/world-reset/rollback  body {"phrase", "target"?: str}
+        if path == "/api/world-reset/rollback":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            phrase = str(body.get("phrase", "")) if isinstance(body, dict) else ""
+            target = str(body.get("target", "")) if isinstance(body, dict) else ""
+            if target and not re.fullmatch(r"pg\.pre-reset-\d{8}-\d{6}", target):
+                self._write(400, {"error": "target must be a pg.pre-reset-<ts> directory name"})
+                return
+            argv = ["world-rollback-arm", phrase] + ([target] if target else [])
+            entry = run_publish(argv, timeout=60)
+            self._write(200, entry)
+            return
+
+        # Apply / revert the BaseBackup wipe-guard (rewrites Funcom's
+        # season-cleanup function — anchored, idempotent, verified by
+        # re-read; see admin_baseguard.py). POST /api/base-guard/apply|revert
+        if path in ("/api/base-guard/apply", "/api/base-guard/revert"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            verb = "base-guard-apply" if path.endswith("/apply") else "base-guard-revert"
+            entry = run_publish([verb], timeout=30)
+            self._write(200, entry)
+            return
+
+        # Arm/disarm the boot re-apply (survives restarts; the entrypoint
+        # re-patches after migrate-db when armed).
+        # POST /api/base-guard/config  body {"enabled": bool}
+        if path == "/api/base-guard/config":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+                self._write(400, {"error": "body must be {\"enabled\": true|false}"})
+                return
+            if not admin_baseguard.save_enabled(BASE_DIR, body["enabled"]):
+                self._write(500, {"ok": False, "error": "could not write data/admin/base-guard.json"})
+                return
+            admin_history.note(BASE_DIR, "base-guard-config",
+                               f"boot re-apply {'enabled' if body['enabled'] else 'disabled'}")
+            self._write(200, {"ok": True, "boot_reapply": body["enabled"]})
             return
 
         # Character backup (native transfer export). Offline-gated by the

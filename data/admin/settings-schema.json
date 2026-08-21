@@ -243,7 +243,7 @@
       "label": "PvP-enabled partitions (ids)",
       "client_gated": "no",
       "advanced": false,
-      "verified": false
+      "verified": true
     },
     {
       "id": "security_zones_enabled",
@@ -1092,6 +1092,21 @@
       "enum": null,
       "category": "Combat",
       "label": "Default Shield Damage Mitigation",
+      "client_gated": "no",
+      "advanced": true,
+      "verified": false
+    },
+    {
+      "id": "buildingsettings_m_basebackuptoolmaprestriction",
+      "file": "UserOverrides",
+      "section": "/Script/DuneSandbox.BuildingSettings",
+      "key": "m_BaseBackupToolMapRestriction",
+      "type": "struct",
+      "quoted": false,
+      "default": "((Name=\"HaggaBasin\"), (Name=\"Editor_Default\"), (Name=\"IGW_Test_Small\"))",
+      "enum": null,
+      "category": "Building",
+      "label": "Base Backup Tool Allowed Maps",
       "client_gated": "no",
       "advanced": true,
       "verified": false

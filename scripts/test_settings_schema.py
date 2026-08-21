@@ -101,13 +101,13 @@ class TestSettingsSchema(unittest.TestCase):
 
     def test_catalogue_size(self):
         # 51 original (25 env + 26 cvar) + 144 UClass knobs
-        # + pvp_enabled_partitions (issue #106)
+        # + pvp_enabled_partitions + DD picker routing (issue #106)
         # + 5 QoL keys from the 2026-08 ecosystem survey (reconnect grace ×2,
-        #   ping system ×3) — all verified against the shipped DefaultGame.ini
-        self.assertEqual(len(self.settings), 201)
+        #   ping system ×3) + m_BaseBackupToolMapRestriction (C3.5)
+        self.assertEqual(len(self.settings), 202)
         # the API-managed UClass knobs sink to UserOverrides, no env var
         uclass = [s for s in self.settings if s["file"] == "UserOverrides"]
-        self.assertEqual(len(uclass), 149)
+        self.assertEqual(len(uclass), 150)
         for s in uclass:
             self.assertFalse(s.get("env"), f"{s['id']} UserOverrides knob must not be env/boot-applied")
         # untested knobs ship verified:false; only live-tested ones are flipped

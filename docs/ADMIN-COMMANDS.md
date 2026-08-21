@@ -612,9 +612,153 @@ admin base-fuel-refill <base_id>   # top every device to its fuel cap
   Same fail-closed map-down gate as the water refill.
 - HTTP: `GET /api/bases/<id>/fuel`, `POST /api/bases/<id>/fuel-refill`
   (force-confirmed). UI: ⚡ Generators panel in the Bases tab.
-- Picked-up bases (unclaimed + base_backup-linked) are excluded from the list.
-- HTTP: `GET /api/bases[?q=]`, `GET /api/bases/<id>/water`,
-  `POST /api/bases/<id>/water-refill` (force-confirmed). UI: 🏠 Bases tab.
+
+Containers + permissions (read):
+
+```text
+admin base-containers <base_id>    # CSV: one row per stored item stack, with its container
+admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id, canonical
+```
+
+- Containers covers every placeable holding an inventory (chests AND powered
+  devices). Deleting a stack goes through the generic `item-delete`, which now
+  distinguishes inventories: a WORLD inventory (placeable/vehicle — cached by
+  the running map) requires the map-down gate, a player-carried inventory the
+  offline gate.
+- An empty permission roster means the base is unclaimed — that emptiness is
+  the diagnosis.
+- `canonical=f` flags a rank row whose player id is NOT the account's
+  `player_controller_id`: the console can see it, the game ignores it.
+- HTTP: `GET /api/bases/<id>/containers`, `GET /api/bases/<id>/permissions`.
+  UI: 📦 Containers + 🔑 Permissions panels in the Bases tab.
+
+Permission writes (C3.4):
+
+```text
+admin base-permission-set <base_id> <player_controller_id> <rank>  # 1=Owner 2=Co-Owner 3=Associate
+admin base-permission-remove <base_id> <player_controller_id>
+admin base-transfer-custodian <base_id>            # hand ownership to the Server/GM system identity
+admin base-permission-candidates [name-or-id]      # roster picker (controller ids only)
+```
+
+- **These apply LIVE — no map-down gate, on purpose.** Unlike water/fuel, the
+  game ships stored procedures (`permission_set_player_rank` /
+  `permission_remove_player_rank`) that upsert the row, refresh the base
+  marker and `pg_notify` the running map, which adopts the change immediately
+  (upstream verified in-game: the owner's open Permissions panel updates with
+  no relog). Direct DML on `permission_actor_rank` is the trap — it skips the
+  marker + notify and the running map reverts it on flush.
+- Invariants the procedures do NOT enforce, enforced in our transaction:
+  exactly one Owner (a new Owner demotes the old one to Co-Owner first and is
+  written LAST — the marker refresh resolves rank 1 with `LIMIT 1`); the
+  roster cap from `m_MaxPermissionsPerActor` (override → depot → 32); and the
+  player id must be a `player_controller_id` — the procedure happily writes a
+  row for any other actor id of the account, which then renders fine in every
+  roster and does nothing in game (that's what `base-permission-candidates`
+  is for).
+- Removing or demoting the ONLY Owner is refused (an ownerless base is the
+  state `base-transfer-custodian` exists to resolve). Unclaimed and
+  picked-up bases are refused with a plain message instead of an FK error.
+- `base-transfer-custodian` prefers the reserved Server persona (account
+  9000002, controller 900000201 — the same tuple Red-Blink's Care Packages
+  reserve, kept identical for cross-stack compatibility), falls back to
+  Funcom's GM persona (9000001), and CREATES the Server persona on first use.
+  Existing permissions are preserved; the outgoing Owner becomes Co-Owner.
+  Reversible: promote any player back to Owner. A partial/ambiguous
+  9000002xx identity is refused, never guessed at.
+- HTTP: `POST /api/bases/<id>/permission-set` `{player_id, rank}`,
+  `POST /api/bases/<id>/permission-remove` `{player_id}`,
+  `POST /api/bases/<id>/transfer-custodian`,
+  `GET /api/bases/permission-candidates?q=`. UI: the 🔑 panel's rank
+  dropdowns, ✕ remove, add-player picker and "Transfer to custodian…".
+
+Base backup wipe-guard (C3.5):
+
+```text
+admin base-guard-status   # CSV: function_found, applied, base_backups, backup_state_actors
+admin base-guard-apply    # add the BaseBackup exclusion to the season cleanup (idempotent)
+admin base-guard-revert   # remove exactly that exclusion again
+```
+
+- **Why**: a stored base backup is not a blob. `base_backup_save` keeps the
+  totem/building/placeable actor rows and flips them to
+  `actor_state.state = 'BaseBackup'`. The weekly Deep Desert reset
+  (`coriolis_cleanup_partition` → `delete_actors_and_respawns_on_server`)
+  deletes every actor whose state is not `Travel`/`VehicleBackup`/
+  `VehicleRecovery` — `'BaseBackup'` is a real state but missing from that
+  list, because Funcom never allowed the backup tool in the Deep Desert.
+  The moment you add `DeepDesert` to **Base Backup Tool Allowed Maps**
+  (`m_BaseBackupToolMapRestriction`, now in the settings catalogue), the
+  wipe eats stored backups and the tool can only offer Recycle.
+- **What apply does**: reads the LIVE function definition, inserts one
+  predicate (`AND s.state IS DISTINCT FROM 'BaseBackup'`) after the
+  `VehicleRecovery` exclusion, `CREATE OR REPLACE`s it, then RE-READS and
+  verifies. The insertion is anchored — a body without the expected anchor
+  is refused, never guessed at. Everything else in Funcom's function is
+  preserved byte-for-byte.
+- **The function is Funcom-owned**: a game update can ship a migration that
+  replaces it and silently drops the predicate. Arm the boot re-apply
+  (`data/admin/base-guard.json` → `{"enabled": true}`, or the checkbox in
+  the 🛡 card) and the entrypoint re-patches right after `migrate-db` on
+  every boot — on this stack migrations only run at boot, so that covers
+  every replacement window. Off by default.
+- HTTP: `GET /api/base-guard`, `POST /api/base-guard/apply`,
+  `POST /api/base-guard/revert`, `POST /api/base-guard/config`
+  `{enabled}`. UI: 🛡 card in the Bases tab.
+- Ported from coastal-ms/DST-DuneServerTool v13.3.0 BaseBackupGuard
+  (Apache-2.0); see ATTRIBUTION.md.
+
+Base list + water (recap of the section header commands): picked-up bases
+(unclaimed + base_backup-linked) are excluded from the LIST only — by-id
+commands answer straight. HTTP: `GET /api/bases[?q=]`,
+`GET /api/bases/<id>/water`, `POST /api/bases/<id>/water-refill`
+(force-confirmed). UI: 🏠 Bases tab.
+
+## World reset (season restart, reversible)
+
+```text
+admin world-reset-arm "RESET WORLD" [with-char-backups]   # gates + backup + durable marker
+admin world-reset-cancel                                  # disarm any pending marker
+admin world-rollback-arm "ROLL BACK WORLD" [pg.pre-reset-<ts>]  # arm the reverse swap
+```
+
+Ported from coastal-ms/DST-DuneServerTool's worldreset-2 (Apache-2.0),
+reshaped for this single-container stack; see ATTRIBUTION.md.
+
+- **Nothing is destroyed at arm time.** Arming verifies zero players online
+  (fail closed on an unreadable count), takes a `db-backup` (verified size,
+  recorded in the marker), optionally backs up every character
+  (`with-char-backups`, aborts if any fails), and writes a durable marker
+  under `server/state/`. The world is untouched until the next restart.
+- **The boot executes.** `apply-world-reset.sh` runs BEFORE prestart: it
+  re-verifies the marker's backup (missing/short ⇒ refuse, boot the old
+  world untouched), then MOVES `server/state/pg` to `pg.pre-reset-<ts>` —
+  one atomic rename, never a delete — and lets prestart's ordinary
+  first-boot path initdb + load the schema: a fresh, empty world under the
+  same battlegroup identity, tokens, and config.
+- **Rollback is a swap, not a restore.** `world-rollback-arm` marks a
+  preserved datadir; the next boot parks the current (fresh) world as
+  `pg.rolled-back-<ts>` and moves the preserved one back. Progress on the
+  fresh world is parked, not lost. The logical backup taken at arm time is
+  the second line of defence (`pg_restore` by hand if a preserved datadir
+  is ever lost). Retention: 2 newest `pg.pre-reset-*`, 1 `pg.rolled-back-*`.
+- **Characters**: a world reset wipes characters with the world. The
+  `with-char-backups` sweep pairs with `char-restore` — restore any
+  player's character into the fresh world on request. Order matters: the
+  player must JOIN the fresh world once first (FLS recreates their
+  account; they'll spawn as a new character), then `char-restore`
+  replaces that new character with the backup. On a world the player has
+  never joined, the restore refuses with "no account for <fls>".
+- **Interactions**: the wipe-guard (base-guard) is part of the DB, so a
+  reset reverts it — the armed boot re-apply re-patches automatically right
+  after `migrate-db` on the same boot. `db-backup` retention (default 7)
+  also prunes the reset's backup file: don't leave a reset armed across
+  many backups, or re-arm to take a fresh one.
+- HTTP: `GET /api/world-reset` (armed markers, last boot result, preserved
+  dirs, live online count), `POST /api/world-reset/arm` `{phrase,
+  char_backups}`, `POST /api/world-reset/cancel`,
+  `POST /api/world-reset/rollback` `{phrase, target?}`. UI: 🌍 card in the
+  Scheduler tab, chained to the existing restart-now flow.
 
 ## Player chat commands (!ping / !kit)
 

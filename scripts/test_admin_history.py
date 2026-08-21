@@ -160,7 +160,8 @@ class BasesClassification(unittest.TestCase):
     its one write must always land in it."""
 
     def test_reads_are_read_only(self):
-        for argv in (["bases"], ["bases", "Paul"], ["base-water", "3"], ["base-fuel", "3"]):
+        for argv in (["bases"], ["bases", "Paul"], ["base-water", "3"], ["base-fuel", "3"],
+                     ["base-containers", "3"], ["base-permissions", "3"]):
             self.assertFalse(hist.is_recordable(argv), argv)
 
     def test_refill_is_recorded(self):
