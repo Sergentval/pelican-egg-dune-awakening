@@ -2032,11 +2032,14 @@ WRB_SQL
 
     bases)
         # Base inventory: every claimed base (a dune.buildings row whose owner
-        # actor is placed in the world), with owner (lowest-rank permission
-        # holder), map, piece + placeable counts. Picked-up bases (unclaimed
-        # AND base_backup-linked) are excluded — the base-backup tool leaves
-        # every row intact, so unfiltered they list as ordinary ownerless
-        # bases. Read-only. Ported from Red-Blink listBases (MIT).
+        # actor is placed in the world), with owner, map, piece + placeable
+        # counts. Owner resolves via the lowest-rank permission holder; when
+        # that path is orphaned (the Deep Desert weekly wipe rotates the
+        # player-controller actor the rank row points at), it falls back to the
+        # base actor's own owner_account_id, which survives the wipe. Picked-up
+        # bases (unclaimed AND base_backup-linked) are excluded — the base-backup
+        # tool leaves every row intact, so unfiltered they list as ordinary
+        # ownerless bases. Read-only. Ported from Red-Blink listBases (MIT).
         search="${1:-}"
         dune_require_tables dune.buildings dune.building_instances dune.actor_fgl_entities \
             dune.actors dune.permission_actor dune.permission_actor_rank \
@@ -2048,7 +2051,8 @@ SELECT b.id AS base_id,
        a.map AS map,
        COUNT(DISTINCT bi.instance_id)::int AS pieces,
        COALESCE(pl.placeables, 0) AS placeables,
-       COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') AS owner
+       COALESCE(NULLIF(convert_from(owner_ps.encrypted_character_name, 'UTF8'), ''),
+                base_owner.name, '') AS owner
 FROM dune.buildings b
 JOIN dune.building_instances bi ON bi.building_id = b.id
 JOIN dune.actor_fgl_entities afe ON afe.entity_id = bi.owner_entity_id
@@ -2062,6 +2066,18 @@ LEFT JOIN LATERAL (
     WHERE par.permission_actor_id = a.id
     ORDER BY par.rank ASC, par.player_id ASC LIMIT 1
 ) owner_ps ON TRUE
+-- Fallback owner: the base actor's own owner_account_id. The rank path above
+-- resolves the custodian via permission_actor_rank.player_id -> dune.actors,
+-- but that player-CONTROLLER actor is rotated by the Deep Desert weekly wipe,
+-- orphaning the rank row so the base reads "unclaimed" even though it is very
+-- much someone's. The base actor's owner_account_id survives the wipe (it rides
+-- with the base), so resolve straight off it when the rank path comes up empty.
+LEFT JOIN LATERAL (
+    SELECT convert_from(ps2.encrypted_character_name, 'UTF8') AS name
+    FROM dune.encrypted_player_state ps2
+    WHERE ps2.account_id = a.owner_account_id
+    LIMIT 1
+) base_owner ON (a.owner_account_id IS NOT NULL AND a.owner_account_id <> 0)
 LEFT JOIN LATERAL (
     SELECT COUNT(DISTINCT p.id)::int AS placeables
     FROM dune.actor_fgl_entities cafe
@@ -2071,9 +2087,10 @@ LEFT JOIN LATERAL (
 WHERE a.transform IS NOT NULL
   AND NOT (pa.actor_id IS NULL AND EXISTS (
         SELECT 1 FROM dune.base_backup_linked_actors bbla WHERE bbla.actor_id = a.id))
-  AND (:'q' = '%%' OR COALESCE(convert_from(owner_ps.encrypted_character_name, 'UTF8'), '') ILIKE :'q'
+  AND (:'q' = '%%'
+       OR COALESCE(NULLIF(convert_from(owner_ps.encrypted_character_name, 'UTF8'), ''), base_owner.name, '') ILIKE :'q'
        OR a.map ILIKE :'q')
-GROUP BY b.id, a.id, a.map, owner_ps.encrypted_character_name, pl.placeables
+GROUP BY b.id, a.id, a.map, owner_ps.encrypted_character_name, base_owner.name, pl.placeables
 ORDER BY pieces DESC
 LIMIT 200;
 BASES_SQL

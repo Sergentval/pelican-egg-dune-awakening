@@ -801,6 +801,20 @@ the grid is drawn, so nothing goes stale.
   forcedSeedExplicit, summaries}`. Writing the forced seed reuses
   `POST /api/settings` with `coriolissubsystem_m_forcedcoriolisworldseed`.
 
+## Database (read-only SQL)
+
+The **Database** tab (Server group) is a query console over the game database.
+It's read-only — the server accepts only `SELECT`, `WITH`, `EXPLAIN` and `SHOW`
+and rejects anything that writes — and caps results at 200 rows. It exists so
+inspection and calibration never require shelling into Postgres on the host.
+
+- One-click presets: **Bases + owners** (each base's `owner_account_id` and the
+  resolved character), **Deep Desert coordinates** (`((transform).location).x/y`
+  per actor — the calibration source), and **List tables**.
+- `⌘/Ctrl + Enter` runs the query. Errors (including the read-only refusal) show
+  inline.
+- HTTP: `POST /api/database/sql` with `{sql}` → `{headers, rows, truncated}`.
+
 ## Player events + battlepass
 
 Ported from Icehunter/dune-admin's events + battlepass engines (MIT),

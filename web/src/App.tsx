@@ -9,6 +9,7 @@ import { OverviewTab } from "./OverviewTab";
 import { PlayersWorkspace } from "./PlayersWorkspace";
 import { GiveItemsTab } from "./GiveItemsTab";
 import { MapTab } from "./MapTab";
+import { DatabaseTab } from "./DatabaseTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { AutoscalerTab } from "./AutoscalerTab";
 import { LootTab } from "./LootTab";
@@ -44,6 +45,7 @@ type TabId =
   | "scheduler"
   | "autoscaler"
   | "instances"
+  | "database"
   | "events";
 
 type TabGroup = "fleet" | "players" | "economy" | "server";
@@ -85,6 +87,7 @@ const TABS: TabDef[] = [
   { id: "broadcast", label: "Send Message", icon: "broadcast", group: "server" },
   { id: "maintenance", label: "Shutdown & Restart", icon: "power", group: "server" },
   { id: "scheduler", label: "Scheduler", icon: "clock", group: "server" },
+  { id: "database", label: "Database", icon: "terminal", group: "server" },
   { id: "events", label: "Events & Diagnostics", icon: "terminal", group: "server" },
 ];
 
@@ -248,6 +251,7 @@ export default function App() {
             {tab === "autoscaler" && <AutoscalerTab setConsoleEntries={setEntries} />}
             {tab === "events" && <EventsTab setConsoleEntries={setEntries} entries={entries} onClearSession={() => setEntries([])} />}
             {tab === "instances" && <InstancesTab setConsoleEntries={setEntries} />}
+            {tab === "database" && <DatabaseTab setConsoleEntries={setEntries} />}
           </div>
         </main>
 

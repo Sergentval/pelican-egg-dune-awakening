@@ -16,6 +16,23 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Database tab + base owner resolution survives the DD wipe
+
+- **Bug fix — Deep Desert bases showed "unclaimed".** The Bases owner column
+  resolved the custodian through `permission_actor_rank.player_id → dune.actors
+  → account`, but the Deep Desert weekly wipe rotates the player-controller
+  actor, orphaning that middle link so a very-much-owned base read as
+  unclaimed. Owner resolution now falls back to the **base actor's own
+  `owner_account_id`** (which rides with the base across the wipe) when the rank
+  path comes up empty — strictly additive, so it only ever replaces "unclaimed"
+  with the real owner, never changes a base that already resolved.
+- **New: Database tab (read-only).** The backend already exposed
+  `POST /api/database/sql` (SELECT / WITH / EXPLAIN / SHOW only, capped at 200
+  rows) but nothing in the UI surfaced it — so inspecting the game DB meant
+  shelling into Postgres on the host. There's now a first-class query console
+  in the panel, with one-click presets for base owners, Deep Desert
+  coordinates, and the table list. Writes are rejected server-side.
+
 ## 2026-08-21 — Live Map shows player coordinates (self-service calibration)
 
 - Player markers now expose their **raw world (x, y)** on hover, on every map —

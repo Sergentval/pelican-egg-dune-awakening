@@ -242,6 +242,18 @@ export const deleteItem = (itemId: string) =>
 export const editItem = (itemId: string, patch: { stack?: number; quality?: number }) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/edit`, patch);
 
+// ---- Database tab (read-only SQL) ----------------------------------------
+// The backend enforces read-only (SELECT / WITH / EXPLAIN / SHOW only) and
+// caps the result at 200 rows. Gives operators a first-class way to inspect
+// the game DB from the panel instead of shelling into Postgres on the host.
+export interface DbSqlResult {
+  headers: string[];
+  rows: string[][];
+  truncated: boolean;
+}
+export const runSql = (sql: string) =>
+  api<DbSqlResult>("POST", "/api/database/sql", { sql });
+
 // ---- Live map (Phase 2-4) ----------------------------------------------
 export interface MapMarker {
   id: string;
