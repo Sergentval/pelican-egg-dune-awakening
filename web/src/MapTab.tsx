@@ -42,9 +42,13 @@ interface MapCfg {
 // Bounds + images lifted from dune-admin (MIT), validated against live coords.
 const MAPS: MapCfg[] = [
   { key: "HaggaBasin", label: "Hagga Basin", image: "hagga-basin.webp", minX: -437871, maxX: 350539, minY: -462011, maxY: 376267, flipY: true },
-  { key: "DeepDesert", label: "Deep Desert", image: "deepdesert.webp", minX: -1300000, maxX: 1200000, minY: -1300000, maxY: 1200000 },
+  // flipY on every map: this game's world Y grows SOUTHWARD (established by
+  // months of live HaggaBasin usage), and all map images are north-up.
+  // DeepDesert missing it put a player at the southern arrival zone up at
+  // the top of the map (issue #116); HarkoVillage had the same latent flaw.
+  { key: "DeepDesert", label: "Deep Desert", image: "deepdesert.webp", minX: -1300000, maxX: 1200000, minY: -1300000, maxY: 1200000, flipY: true },
   { key: "Arrakeen", label: "Arrakeen", image: "arrakeen.webp", minX: -32000, maxX: 17000, minY: -10000, maxY: 9500, flipY: true },
-  { key: "HarkoVillage", label: "Harko Village", image: "harko.webp", minX: -5000, maxX: 14500, minY: -5500, maxY: 32000 },
+  { key: "HarkoVillage", label: "Harko Village", image: "harko.webp", minX: -5000, maxX: 14500, minY: -5500, maxY: 32000, flipY: true },
 ];
 
 const BASE_W = 760; // base image render width (px) before zoom
