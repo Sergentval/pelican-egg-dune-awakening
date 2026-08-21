@@ -154,9 +154,9 @@ def validate_tier(tier: dict) -> None:
         raise ValueError(f"tier.signal must be one of {SIGNALS}")
     threshold = tier.get("threshold", 0)
     intel = tier.get("intel", 0)
-    if not isinstance(threshold, int) or threshold < 0:
+    if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
         raise ValueError("tier.threshold must be >= 0")
-    if not isinstance(intel, int) or intel < 0:
+    if not isinstance(intel, int) or isinstance(intel, bool) or intel < 0:
         raise ValueError("tier.intel must be >= 0")
     if tier["signal"] == "level" and threshold < 1:
         raise ValueError("level tiers need threshold >= 1")
@@ -506,6 +506,12 @@ def run_tick(base: str, publish, now: int | None = None,
         admin_events._state_set(conn, "bp:next_due",
                                 str(now + cfg["poll_seconds"]))
     with connect(base) as conn:
+        # Write lock across the whole scan+grant pass — the ledger check →
+        # award-intel → seal sequence must be atomic against the OTHER live
+        # entry point (the HTTP grant_account below) or both could pay the
+        # same tier (the review's HIGH-2). Same discipline as the events
+        # engine.
+        conn.execute("BEGIN IMMEDIATE")
         tiers = [dict(r) for r in conn.execute(
             "SELECT * FROM battlepass_tiers WHERE enabled=1").fetchall()]
         if not tiers:
@@ -579,6 +585,10 @@ def grant_account(base: str, publish, account_id: int) -> dict:
     award-intel's gate)."""
     now = int(time.time())
     with connect(base) as conn:
+        # Same write lock as the daemon's grant pass: this runs in the
+        # admin-http process and must serialize against a concurrent tick
+        # delivering the same tiers (review HIGH-2).
+        conn.execute("BEGIN IMMEDIATE")
         tiers = {t["tier_key"]: t for t in
                  (dict(r) for r in conn.execute(
                      "SELECT * FROM battlepass_tiers").fetchall())}

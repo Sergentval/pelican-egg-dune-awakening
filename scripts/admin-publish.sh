@@ -2990,7 +2990,7 @@ SQL
         # (their #259/#280). Ported from dune-admin cmdAwardIntelCtx (MIT).
         raw="${1:?usage: award-intel <player> <amount>}"
         amount="${2:?usage: award-intel <player> <amount>}"
-        case "$amount" in *[!0-9]*|"") echo "[admin-publish] ERROR award-intel: amount must be a positive integer" >&2; exit 2;; esac
+        case "$amount" in *[!0-9]*|""|0) echo "[admin-publish] ERROR award-intel: amount must be a positive integer" >&2; exit 2;; esac
         fls_id=$(resolve_player_id "$raw") || exit 1
         if [ "$fls_id" = "*" ]; then
             echo "[admin-publish] ERROR award-intel: needs a single player, not '*'" >&2
@@ -3051,7 +3051,7 @@ AI2_SQL
         amount="${3:?usage: award-track-xp <player> <track> <amount>}"
         case "$track" in Combat|Crafting|Gathering|Exploration|Sabotage) ;;
             *) echo "[admin-publish] ERROR award-track-xp: track must be Combat|Crafting|Gathering|Exploration|Sabotage" >&2; exit 2;; esac
-        case "$amount" in *[!0-9]*|"") echo "[admin-publish] ERROR award-track-xp: amount must be a positive integer" >&2; exit 2;; esac
+        case "$amount" in *[!0-9]*|""|0) echo "[admin-publish] ERROR award-track-xp: amount must be a positive integer" >&2; exit 2;; esac
         fls_id=$(resolve_player_id "$raw") || exit 1
         if [ "$fls_id" = "*" ]; then
             echo "[admin-publish] ERROR award-track-xp: needs a single player, not '*'" >&2

@@ -210,7 +210,8 @@ def validate_definition(name: str, ev_type: str, config_json: str,
             raise ValueError(f"milestone.signal must be one of {MILESTONE_SIGNALS}")
         if signal == "level":
             thr = cfg.get("threshold")
-            if not isinstance(thr, int) or not 1 <= thr <= 200:
+            if not isinstance(thr, int) or isinstance(thr, bool) \
+                    or not 1 <= thr <= 200:
                 raise ValueError("milestone.threshold must be 1..200")
         else:
             if not isinstance(cfg.get("tag_name"), str) or not cfg["tag_name"]:
@@ -506,6 +507,22 @@ def _apply_outcome(conn, publish, event, player, value, now,
     if admin_rewards.is_empty(spec):
         _seal_granted(conn, event["id"], event["version"], account, now)
     else:
+        if cursor and not admin_rewards.cursor_matches_spec(cursor, spec):
+            # The reward was EDITED while this claim was mid-delivery. A
+            # resume against the new spec silently skips its early steps
+            # (review finding), and what already landed under the old spec
+            # is unknowable — so refuse loudly instead of guessing: park
+            # the claim as exhausted with an operator-facing reason; the
+            # manual grant path stays available once a human has decided.
+            conn.execute(
+                "UPDATE event_award_claims SET status='exhausted',"
+                " attempts=?, last_error=?, updated_at=?"
+                " WHERE event_id=? AND version=? AND account_id=?",
+                (MAX_ATTEMPTS,
+                 "reward changed while delivery was pending — partial state"
+                 " is ambiguous; resolve manually (reset the claim or grant"
+                 " by hand)", now, event["id"], event["version"], account))
+            return "failed"
         runner = make_grant_runner(publish, player["fls"],
                                    player.get("online", True))
         result = admin_rewards.deliver(spec, runner, cursor)
@@ -665,6 +682,15 @@ def run_tick(base: str, publish, now: int | None = None,
     if not load_enabled(base):
         return summary
     with connect(base) as conn:
+        # Take the write lock BEFORE any decision-making read and hold it
+        # across the external grant calls: the claim check → publish → seal
+        # sequence is the idempotency guarantee, and two processes ticking
+        # the same DB (stale daemon + fresh one, or a manual tick) would
+        # otherwise BOTH read "not granted" and BOTH pay — proven by the
+        # review with 6 forked processes each landing a real give-currency.
+        # A concurrent locker blocks up to the connect timeout, then fails
+        # its tick cleanly (fail closed, next tick retries).
+        conn.execute("BEGIN IMMEDIATE")
         events = [dict(r) for r in conn.execute(
             "SELECT * FROM event_definitions").fetchall()]
         enabled = [e for e in events if e["enabled"]]

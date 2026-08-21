@@ -338,3 +338,90 @@ class BackfillTests(EngineHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RewardEditedWhilePendingTests(EngineHarness):
+    def test_edited_reward_parks_claim_exhausted_never_underdelivers(self):
+        # Review MEDIUM: resuming an old cursor against an EDITED reward
+        # silently skips the new spec's early steps. The port refuses:
+        # the claim parks as exhausted with an operator-facing reason.
+        self.player(101, level=50)
+        eid = ev.create_event(
+            self.base, "M", "milestone",
+            '{"signal": "level", "threshold": 10}',
+            '{"currency": 100,'
+            ' "items": [{"template": "GoodItem", "qty": 1, "quality": 0},'
+            '           {"template": "BadItem", "qty": 1, "quality": 0}]}')
+        ev.set_enabled(self.base, eid, True)
+        self.game.fail_on.add(("give", "BadItem"))
+        self.tick(now=1000)   # fails at BadItem, cursor mid-items
+        self.game.fail_on.clear()
+        ev.update_event(self.base, eid, reward_json=(
+            '{"currency": 100,'
+            ' "items": [{"template": "NewA", "qty": 1, "quality": 0},'
+            '           {"template": "NewB", "qty": 1, "quality": 0}],'
+            ' "xp": [{"track": "Combat", "amount": 999}]}'))
+        summary = self.tick(now=2000)
+        self.assertEqual(summary["failed"], 1)
+        claims = ev.list_claims(self.base, eid)
+        self.assertEqual(claims[0]["status"], "exhausted")
+        self.assertIn("reward changed", claims[0]["last_error"])
+        # nothing from the NEW spec was delivered (no NewA/NewB/xp calls)
+        delivered = [c for c in self.grants() if c[0] != "give-currency"]
+        self.assertEqual([c[2] for c in delivered], ["GoodItem", "BadItem"])
+
+
+class ConcurrencyTests(unittest.TestCase):
+    def test_forked_ticks_pay_exactly_once(self):
+        # Review HIGH-1 repro, inverted: N processes ticking the same DB
+        # must land exactly ONE grant thanks to the BEGIN IMMEDIATE lock
+        # held across delivery.
+        import multiprocessing
+        import tempfile, shutil, os
+        base = tempfile.mkdtemp(prefix="events-conc-")
+        try:
+            os.makedirs(os.path.join(base, "data", "admin"), exist_ok=True)
+            with open(os.path.join(base, ev.CONFIG_PATH), "w") as f:
+                f.write('{"enabled": true}')
+            eid = ev.create_event(base, "M",
+                                  "milestone",
+                                  '{"signal": "level", "threshold": 10}',
+                                  '{"currency": 100}')
+            ev.set_enabled(base, eid, True)
+            log_path = os.path.join(base, "grants.log")
+            procs = [multiprocessing.Process(
+                target=_concurrent_tick, args=(base, log_path))
+                for _ in range(6)]
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join(timeout=60)
+            with open(log_path) as f:
+                grants = [line for line in f if line.strip()]
+            self.assertEqual(len(grants), 1, grants)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+def _concurrent_tick(base, log_path):
+    import time as _time
+
+    def publish(argv):
+        if argv[0] == "db-sql":
+            sql = argv[1]
+            if "FLevelComponent" in sql:
+                return 0, "account_id,xp\n101,28190\n"
+            if "eps.account_id =" in sql:
+                return 0, "fls,online,name\nFLS0065,t,P101\n"
+            return 0, ("account_id,controller_id,pawn_id,fls,name\n"
+                       "101,100,200,FLS0065,P101\n")
+        if argv[0] == "give-currency":
+            _time.sleep(0.3)  # widen the race window
+            with open(log_path, "a") as f:
+                f.write(" ".join(argv) + "\n")
+        return 0, "ok"
+
+    try:
+        ev.run_tick(base, publish, now=1000)
+    except Exception:
+        pass  # a locked-out tick failing cleanly is the expected loser path

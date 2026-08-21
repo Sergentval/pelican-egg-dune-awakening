@@ -135,3 +135,27 @@ class DeliverTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecHashTests(unittest.TestCase):
+    SPEC = rw.parse_spec('{"currency": 5, "items": [{"template": "A", "qty": 1, "quality": 0}]}')
+
+    def test_cursor_carries_spec_hash_and_matches(self):
+        cur = rw.cursor_of(rw.steps(self.SPEC)[1], self.SPEC)
+        self.assertTrue(rw.cursor_matches_spec(cur, self.SPEC))
+
+    def test_edited_spec_no_longer_matches(self):
+        cur = rw.cursor_of(rw.steps(self.SPEC)[1], self.SPEC)
+        edited = rw.parse_spec('{"currency": 5, "items": [{"template": "B", "qty": 1, "quality": 0}]}')
+        self.assertFalse(rw.cursor_matches_spec(cur, edited))
+
+    def test_legacy_cursor_without_hash_is_trusted(self):
+        self.assertTrue(rw.cursor_matches_spec('{"stage": "items", "index": 0}', self.SPEC))
+        self.assertTrue(rw.cursor_matches_spec("", self.SPEC))
+
+    def test_xp_track_enum_enforced_at_parse(self):
+        with self.assertRaises(ValueError):
+            rw.parse_spec('{"xp": [{"track": "combat", "amount": 5}]}')  # lowercase
+        with self.assertRaises(ValueError):
+            rw.parse_spec('{"xp": [{"track": "Mining", "amount": 5}]}')
+        rw.parse_spec('{"xp": [{"track": "Sabotage", "amount": 5}]}')  # valid

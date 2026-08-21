@@ -179,7 +179,15 @@ export function BattlepassPanel({ setConsoleEntries }: { setConsoleEntries: SetE
                           ? `level ≥ ${t.threshold}` : t.signal_key}</td>
                         <td className="pr-3 font-mono">{t.intel}</td>
                         <td className="pr-3 font-mono">
-                          {t.reward_items ? JSON.parse(t.reward_items).length : ""}
+                          {(() => {
+                            if (!t.reward_items) return "";
+                            try {
+                              const parsed: unknown = JSON.parse(t.reward_items);
+                              return Array.isArray(parsed) ? parsed.length : "?";
+                            } catch {
+                              return "invalid";
+                            }
+                          })()}
                         </td>
                         <td className="pr-3">
                           <input type="checkbox" checked={!!t.enabled} disabled={busy}

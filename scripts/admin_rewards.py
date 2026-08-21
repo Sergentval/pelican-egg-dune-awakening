@@ -22,9 +22,15 @@ to surface as a config error instead.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 STAGES = ("currency", "items", "xp")
+
+# The game's five specialization tracks — validated at PARSE time so a
+# typo'd track fails at event creation, not three days into the 24h retry
+# cycle (review finding).
+XP_TRACKS = ("Combat", "Crafting", "Gathering", "Exploration", "Sabotage")
 
 
 def parse_spec(text: str | None) -> dict:
@@ -68,6 +74,9 @@ def parse_spec(text: str | None) -> dict:
         if not isinstance(tr, dict) or not isinstance(tr.get("track"), str) \
                 or not tr["track"]:
             raise ValueError(f"reward.xp[{i}] needs a non-empty track")
+        if tr["track"] not in XP_TRACKS:
+            raise ValueError(f"reward.xp[{i}].track must be one of"
+                             f" {XP_TRACKS} (case-sensitive)")
         amount = tr.get("amount", 0)
         if not isinstance(amount, int) or isinstance(amount, bool) or amount < 0:
             raise ValueError(f"reward.xp[{i}].amount must be >= 0")
@@ -92,8 +101,33 @@ def steps(spec: dict) -> list[dict]:
     return out
 
 
-def cursor_of(step: dict) -> str:
-    return json.dumps({"stage": step["stage"], "index": step["index"]})
+def spec_hash(spec: dict) -> str:
+    return hashlib.md5(
+        json.dumps(spec, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
+def cursor_of(step: dict, spec: dict | None = None) -> str:
+    cur = {"stage": step["stage"], "index": step["index"]}
+    if spec is not None:
+        # A cursor is only meaningful against the spec it was cut from —
+        # resuming it against an EDITED reward silently skips the new
+        # spec's early steps (review finding). Callers compare hashes and
+        # refuse a cross-spec resume.
+        cur["spec"] = spec_hash(spec)
+    return json.dumps(cur)
+
+
+def cursor_matches_spec(cursor: str | None, spec: dict) -> bool:
+    """False only when the cursor carries a spec hash that does NOT match
+    — a legacy/absent hash is trusted (full-replay fail-safe covers it)."""
+    parsed = _parse_cursor(cursor)
+    if parsed is None:
+        return True
+    try:
+        stored = json.loads(cursor or "").get("spec")
+    except (ValueError, AttributeError):
+        return True
+    return stored is None or stored == spec_hash(spec)
 
 
 def _parse_cursor(cursor: str | None) -> tuple[str, int] | None:
@@ -131,6 +165,6 @@ def deliver(spec: dict, runner, cursor: str | None = None) -> dict:
     for step in remaining(spec, cursor):
         err = runner(step)
         if err:
-            return {"ok": False, "cursor": cursor_of(step),
+            return {"ok": False, "cursor": cursor_of(step, spec),
                     "error": f"{step['stage']}[{step['index']}]: {err}"}
     return {"ok": True, "cursor": "", "error": ""}
