@@ -15,10 +15,12 @@ import {
 } from "react";
 import {
   addLocation,
+  fetchDeepDesertLayout,
   fetchLocations,
   fetchMapMarkers,
   removeLocation,
   teleportToLocation,
+  type DeepDesertLayout,
   type MapLocation,
   type MapMarker,
   type PublishResult,
@@ -26,6 +28,7 @@ import {
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import { useAutoRefresh } from "./live";
+import { DeepDesertGrid } from "./DeepDesertGrid";
 
 interface MapCfg {
   key: string;
@@ -88,6 +91,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
   const [pending, setPending] = useState<{ x: number; y: number } | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [dd, setDd] = useState<DeepDesertLayout | null>(null);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -108,6 +112,17 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
   useEffect(() => { loadMarkers(); }, [loadMarkers]);
   useAutoRefresh(loadMarkers, POLL_MS);
   useEffect(() => { loadLocations(); }, [loadLocations]);
+
+  // Deep Desert layout: fetch the active Coriolis seed's POI set only when
+  // that map is selected. The seed only rotates weekly, so no polling.
+  useEffect(() => {
+    if (mapKey !== "DeepDesert") { setDd(null); return; }
+    let live = true;
+    fetchDeepDesertLayout().then((res) => {
+      if (live && res.ok) setDd(res.body as DeepDesertLayout);
+    }).catch(() => { if (live) setDd(null); });
+    return () => { live = false; };
+  }, [mapKey]);
   // reset view + picker when changing map
   useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }); setPending(null); }, [mapKey]);
 
@@ -238,6 +253,13 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
             style={{ width: BASE_W, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
           >
             <img src={`/${cfg.image}`} alt={cfg.label} draggable={false} className="block w-full select-none pointer-events-none" />
+            {mapKey === "DeepDesert" && dd?.available && (
+              <DeepDesertGrid
+                layout={dd.layout}
+                spiceSectors={dd.layout?.largeSpiceSectors ?? []}
+                zoom={zoom}
+              />
+            )}
             {markers.map((m) => {
               const p = worldToPct(m.x, m.y, cfg);
               return (
@@ -282,6 +304,38 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
         </div>
 
         <div className="space-y-3">
+          {mapKey === "DeepDesert" && dd?.available && (
+            <div className="card p-3 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-slate-300">Deep Desert layout</span>
+                {dd.seed !== null
+                  ? <span className="font-mono text-spice-300">seed {dd.seed}
+                      {dd.layout?.confidence ? ` · ${dd.layout.confidence.toLowerCase()}` : ""}</span>
+                  : <span className="text-amber-400">no forced seed</span>}
+              </div>
+              {dd.seed === null && (
+                <p className="text-slate-500">
+                  No Coriolis seed is forced, so the game picks a fresh layout each cycle —
+                  set a Forced Coriolis seed to pin one and show its POIs.
+                </p>
+              )}
+              {dd.layout_available && dd.layout?.legend && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-400">
+                  {dd.layout.legend.map((l) => (
+                    <span key={l.type} className="inline-flex items-center gap-1">
+                      <img src={`/wickmaps/${l.type}.${l.type === "taxi-service" ? "png" : "svg"}`}
+                        alt="" className="w-3.5 h-3.5" />
+                      {l.label} {l.count}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-slate-600 leading-tight">
+                12 fixed layouts rotate by Coriolis seed; POI data compiled from community
+                sources (may drift) — via DST (Apache-2.0).
+              </p>
+            </div>
+          )}
           {pending && (
             <div className="card p-3 space-y-2">
               <div className="text-xs text-slate-400">

@@ -1111,6 +1111,42 @@ export const worldRollbackArm = (phrase: string, target?: string) =>
     "POST", "/api/world-reset/rollback",
     target ? { phrase, target } : { phrase });
 
+// ---- Deep Desert Wick Maps (DST port) ------------------------------------
+
+export interface WickPoi {
+  sector: string;   // e.g. "I5"
+  subx: number;     // 1-4
+  suby: number;     // 0-3
+  type: string;     // wreck | cave | titanium | stravidium | testing-station | taxi-service | large-spice-field
+}
+
+export interface WickLegendEntry {
+  type: string;
+  label: string;
+  count: number;
+}
+
+export interface WickLayout {
+  seed: number;
+  confidence?: string;
+  reliability?: string;
+  largeSpiceSectors?: string[];
+  legend?: WickLegendEntry[];
+  pois: WickPoi[];
+}
+
+export interface DeepDesertLayout {
+  ok: boolean;
+  available: boolean;
+  reason?: string;
+  seed: number | null;
+  layout_available: boolean;
+  layout: WickLayout | null;
+}
+
+export const fetchDeepDesertLayout = () =>
+  api<DeepDesertLayout>("GET", "/api/map/deepdesert-layout");
+
 // ---- Player events + battlepass (dune-admin port) ------------------------
 
 export interface PlayerEvent {

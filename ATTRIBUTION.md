@@ -166,6 +166,16 @@ structured resume cursor in place of their parsed error strings, an
 in-game broadcast in place of Discord, and their phantom reward key
 (faction_scrip) refused loudly instead of silently dropped.
 
+Deep Desert Wick Maps (2026-08) port, with thanks,
+coastal-ms/DST-DuneServerTool (Apache-2.0, (c) 2026 Coastal): the insight
+that the Deep Desert cycles through 12 fixed Coriolis-seed layouts (so it
+is detected, not re-rendered), the per-seed point-of-interest dataset
+(compiled from publicly archived community sources), and the POI icon set.
+Reimplemented as scripts/admin_wickmaps.py + the coriolis-seed subcommand +
+web/src/DeepDesertGrid.tsx; we draw the 9x9 sector grid ourselves and use
+no terrain images. Per DST's NOTICE, attribution to Coastal is preserved
+here and shown in the map's Deep Desert layout panel.
+
 World reset (2026-08, C6) port, with thanks,
 coastal-ms/DST-DuneServerTool's worldreset-2 / WorldRestart.ps1
 (Apache-2.0): the reversible same-battlegroup restart shape — verified
