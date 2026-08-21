@@ -87,6 +87,8 @@
 # dune-admin (MIT). See ATTRIBUTION.md.
 #   item-delete <item_id>                        -- hard-delete one item stack by dune.items.id
 #                                                   (offline-gated on the owner + existence-checked; no DB backup)
+#   item-edit <item_id> [stack=N] [quality=N]    -- edit one stack in place (quantity/quality) via a bounded
+#                                                   dune.items UPDATE; same gating as item-delete; verified after
 #   reset-spec <player_id>                       -- DESTRUCTIVE: wipe ALL spec tracks + purchased keystones
 #                                                   (controller-keyed, offline only; does not recompute FLevel SP)
 #   account-delete <player_id> <confirm-fls> [reason]
@@ -4383,6 +4385,128 @@ SQL
         fi
         echo "[admin-publish] OK item-delete id=$item_id template=$it_template stack=$it_stack owner=${it_fls:-none}"
         echo "publish=db-write item-delete id=$item_id template=$it_template"
+        exit 0
+        ;;
+    item-edit)
+        # Edit one item stack in place: its quantity (stack_size) and/or
+        # quality (quality_level). The missing verb between give-item (INSERT)
+        # and item-delete (DELETE). There is NO safe server proc for this — the
+        # game's update_inventory path is for the running server, not us — so we
+        # write dune.items directly, exactly like the base/generator fuel refill
+        # does, and inherit item-delete's ownership resolution + gating: the
+        # running map caches inventory in memory and would clobber/ghost a live
+        # edit, so player-carried items require the owner OFFLINE and world
+        # (base/placeable) items require the map DOWN. Both fields are optional
+        # but at least one is required; bounds are validated before the write.
+        item_id="${1:?usage: item-edit <item_id> [stack=N] [quality=N]}"
+        shift || true
+        new_stack=""
+        new_quality=""
+        for arg in "$@"; do
+            case "$arg" in
+                stack=*)   new_stack="${arg#stack=}" ;;
+                quality=*) new_quality="${arg#quality=}" ;;
+                *) echo "[admin-publish] ERROR item-edit: unknown arg '$arg' (use stack=N quality=N)" >&2; exit 2 ;;
+            esac
+        done
+        case "$item_id" in
+            ''|*[!0-9]*) echo "[admin-publish] ERROR item-edit: item_id must be a positive integer, got '$item_id'" >&2; exit 2 ;;
+        esac
+        [ "$item_id" -ge 1 ] || { echo "[admin-publish] ERROR item-edit: item_id must be >= 1" >&2; exit 2; }
+        if [ -z "$new_stack" ] && [ -z "$new_quality" ]; then
+            echo "[admin-publish] ERROR item-edit: nothing to change — give stack=N and/or quality=N" >&2
+            exit 2
+        fi
+        if [ -n "$new_stack" ]; then
+            case "$new_stack" in ''|*[!0-9]*) echo "[admin-publish] ERROR item-edit: stack must be a positive integer, got '$new_stack'" >&2; exit 2 ;; esac
+            [ "$new_stack" -ge 1 ] || { echo "[admin-publish] ERROR item-edit: stack must be >= 1 (use item-delete to remove)" >&2; exit 2; }
+            [ "$new_stack" -le 1000000 ] || { echo "[admin-publish] ERROR item-edit: stack $new_stack exceeds the 1000000 ceiling" >&2; exit 2; }
+        fi
+        if [ -n "$new_quality" ]; then
+            case "$new_quality" in ''|*[!0-9]*) echo "[admin-publish] ERROR item-edit: quality must be a non-negative integer, got '$new_quality'" >&2; exit 2 ;; esac
+        fi
+        dune_require_tables dune.items dune.inventories dune.actors || exit 3
+        # Resolve item -> current template/stack/quality + owning FLS + kind +
+        # map (identical join to item-delete). Empty => item/inventory absent.
+        row=$(dune_psql_q --set=iid="$item_id" -tAF'|' <<'SQL'
+SELECT i.template_id, i.stack_size, i.quality_level, COALESCE(ea."user", ''),
+       CASE WHEN ac.class ILIKE '%PlayerCharacter%'
+              OR ac.class ILIKE '%PlayerController%'
+              OR ac.class ILIKE '%PlayerState%' THEN 'player' ELSE 'world' END,
+       COALESCE(ac.map, '')
+FROM dune.items i
+JOIN dune.inventories inv ON inv.id = i.inventory_id
+JOIN dune.actors ac ON ac.id = inv.actor_id
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = ac.owner_account_id
+WHERE i.id = :'iid'::bigint
+SQL
+)
+        if [ -z "$row" ]; then
+            echo "[admin-publish] ERROR item-edit: no item with id $item_id (or it has no valid inventory)" >&2
+            exit 1
+        fi
+        IFS='|' read -r it_template it_stack it_quality it_fls it_kind it_map <<EOF2
+$row
+EOF2
+        # Quality ceiling is data-driven: never above what the world already
+        # proves exists (avoids ghosting an item with an out-of-domain tier),
+        # with a floor of 6 so a young world without high-tier drops can still
+        # set the standard tiers. Refuse above it rather than silently clamp.
+        if [ -n "$new_quality" ]; then
+            q_ceiling=$(dune_psql_q -tA <<'SQL' | tr -d '\r\n'
+SELECT GREATEST(6, COALESCE(MAX(quality_level), 0)) FROM dune.items
+SQL
+)
+            case "$q_ceiling" in ''|*[!0-9]*) q_ceiling=6 ;; esac
+            if [ "$new_quality" -gt "$q_ceiling" ]; then
+                echo "[admin-publish] ERROR item-edit: quality $new_quality exceeds the ceiling $q_ceiling (max tier the world proves)" >&2
+                exit 2
+            fi
+        fi
+        # ---- Gate exactly like item-delete ----
+        if [ "$it_kind" = "world" ]; then
+            if [ -z "$it_map" ]; then
+                echo "[admin-publish] ERROR item-edit: item $item_id sits in a world inventory with no resolvable map — refusing (fail closed)." >&2
+                exit 1
+            fi
+            map_down_check "$it_map" "item-edit" || exit $?
+        elif [ -n "$it_fls" ]; then
+            assert_player_offline "$it_fls" || exit $?
+        fi
+        # ---- Bounded direct UPDATE (COALESCE keeps the untouched field) ----
+        rc=0
+        dune_psql_q --set=iid="$item_id" --set=st="$new_stack" --set=ql="$new_quality" -tA >/dev/null <<'SQL' || rc=$?
+UPDATE dune.items
+SET stack_size    = COALESCE(NULLIF(:'st', '')::int, stack_size),
+    quality_level = COALESCE(NULLIF(:'ql', '')::int, quality_level)
+WHERE id = :'iid'::bigint
+SQL
+        if [ "$rc" -ne 0 ]; then
+            echo "[admin-publish] ERROR item-edit: UPDATE failed (rc=$rc)" >&2
+            exit 1
+        fi
+        # ---- Verify the write landed (the tool lies otherwise) ----
+        after=$(dune_psql_q --set=iid="$item_id" -tAF'|' <<'SQL'
+SELECT stack_size, quality_level FROM dune.items WHERE id = :'iid'::bigint
+SQL
+)
+        if [ -z "$after" ]; then
+            echo "[admin-publish] ERROR item-edit: item $item_id vanished after UPDATE" >&2
+            exit 1
+        fi
+        IFS='|' read -r a_stack a_quality <<EOF3
+$after
+EOF3
+        if [ -n "$new_stack" ] && [ "$a_stack" != "$new_stack" ]; then
+            echo "[admin-publish] ERROR item-edit: stack is $a_stack after UPDATE, expected $new_stack" >&2
+            exit 1
+        fi
+        if [ -n "$new_quality" ] && [ "$a_quality" != "$new_quality" ]; then
+            echo "[admin-publish] ERROR item-edit: quality is $a_quality after UPDATE, expected $new_quality" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK item-edit id=$item_id template=$it_template stack=${it_stack}->${a_stack} quality=${it_quality}->${a_quality} owner=${it_fls:-none}"
+        echo "publish=db-write item-edit id=$item_id template=$it_template"
         exit 0
         ;;
     reset-spec)

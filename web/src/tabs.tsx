@@ -15,6 +15,7 @@ import {
   armorSetTier,
   clampNum,
   deleteItem,
+  editItem,
   deleteVehicleActor,
   fetchInventory,
   detectSkillType,
@@ -81,6 +82,7 @@ import {
   pushToConsole,
   type ConsoleEntry,
 } from "./components";
+import { ItemEditModal, type EditableItem } from "./ItemEditModal";
 import { useTarget } from "./target";
 import {
   BUILT_IN_KITS,
@@ -3157,6 +3159,9 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [editing, setEditing] = useState<EditableItem | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
   const [view, setView] = useState<string>("all");
 
   async function load() {
@@ -3179,6 +3184,26 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
     pushToConsole(setConsoleEntries, `item-delete #${id} (${name})`, res.body as PublishResult, ok);
     setConfirm(null);
     if (ok) load();
+  }
+
+  async function doEdit(patch: { stack?: number; quality?: number }) {
+    if (!editing) return;
+    setEditBusy(true);
+    setEditErr(null);
+    const res = await editItem(editing.id, patch);
+    const ok = res.ok && (res.body as PublishResult).ok;
+    pushToConsole(setConsoleEntries, `item-edit #${editing.id} (${editing.name})`, res.body as PublishResult, ok);
+    setEditBusy(false);
+    if (ok) {
+      setEditing(null);
+      load();
+    } else {
+      // A publish failure carries the reason on stderr; a 400 from the HTTP
+      // layer carries {error}. Prefer the last stderr line, then {error}.
+      const b = res.body as PublishResult & { error?: string };
+      const stderrLine = (b.stderr || "").trim().split("\n").filter(Boolean).pop();
+      setEditErr(stderrLine || b.error || "edit rejected (owner online, or invalid value)");
+    }
   }
 
   // Keep a loaded inventory fresh while Live is on (no-op until one is loaded).
@@ -3205,6 +3230,7 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
   const present = INV_CONTAINERS.filter((c) => items.some((it) => c.match(it.type)));
   const show = (cid: string) => view === "all" || view === cid;
   const delFloat = (it: InvItem) => <button className="tile-del" onClick={() => setConfirm({ id: it.id, name: it.name })} title="delete stack">✕</button>;
+  const editFloat = (it: InvItem) => <button className="tile-edit" onClick={() => setEditing({ id: it.id, name: it.name, tmpl: it.tmpl, qty: it.qty, quality: it.quality })} title="edit quantity / quality">✎</button>;
   const ItemTable = ({ list }: { list: InvItem[] }) => (
     <table className="tbl">
       <thead><tr><th>Item</th><th>Qty</th><th>Quality</th><th>Durability</th><th></th></tr></thead>
@@ -3215,7 +3241,10 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
             <td className="font-mono">{it.qty}</td>
             <td>{it.quality}</td>
             <td className="w-28">{it.dura != null ? <InvBar v={it.dura} /> : <span className="text-slate-600">—</span>}</td>
-            <td className="text-right"><button className="btn-ghost btn-del text-xs" onClick={() => setConfirm({ id: it.id, name: it.name })}>delete</button></td>
+            <td className="text-right whitespace-nowrap">
+              <button className="btn-ghost text-xs" onClick={() => setEditing({ id: it.id, name: it.name, tmpl: it.tmpl, qty: it.qty, quality: it.quality })}>edit</button>
+              <button className="btn-ghost btn-del text-xs ml-1" onClick={() => setConfirm({ id: it.id, name: it.name })}>delete</button>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -3234,10 +3263,11 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
         <div className="p-4 space-y-3">
           <PlayerPicker />
           <p className="text-xs text-slate-500">
-            Reads <span className="font-mono text-slate-300">dune.items</span> for the target character. Deleting a
-            stack is <span className="text-red-300">permanent</span> and requires the player to be{" "}
-            <span className="font-mono text-slate-300">offline</span> — the server rejects deletes on a connected
-            character.
+            Reads <span className="font-mono text-slate-300">dune.items</span> for the target character. Editing a
+            stack's quantity/quality or deleting it writes <span className="font-mono text-slate-300">dune.items</span>{" "}
+            directly and requires the player to be <span className="font-mono text-slate-300">offline</span> — the
+            server rejects live edits on a connected character. Deletes are{" "}
+            <span className="text-red-300">permanent</span>.
           </p>
           {error && <p className="text-sm text-red-400">{error}</p>}
           {table && table.available === false && (
@@ -3264,6 +3294,7 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
           <div className="card-body"><div className="equip-grid">
             {inContainer("equipment").map((it) => (
               <div key={it.id} className="slot-tile">
+                {editFloat(it)}
                 {delFloat(it)}
                 <div className="text-sm truncate" title={it.name}>{it.name}</div>
                 <div className="text-[10px] text-slate-600 font-mono">q{it.quality}{parseInt(it.qty, 10) > 1 ? ` · ×${it.qty}` : ""}{it.slot ? ` · slot ${it.slot}` : ""}</div>
@@ -3280,6 +3311,7 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
           <div className="card-body"><div className="toolbar-bar">
             {inContainer("toolbar").map((it) => (
               <div key={it.id} className="tslot">
+                {editFloat(it)}
                 {delFloat(it)}
                 {it.slot && <span className="tslot-num">{it.slot}</span>}
                 <span className="tslot-name" title={it.name}>{it.name}</span>
@@ -3317,6 +3349,15 @@ export function InventoryTab({ setConsoleEntries }: TabProps) {
         onConfirm={() => confirm && doDelete(confirm.id, confirm.name)}
         onCancel={() => setConfirm(null)}
       />
+      {editing && (
+        <ItemEditModal
+          item={editing}
+          busy={editBusy}
+          error={editErr}
+          onSave={doEdit}
+          onCancel={() => { setEditing(null); setEditErr(null); }}
+        />
+      )}
     </div>
   );
 }

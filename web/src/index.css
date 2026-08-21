@@ -683,6 +683,16 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   }
   .slot-tile:hover .tile-del, .tslot:hover .tile-del { opacity: 1; }
   .tile-del:hover { color: var(--err); border-color: color-mix(in oklch, var(--err) 40%, transparent); background: color-mix(in oklch, var(--err) 14%, transparent); }
+
+  .tile-edit {
+    position: absolute; top: 7px; right: 37px; width: 24px; height: 24px;
+    display: grid; place-items: center; border-radius: 7px;
+    border: 1px solid var(--border-soft); background: color-mix(in oklch, var(--bg) 70%, transparent);
+    color: var(--text-faint); cursor: pointer; opacity: 0; font-size: 12px;
+    transition: opacity 0.14s ease, color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+  }
+  .slot-tile:hover .tile-edit, .tslot:hover .tile-edit { opacity: 1; }
+  .tile-edit:hover { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, transparent); background: color-mix(in oklch, var(--accent) 14%, transparent); }
 }
 @media (max-width: 1040px) {
   .lay-dash-main { grid-template-columns: 1fr; }

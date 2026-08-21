@@ -6,6 +6,7 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Confirm, pushToConsole, type ConsoleEntry } from "./components";
+import { ItemEditModal, type EditableItem } from "./ItemEditModal";
 import {
   baseFuelRefill,
   baseGuardApply,
@@ -16,6 +17,7 @@ import {
   baseTransferCustodian,
   baseWaterRefill,
   deleteItem,
+  editItem,
   fetchBaseContainers,
   fetchBaseFuel,
   fetchBaseGuard,
@@ -66,6 +68,30 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
   const selectedIdRef = useRef<string>("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
+  const [editing, setEditing] = useState<EditableItem | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
+
+  async function doEditItem(patch: { stack?: number; quality?: number }) {
+    if (!editing) return;
+    setEditBusy(true);
+    setEditErr(null);
+    const res = await editItem(editing.id, patch).catch(() => null);
+    setEditBusy(false);
+    const rb: unknown = res?.body;
+    const ok = Boolean(res?.ok) && typeof rb === "object" && rb !== null
+      && "ok" in rb && (rb as { ok?: unknown }).ok === true;
+    pushToConsole(setConsoleEntries, `item-edit ${editing.id}`,
+      typeof rb === "string" ? rb : (rb as PublishResult), ok);
+    if (ok) {
+      setEditing(null);
+      if (selected) void loadContainers(selected);
+    } else {
+      const stderr = typeof rb === "object" && rb !== null && "stderr" in rb ? String((rb as { stderr?: string }).stderr ?? "") : "";
+      const errField = typeof rb === "object" && rb !== null && "error" in rb ? String((rb as { error?: string }).error ?? "") : "";
+      setEditErr(stderr.trim().split("\n").filter(Boolean).pop() || errField || "edit rejected (map online, or invalid value)");
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -506,7 +532,14 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
                           <td className="pr-3">{it.item_id ? it.template_id : <span className="text-slate-500 italic">empty</span>}</td>
                           <td className="pr-3 font-mono">{it.item_id ? it.stack_size : ""}</td>
                           <td className="pr-3 font-mono">{it.item_id && it.quality_level !== "0" ? `Q${it.quality_level}` : ""}</td>
-                          <td className="text-right">
+                          <td className="text-right whitespace-nowrap">
+                            {it.item_id && (
+                              <button className="btn-ghost text-xs mr-1" disabled={busy}
+                                title="edit quantity / quality"
+                                onClick={() => setEditing({ id: it.item_id, name: it.template_id, tmpl: it.template_id, qty: it.stack_size, quality: it.quality_level })}>
+                                ✎
+                              </button>
+                            )}
                             {it.item_id && (
                               <button className="btn-ghost text-xs text-red-300" disabled={busy}
                                 onClick={() => setConfirm({
@@ -697,6 +730,15 @@ export function BasesTab({ setConsoleEntries }: { setConsoleEntries: SetEntries 
         onConfirm={() => { confirm?.onConfirm(); setConfirm(null); }}
         onCancel={() => setConfirm(null)}
       />
+      {editing && (
+        <ItemEditModal
+          item={editing}
+          busy={editBusy}
+          error={editErr}
+          onSave={doEditItem}
+          onCancel={() => { setEditing(null); setEditErr(null); }}
+        />
+      )}
     </div>
   );
 }

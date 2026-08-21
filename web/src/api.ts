@@ -236,6 +236,12 @@ export const fetchInventory = (playerId: string) =>
 export const deleteItem = (itemId: string) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/delete`);
 
+// Edit one item stack in place — quantity (stack) and/or quality. Same backend
+// gating as deleteItem (owner offline for player items, map down for world
+// items). Send at least one field; stack >= 1, quality >= 0.
+export const editItem = (itemId: string, patch: { stack?: number; quality?: number }) =>
+  api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/edit`, patch);
+
 // ---- Live map (Phase 2-4) ----------------------------------------------
 export interface MapMarker {
   id: string;

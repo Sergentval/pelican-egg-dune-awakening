@@ -3600,6 +3600,42 @@ class Handler(BaseHTTPRequestHandler):
             self._write(200, entry)
             return
 
+        # Edit one item stack in place: stack (quantity) and/or quality. Body:
+        #   {"stack": <int>=1, "quality": <int>=0}  — at least one required.
+        # Same gating as delete (owner offline / map down), enforced in bash.
+        # POST /api/items/<item_id>/edit
+        if path.startswith("/api/items/") and path.endswith("/edit"):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            item_id = unquote(path[len("/api/items/"):-len("/edit")])
+            if not item_id.isdigit() or int(item_id) < 1:
+                self._write(400, {"error": "item_id (positive integer) required"})
+                return
+            args = ["item-edit", item_id]
+            if isinstance(body, dict):
+                stack = body.get("stack")
+                quality = body.get("quality")
+                if stack is not None:
+                    if not (isinstance(stack, int) and not isinstance(stack, bool) and stack >= 1):
+                        self._write(400, {"error": "stack must be an integer >= 1"})
+                        return
+                    args.append(f"stack={stack}")
+                if quality is not None:
+                    if not (isinstance(quality, int) and not isinstance(quality, bool) and quality >= 0):
+                        self._write(400, {"error": "quality must be an integer >= 0"})
+                        return
+                    args.append(f"quality={quality}")
+            if len(args) == 2:
+                self._write(400, {"error": "nothing to change — send stack and/or quality"})
+                return
+            entry = run_publish(args, timeout=15)
+            self._write(200, entry)
+            return
+
         # Saved teleport locations: add/replace or remove. Body is one of:
         #   {"action":"add","location":{"name","map","x","y","z"}}
         #   {"action":"remove","name":"..."}

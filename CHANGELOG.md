@@ -16,6 +16,20 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Item edit (quantity / quality)
+
+- New `item-edit <item_id> [stack=N] [quality=N]` — the missing verb between
+  `give-item` (INSERT) and `item-delete` (DELETE). Edits one stack's quantity
+  and/or quality in place via a bounded direct `UPDATE dune.items` (no safe
+  server proc exists), reusing `item-delete`'s ownership resolution and gating:
+  player-carried items require the owner **offline**, world/base items require
+  the **map down** (the running map caches inventory in memory and would clobber
+  a live edit). Bounds: stack 1..1,000,000; quality capped at the highest tier
+  the world already proves (floor 6) so an out-of-domain tier can't ghost the
+  item. The write is re-read and verified before reporting success. Surfaced as
+  an ✎ edit control on every item row in the **Player inventory** tab and in
+  **base containers**; HTTP `POST /api/items/<item_id>/edit`.
+
 ## 2026-08-21 — Coriolis seed control
 
 - The Deep Desert side panel gained a **Coriolis seed control**. It reads the

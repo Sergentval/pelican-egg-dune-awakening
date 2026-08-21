@@ -625,6 +625,19 @@ admin base-permissions <base_id>   # CSV: rank, character, fls_id, player_id, ca
   distinguishes inventories: a WORLD inventory (placeable/vehicle — cached by
   the running map) requires the map-down gate, a player-carried inventory the
   offline gate.
+- **Editing a stack** (quantity/quality) goes through `item-edit`, which
+  applies the SAME gating and a bounded direct `UPDATE dune.items` (there is no
+  safe server proc — the game's `update_inventory` is for the running server,
+  not us), then re-reads the row to confirm the write landed:
+
+  ```text
+  admin item-edit <item_id> [stack=N] [quality=N]   # at least one of stack/quality
+  ```
+
+  Stack is 1..1000000; quality is capped at the highest tier the world already
+  proves (floor 6) so an out-of-domain tier can't ghost the item. Edit from the
+  ✎ button on any item row in the Player inventory tab or a base container.
+  HTTP: `POST /api/items/<item_id>/edit` with `{stack?, quality?}`.
 - An empty permission roster means the base is unclaimed — that emptiness is
   the diagnosis.
 - `canonical=f` flags a rank row whose player id is NOT the account's
