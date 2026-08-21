@@ -760,6 +760,26 @@ reshaped for this single-container stack; see ATTRIBUTION.md.
   `POST /api/world-reset/rollback` `{phrase, target?}`. UI: 🌍 card in the
   Scheduler tab, chained to the existing restart-now flow.
 
+## Deep Desert map (Wick Maps)
+
+The Live Map's Deep Desert view draws a 9x9 sector grid (rows A-I, columns
+1-9) and overlays the current week's points of interest. The Deep Desert
+isn't random — it cycles through **12 fixed layouts** selected by a Coriolis
+world seed (0-11) that rotates each Coriolis storm, so the panel detects the
+active seed (`admin coriolis-seed`, wrapping `dune.debug_get_coriolis_seeds()`)
+and shows that seed's pre-collected POIs (wrecks, caves, spice fields,
+testing stations, titanium, stravidium, taxi). No terrain image is used —
+the grid is drawn, so nothing goes stale.
+
+- If no Coriolis seed is forced, the game picks a fresh layout each cycle and
+  the panel says so (no POIs shown). Force a seed (Game Config → Forced
+  Coriolis World Seed) to pin one and get its POIs.
+- POI data covers all 12 seeds, ported from DST (Apache-2.0); it's compiled
+  from community sources and may drift as the game updates.
+- The sector grid bounds are being calibrated against real player positions;
+  live player dots share the grid's coordinate space.
+- HTTP: `GET /api/map/deepdesert-layout` → `{seed, layout}`.
+
 ## Player events + battlepass
 
 Ported from Icehunter/dune-admin's events + battlepass engines (MIT),

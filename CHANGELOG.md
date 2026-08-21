@@ -16,6 +16,18 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Deep Desert sector map (Wick Maps)
+
+- The Live Map's Deep Desert now draws a proper **9x9 sector grid** (A-I ×
+  1-9) and overlays the week's points of interest — wrecks, caves, spice
+  fields, testing stations, titanium, stravidium, taxi. The Deep Desert
+  cycles through 12 fixed layouts by Coriolis seed; the panel detects the
+  active seed and shows the matching POIs, so it self-updates each cycle
+  with no re-rendering and no terrain image (nothing goes stale). Side
+  panel shows the seed, confidence and a legend. Ported from DST
+  (Apache-2.0) — see ATTRIBUTION.md. Grid bounds are being calibrated
+  against real player positions (#116).
+
 ## 2026-08-21 — Panel UI updates no longer need a hard refresh
 
 - `index.html` was served with no cache headers, so browsers applied
