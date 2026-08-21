@@ -16,6 +16,15 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Panel UI updates no longer need a hard refresh
+
+- `index.html` was served with no cache headers, so browsers applied
+  heuristic freshness and kept pointing at the previous build's
+  content-hashed JS — a reinstall silently served the old UI (this is
+  why the #116 map fix looked undeployed). `index.html` is now
+  `no-cache, must-revalidate`; hashed `/assets/` get an immutable
+  long max-age. Every future frontend change lands on the next reload.
+
 ## 2026-08-21 — Live map: Deep Desert pins were vertically mirrored
 
 - A player at the Deep Desert southern arrival zone rendered at the top
