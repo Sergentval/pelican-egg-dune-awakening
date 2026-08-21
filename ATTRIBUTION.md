@@ -166,6 +166,17 @@ structured resume cursor in place of their parsed error strings, an
 in-game broadcast in place of Discord, and their phantom reward key
 (faction_scrip) refused loudly instead of silently dropped.
 
+Guild management (2026-08) port, with thanks, Icehunter/dune-admin's
+guilds feature (#117, MIT): the read model (guild summary + canonical
+roster/invite resolution), the proc-only mutation posture (the game's
+edit_guild_description / promote / demote procs self-lock and pg_notify so
+changes apply live), the 50/100 role semantics with the promote-transfers-
+leadership rule, and the rename-as-lock-guarded-UPDATE approach with its
+documented restart caveat. Reimplemented as the guild-* subcommands +
+web/src/GuildsTab.tsx; we add kick (with a loud leader refusal where the
+game proc silently skips), disband, and admin-side guild creation, which
+dune-admin does not expose.
+
 Deep Desert Wick Maps (2026-08) port, with thanks,
 coastal-ms/DST-DuneServerTool (Apache-2.0, (c) 2026 Coastal): the insight
 that the Deep Desert cycles through 12 fixed Coriolis-seed layouts (so it

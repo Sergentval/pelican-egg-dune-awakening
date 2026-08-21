@@ -242,6 +242,62 @@ export const deleteItem = (itemId: string) =>
 export const editItem = (itemId: string, patch: { stack?: number; quality?: number }) =>
   api<PublishResult>("POST", `/api/items/${encodeURIComponent(itemId)}/edit`, patch);
 
+// ---- Guilds (dune-admin #117 port) ---------------------------------------
+// Writes go through the game's own guild procs (self-locking + pg_notify →
+// apply LIVE); rename is the one lock-guarded UPDATE (in-game after restart).
+// player_id everywhere = the player-CONTROLLER actor id from the roster.
+
+export interface GuildRow {
+  guild_id: string;
+  guild_name: string;
+  faction_id: string;
+  faction: string;
+  members: string;
+  description: string;
+}
+export interface GuildMemberRow {
+  player_id: string;
+  role_id: string;
+  role: string;      // leader | member | role-N
+  character: string;
+  fls_id: string;
+  online_status: string;
+  canonical: string; // "t" | "f"
+}
+export interface GuildInviteRow {
+  invite_id: string;
+  invitee_id: string;
+  invitee: string;
+  sender_id: string;
+  sender: string;
+}
+export interface GuildsResp { ok: boolean; available: boolean; reason?: string; guilds: GuildRow[]; }
+export interface GuildDetailResp {
+  ok: boolean;
+  available: boolean;
+  reason?: string;
+  members: GuildMemberRow[];
+  invites: GuildInviteRow[];
+}
+
+export const fetchGuilds = () => api<GuildsResp>("GET", "/api/guilds");
+export const fetchGuildDetail = (gid: string) =>
+  api<GuildDetailResp>("GET", `/api/guilds/${encodeURIComponent(gid)}`);
+export const guildRename = (gid: string, name: string) =>
+  api<PublishResult>("POST", `/api/guilds/${encodeURIComponent(gid)}/rename`, { name });
+export const guildDescribe = (gid: string, description: string) =>
+  api<PublishResult>("POST", `/api/guilds/${encodeURIComponent(gid)}/describe`, { description });
+export const guildSetRole = (gid: string, playerId: string, role: 50 | 100) =>
+  api<PublishResult>("POST", `/api/guilds/${encodeURIComponent(gid)}/role`, { player_id: playerId, role });
+export const guildKick = (gid: string, playerId: string) =>
+  api<PublishResult>("POST", `/api/guilds/${encodeURIComponent(gid)}/kick`, { player_id: playerId });
+export const guildDisband = (gid: string) =>
+  api<PublishResult>("POST", `/api/guilds/${encodeURIComponent(gid)}/disband`, {});
+// player accepts an FLS id or name:<character> (resolved server-side).
+export const guildCreate = (player: string, name: string, description?: string) =>
+  api<PublishResult>("POST", "/api/guilds/create",
+    description ? { player, name, description } : { player, name });
+
 // ---- Database tab (read-only SQL) ----------------------------------------
 // The backend enforces read-only (SELECT / WITH / EXPLAIN / SHOW only) and
 // caps the result at 200 rows. Gives operators a first-class way to inspect

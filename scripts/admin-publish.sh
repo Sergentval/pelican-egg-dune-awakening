@@ -89,6 +89,19 @@
 #                                                   (offline-gated on the owner + existence-checked; no DB backup)
 #   item-edit <item_id> [stack=N] [quality=N]    -- edit one stack in place (quantity/quality) via a bounded
 #                                                   dune.items UPDATE; same gating as item-delete; verified after
+#
+# Guild subcommands (dune-admin #117 port, MIT). Writes go through the game's
+# own guild procs (self-locking + pg_notify -> apply LIVE); rename is the one
+# lock-guarded UPDATE (no proc/notify exists; in-game after next restart).
+#   guilds                                       -- all guilds: id, name, faction, members, description
+#   guild-members <guild_id>                     -- roster: controller id, role (100=leader/50=member), character, online
+#   guild-invites <guild_id>                     -- pending invites: invitee + sender
+#   guild-describe <guild_id> <description>      -- set description (LIVE)
+#   guild-rename <guild_id> <new-name>           -- rename (uniqueness-checked; in-game after restart)
+#   guild-set-role <guild_id> <player_id> <50|100> -- 100 transfers leadership (old leader -> 50); 50 demotes
+#   guild-kick <guild_id> <player_id>            -- remove a member (refuses the leader; LIVE)
+#   guild-create <player> <name> [description]   -- create a guild with <player> as leader (LIVE)
+#   guild-disband <guild_id>                     -- DESTRUCTIVE: dissolve the guild (LIVE)
 #   reset-spec <player_id>                       -- DESTRUCTIVE: wipe ALL spec tracks + purchased keystones
 #                                                   (controller-keyed, offline only; does not recompute FLevel SP)
 #   account-delete <player_id> <confirm-fls> [reason]
@@ -4526,6 +4539,324 @@ EOF3
         echo "publish=db-write item-edit id=$item_id template=$it_template"
         exit 0
         ;;
+
+    # ---- Guild management (dune-admin #117 port, MIT — see ATTRIBUTION.md) ----
+    # Same architecture as the base-permission writes (C3.4): every mutation
+    # goes through the game's own stored procs, each of which self-acquires
+    # pg_advisory_xact_lock(601145) and pg_notify('guild_notify_channel', ...)
+    # that the running maps LISTEN on — changes apply LIVE, no restart, no
+    # map-down gate. Direct DML is the trap (no notify → the running server
+    # never hears about it). One exception: guild RENAME has no game proc and
+    # no notify verb, so it is a lock-guarded uniqueness-checked UPDATE that
+    # the game reflects only after it reloads guild data (next restart).
+    # guild_members.player_id is the player-CONTROLLER actor id (proven by
+    # dune.get_all_guild_members: ps.player_controller_id = gm.player_id).
+    # Roles: 100 = leader (exactly one — promoting to 100 demotes the sitting
+    # leader to 50), 50 = member.
+    guilds)
+        # All guilds: id, name, faction, member count, description. Read-only.
+        dune_require_tables dune.guilds dune.guild_members || exit 3
+        dune_psql_q -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'GL_SQL'
+SELECT g.guild_id,
+       g.guild_name,
+       g.guild_faction AS faction_id,
+       CASE g.guild_faction WHEN 1 THEN 'Atreides' WHEN 2 THEN 'Harkonnen' ELSE 'Neutral' END AS faction,
+       COALESCE(m.members, 0) AS members,
+       COALESCE(g.guild_description, '') AS description
+FROM dune.guilds g
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS members FROM dune.guild_members gm WHERE gm.guild_id = g.guild_id
+) m ON TRUE
+ORDER BY g.guild_name NULLS LAST, g.guild_id;
+GL_SQL
+        exit 0
+        ;;
+
+    guild-members)
+        # Roster of ONE guild: controller id, role, character, fls, online.
+        # Name resolution mirrors base-permissions: resilient via the actor's
+        # owner account (survives char teardown), with a canonical flag for
+        # rows whose player_id is not an account's player_controller_id.
+        gid="${1:?usage: guild-members <guild_id>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-members: guild id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.guilds dune.guild_members dune.actors \
+            dune.encrypted_player_state dune.encrypted_accounts || exit 3
+        dune_psql_q --set=gid="$gid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'GM_SQL'
+SELECT gm.player_id,
+       gm.role_id,
+       CASE gm.role_id WHEN 100 THEN 'leader' WHEN 50 THEN 'member' ELSE 'role-' || gm.role_id END AS role,
+       CASE gm.player_id
+           WHEN 900000201 THEN 'Server'
+           WHEN 900000101 THEN 'GM'
+           ELSE COALESCE(convert_from(ps.encrypted_character_name, 'UTF8'), '')
+       END AS character,
+       COALESCE(ea."user", '') AS fls_id,
+       COALESCE(ps.online_status::text, '') AS online_status,
+       EXISTS (SELECT 1 FROM dune.encrypted_player_state ceps
+               WHERE ceps.player_controller_id = gm.player_id) AS canonical
+FROM dune.guild_members gm
+LEFT JOIN dune.actors player_a ON player_a.id = gm.player_id
+LEFT JOIN dune.encrypted_player_state ps ON ps.account_id = player_a.owner_account_id
+LEFT JOIN dune.encrypted_accounts ea ON ea.id = player_a.owner_account_id
+WHERE gm.guild_id = :'gid'::bigint
+ORDER BY gm.role_id DESC, character ASC;
+GM_SQL
+        exit 0
+        ;;
+
+    guild-invites)
+        # Pending invites of ONE guild: invitee + sender, names resolved the
+        # same resilient way. Read-only.
+        gid="${1:?usage: guild-invites <guild_id>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-invites: guild id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.guild_invites dune.actors dune.encrypted_player_state || exit 3
+        dune_psql_q --set=gid="$gid" -q --csv \
+            -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'GI_SQL'
+SELECT i.invite_id,
+       i.player_id AS invitee_id,
+       COALESCE(convert_from(ips.encrypted_character_name, 'UTF8'), '') AS invitee,
+       i.sender_player_id AS sender_id,
+       COALESCE(convert_from(sps.encrypted_character_name, 'UTF8'), '') AS sender
+FROM dune.guild_invites i
+LEFT JOIN dune.actors ia ON ia.id = i.player_id
+LEFT JOIN dune.encrypted_player_state ips ON ips.account_id = ia.owner_account_id
+LEFT JOIN dune.actors sa ON sa.id = i.sender_player_id
+LEFT JOIN dune.encrypted_player_state sps ON sps.account_id = sa.owner_account_id
+WHERE i.guild_id = :'gid'::bigint
+ORDER BY i.invite_id;
+GI_SQL
+        exit 0
+        ;;
+
+    guild-describe)
+        # Set a guild's description via the game's edit_guild_description proc
+        # (locks + notifies → applies LIVE). Verified by re-read.
+        gid="${1:?usage: guild-describe <guild_id> <description>}"
+        desc="${2?usage: guild-describe <guild_id> <description>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-describe: guild id must be numeric" >&2; exit 2;; esac
+        if [ "${#desc}" -gt 512 ]; then
+            echo "[admin-publish] ERROR guild-describe: description exceeds 512 chars" >&2; exit 2
+        fi
+        dune_require_tables dune.guilds || exit 3
+        exists=$(dune_psql_q --set=gid="$gid" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        [ "$exists" = "1" ] || { echo "[admin-publish] ERROR guild-describe: no guild with id $gid" >&2; exit 1; }
+        rc=0
+        dune_psql_q --set=gid="$gid" --set=d="$desc" -tA -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || rc=$?
+SELECT dune.edit_guild_description(:'gid'::bigint, :'d')
+SQL
+        [ "$rc" -eq 0 ] || { echo "[admin-publish] ERROR guild-describe: proc failed (rc=$rc)" >&2; exit 1; }
+        after=$(dune_psql_q --set=gid="$gid" -tA <<'SQL'
+SELECT COALESCE(guild_description, '') FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        if [ "$after" != "$desc" ]; then
+            echo "[admin-publish] ERROR guild-describe: description did not stick (read back: '$after')" >&2; exit 1
+        fi
+        echo "[admin-publish] OK guild-describe id=$gid"
+        echo "publish=db-write guild-describe id=$gid"
+        exit 0
+        ;;
+
+    guild-rename)
+        # Rename a guild. NO game proc and NO notify verb exist for this, so:
+        # one transaction under the game's own advisory lock, uniqueness
+        # enforced case-insensitively (mirroring create_guild) in the SAME
+        # UPDATE statement — no DO block (":'var' does not interpolate there").
+        # The running server reflects the new name only after it reloads guild
+        # data (next restart); the DB is authoritative immediately.
+        gid="${1:?usage: guild-rename <guild_id> <new-name>}"
+        name="${2:?usage: guild-rename <guild_id> <new-name>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-rename: guild id must be numeric" >&2; exit 2;; esac
+        name_trimmed=$(printf '%s' "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+        [ -n "$name_trimmed" ] || { echo "[admin-publish] ERROR guild-rename: name must not be empty" >&2; exit 2; }
+        if [ "${#name_trimmed}" -gt 64 ]; then
+            echo "[admin-publish] ERROR guild-rename: name exceeds 64 chars" >&2; exit 2
+        fi
+        dune_require_tables dune.guilds || exit 3
+        exists=$(dune_psql_q --set=gid="$gid" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        [ "$exists" = "1" ] || { echo "[admin-publish] ERROR guild-rename: no guild with id $gid" >&2; exit 1; }
+        rc=0
+        dune_psql_q --set=gid="$gid" --set=n="$name_trimmed" -tA -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || rc=$?
+BEGIN;
+SELECT dune.guilds_get_exclusive_operation_lock();
+UPDATE dune.guilds g SET guild_name = :'n'
+WHERE g.guild_id = :'gid'::bigint
+  AND NOT EXISTS (SELECT 1 FROM dune.guilds o
+                  WHERE o.guild_name ILIKE :'n' AND o.guild_id <> :'gid'::bigint);
+COMMIT;
+SQL
+        [ "$rc" -eq 0 ] || { echo "[admin-publish] ERROR guild-rename: transaction failed (rc=$rc)" >&2; exit 1; }
+        after=$(dune_psql_q --set=gid="$gid" -tA <<'SQL'
+SELECT guild_name FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        if [ "$after" != "$name_trimmed" ]; then
+            echo "[admin-publish] ERROR guild-rename: name already taken (case-insensitive) — guild still '$after'" >&2
+            exit 1
+        fi
+        echo "[admin-publish] OK guild-rename id=$gid name=$name_trimmed (in-game after next restart)"
+        echo "publish=db-write guild-rename id=$gid"
+        exit 0
+        ;;
+
+    guild-set-role)
+        # Set a member's role: 100 = leader (transfers the single leader slot
+        # via promote_guild_member, demoting the sitting leader to 50), 50 =
+        # member (via demote_guild_member, which refuses to demote the sitting
+        # leader — promote someone else instead). Both procs lock + notify →
+        # LIVE. Player id = the CONTROLLER id shown by guild-members.
+        gid="${1:?usage: guild-set-role <guild_id> <player_controller_id> <50|100>}"
+        pid="${2:?usage: guild-set-role <guild_id> <player_controller_id> <50|100>}"
+        role="${3:?usage: guild-set-role <guild_id> <player_controller_id> <50|100>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-set-role: guild id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-set-role: player id must be numeric" >&2; exit 2;; esac
+        case "$role" in 50|100) ;; *) echo "[admin-publish] ERROR guild-set-role: role must be 50 (member) or 100 (leader)" >&2; exit 2;; esac
+        dune_require_tables dune.guilds dune.guild_members || exit 3
+        rc=0
+        if [ "$role" = "100" ]; then
+            dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || rc=$?
+SELECT dune.promote_guild_member(:'gid'::bigint, :'pid'::bigint, 100::smallint)
+SQL
+        else
+            err=$(dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA -v ON_ERROR_STOP=1 2>&1 >/dev/null <<'SQL'
+SELECT dune.demote_guild_member(:'gid'::bigint, :'pid'::bigint, 50::smallint)
+SQL
+) || rc=$?
+            if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -q "demote admin"; then
+                echo "[admin-publish] ERROR guild-set-role: cannot demote the sitting leader — promote another member to leader first" >&2
+                exit 1
+            fi
+        fi
+        [ "$rc" -eq 0 ] || { echo "[admin-publish] ERROR guild-set-role: proc failed (rc=$rc) — is the player in this guild?" >&2; exit 1; }
+        after=$(dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA <<'SQL' | tr -d '\r\n'
+SELECT role_id FROM dune.guild_members WHERE guild_id = :'gid'::bigint AND player_id = :'pid'::bigint
+SQL
+)
+        if [ "$after" != "$role" ]; then
+            echo "[admin-publish] ERROR guild-set-role: role is '$after' after write, expected $role" >&2; exit 1
+        fi
+        echo "[admin-publish] OK guild-set-role guild=$gid player=$pid role=$role"
+        echo "publish=db-write guild-set-role guild=$gid player=$pid role=$role"
+        exit 0
+        ;;
+
+    guild-kick)
+        # Remove one member via remove_guild_members (locks + notifies → LIVE).
+        # The proc silently SKIPS leaders, so we pre-check and refuse loudly
+        # instead of reporting a kick that did nothing. Reason 1 = removed by
+        # another (the value only shapes the in-game toast).
+        gid="${1:?usage: guild-kick <guild_id> <player_controller_id>}"
+        pid="${2:?usage: guild-kick <guild_id> <player_controller_id>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-kick: guild id must be numeric" >&2; exit 2;; esac
+        case "$pid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-kick: player id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.guilds dune.guild_members || exit 3
+        member=$(dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.guild_members WHERE guild_id = :'gid'::bigint AND player_id = :'pid'::bigint
+SQL
+)
+        [ "$member" = "1" ] || { echo "[admin-publish] ERROR guild-kick: player $pid is not a member of guild $gid" >&2; exit 1; }
+        is_admin=$(dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA <<'SQL' | tr -d '\r\n'
+SELECT dune.is_player_guild_admin(:'pid'::bigint, :'gid'::bigint)
+SQL
+)
+        if [ "$is_admin" = "t" ]; then
+            echo "[admin-publish] ERROR guild-kick: $pid is the guild leader — promote another member to leader first (or disband)" >&2
+            exit 1
+        fi
+        rc=0
+        dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || rc=$?
+SELECT dune.remove_guild_members(ARRAY[:'pid'::bigint], :'gid'::bigint, 1::smallint)
+SQL
+        [ "$rc" -eq 0 ] || { echo "[admin-publish] ERROR guild-kick: proc failed (rc=$rc)" >&2; exit 1; }
+        still=$(dune_psql_q --set=gid="$gid" --set=pid="$pid" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.guild_members WHERE guild_id = :'gid'::bigint AND player_id = :'pid'::bigint
+SQL
+)
+        [ "$still" = "0" ] || { echo "[admin-publish] ERROR guild-kick: player $pid still in guild $gid after remove" >&2; exit 1; }
+        echo "[admin-publish] OK guild-kick guild=$gid player=$pid"
+        echo "publish=db-write guild-kick guild=$gid player=$pid"
+        exit 0
+        ;;
+
+    guild-create)
+        # Create a guild with <player> as its leader, via the game's own
+        # create_guild proc (locks, enforces case-insensitive name uniqueness
+        # and the per-player guild cap, notifies -> LIVE). The proc reports
+        # failure through out_success/out_fail_reason rather than raising, so
+        # we surface that verdict. Faction comes from the player's own
+        # player_faction row (0 = neutral fallback).
+        raw="${1:?usage: guild-create <player> <name> [description]}"
+        name="${2:?usage: guild-create <player> <name> [description]}"
+        desc="${3:-}"
+        name_trimmed=$(printf '%s' "$name" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+        [ -n "$name_trimmed" ] || { echo "[admin-publish] ERROR guild-create: name must not be empty" >&2; exit 2; }
+        if [ "${#name_trimmed}" -gt 64 ]; then
+            echo "[admin-publish] ERROR guild-create: name exceeds 64 chars" >&2; exit 2
+        fi
+        if [ "${#desc}" -gt 512 ]; then
+            echo "[admin-publish] ERROR guild-create: description exceeds 512 chars" >&2; exit 2
+        fi
+        fls_id=$(resolve_player_id "$raw") || exit 1
+        if [ "$fls_id" = "*" ]; then
+            echo "[admin-publish] ERROR guild-create: needs a single player, not '*'" >&2; exit 2
+        fi
+        dune_require_tables dune.guilds dune.guild_members || exit 3
+        ctrl=$(dune_controller_actor_id "$fls_id")
+        [ -n "$ctrl" ] || { echo "[admin-publish] ERROR guild-create: no player-controller actor for $fls_id" >&2; exit 1; }
+        out=$(dune_psql_q --set=pid="$ctrl" --set=n="$name_trimmed" --set=d="$desc" -tAF'|' -v ON_ERROR_STOP=1 <<'SQL'
+SELECT out_guild_id, out_success, out_fail_reason
+FROM dune.create_guild(:'pid'::bigint, 0::smallint, :'n', :'d', 1)
+SQL
+) || { echo "[admin-publish] ERROR guild-create: proc failed" >&2; exit 1; }
+        IFS='|' read -r new_gid success fail_reason <<EOF2
+$out
+EOF2
+        if [ "$success" != "t" ]; then
+            case "$fail_reason" in
+                NameAlreadyTaken) echo "[admin-publish] ERROR guild-create: name '$name_trimmed' already taken (case-insensitive)" >&2 ;;
+                *) echo "[admin-publish] ERROR guild-create: refused ($fail_reason) — the player may already be in a guild" >&2 ;;
+            esac
+            exit 1
+        fi
+        echo "[admin-publish] OK guild-create id=$new_gid name=$name_trimmed leader=$fls_id (controller $ctrl)"
+        echo "publish=db-write guild-create id=$new_gid"
+        exit 0
+        ;;
+
+    guild-disband)
+        # DESTRUCTIVE: dissolve a guild via disband_guild (locks + notifies →
+        # LIVE; every member is ejected in-game). Verified by re-read.
+        gid="${1:?usage: guild-disband <guild_id>}"
+        case "$gid" in *[!0-9]*|"") echo "[admin-publish] ERROR guild-disband: guild id must be numeric" >&2; exit 2;; esac
+        dune_require_tables dune.guilds dune.guild_members || exit 3
+        gname=$(dune_psql_q --set=gid="$gid" -tA <<'SQL'
+SELECT guild_name FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        [ -n "$gname" ] || { echo "[admin-publish] ERROR guild-disband: no guild with id $gid" >&2; exit 1; }
+        rc=0
+        dune_psql_q --set=gid="$gid" -tA -v ON_ERROR_STOP=1 >/dev/null <<'SQL' || rc=$?
+SELECT dune.disband_guild(:'gid'::bigint)
+SQL
+        [ "$rc" -eq 0 ] || { echo "[admin-publish] ERROR guild-disband: proc failed (rc=$rc)" >&2; exit 1; }
+        still=$(dune_psql_q --set=gid="$gid" -tA <<'SQL' | tr -d '\r\n'
+SELECT count(*) FROM dune.guilds WHERE guild_id = :'gid'::bigint
+SQL
+)
+        [ "$still" = "0" ] || { echo "[admin-publish] ERROR guild-disband: guild $gid still present after disband" >&2; exit 1; }
+        echo "[admin-publish] OK guild-disband id=$gid name=$gname"
+        echo "publish=db-write guild-disband id=$gid"
+        exit 0
+        ;;
+
     reset-spec)
         # Reset ALL specialization tracks + purchased keystones for a player via
         # dune.reset_specialization_tracks + dune.reset_specialization_keystones

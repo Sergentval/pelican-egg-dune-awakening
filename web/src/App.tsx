@@ -10,6 +10,7 @@ import { PlayersWorkspace } from "./PlayersWorkspace";
 import { GiveItemsTab } from "./GiveItemsTab";
 import { MapTab } from "./MapTab";
 import { DatabaseTab } from "./DatabaseTab";
+import { GuildsTab } from "./GuildsTab";
 import { SchedulerTab } from "./SchedulerTab";
 import { AutoscalerTab } from "./AutoscalerTab";
 import { LootTab } from "./LootTab";
@@ -31,6 +32,7 @@ import { Icon } from "./icons";
 
 type TabId =
   | "bases"
+  | "guilds"
   | "overview"
   | "map"
   | "broadcast"
@@ -77,6 +79,7 @@ const TABS: TabDef[] = [
   { id: "players", label: "Players", icon: "players", group: "players" },
   { id: "vehicles", label: "Vehicles", icon: "vehicles", group: "players" },
   { id: "bases", label: "Bases", icon: "layers", group: "players" },
+  { id: "guilds", label: "Guilds", icon: "shield", group: "players" },
   // Items & Economy — giving items + the in-game economy.
   { id: "give-items", label: "Give Items", icon: "items", group: "economy" },
   { id: "market", label: "Market", icon: "coin", group: "economy" },
@@ -240,6 +243,7 @@ export default function App() {
             {tab === "broadcast" && <BroadcastTab setConsoleEntries={setEntries} />}
             {tab === "players" && <PlayersWorkspace setConsoleEntries={setEntries} />}
             {tab === "bases" && <BasesTab setConsoleEntries={setEntries} />}
+            {tab === "guilds" && <GuildsTab setConsoleEntries={setEntries} />}
             {tab === "give-items" && <GiveItemsTab setConsoleEntries={setEntries} />}
             {tab === "loot" && <LootTab setConsoleEntries={setEntries} />}
             {tab === "spice" && <SpiceTab setConsoleEntries={setEntries} />}

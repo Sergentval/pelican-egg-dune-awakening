@@ -801,6 +801,44 @@ the grid is drawn, so nothing goes stale.
   forcedSeedExplicit, summaries}`. Writing the forced seed reuses
   `POST /api/settings` with `coriolissubsystem_m_forcedcoriolisworldseed`.
 
+## Guilds
+
+Ported from Icehunter/dune-admin's guilds feature (MIT), reimplemented
+against this stack; see ATTRIBUTION.md. Same architecture as the base
+permission writes: every mutation goes through the game's own stored procs,
+which self-acquire the guild advisory lock and `pg_notify` the running maps —
+**changes apply live**, no restart, no map-down gate. The one exception is
+rename (no game proc or notify verb exists): a lock-guarded, uniqueness-checked
+UPDATE the game reflects after its next restart.
+
+```text
+admin guilds                                    # all guilds: id, name, faction, members, description
+admin guild-members <guild_id>                  # roster: controller id, role, character, online
+admin guild-invites <guild_id>                  # pending invites: invitee + sender
+admin guild-describe <guild_id> <description>   # set description (LIVE)
+admin guild-rename <guild_id> <new-name>        # rename (in-game after restart)
+admin guild-set-role <guild_id> <player_id> <50|100>  # 100 transfers leadership
+admin guild-kick <guild_id> <player_id>         # remove a member (LIVE)
+admin guild-create <player> <name> [desc]       # create a guild with <player> as leader (LIVE)
+admin guild-disband <guild_id>                  # DESTRUCTIVE: dissolve the guild (LIVE)
+```
+
+- `player_id` is the player-**controller** actor id shown by `guild-members`
+  (the same canonical id the base permission writes use).
+- Roles: **100 = leader** (exactly one — promoting a member to 100 demotes the
+  sitting leader to 50 in the same transaction, server-enforced), **50 =
+  member**. Demoting the sitting leader directly is refused — promote someone
+  else instead.
+- `guild-kick` refuses the leader loudly (the game proc would silently skip
+  them); transfer leadership first, or disband.
+- `guild-create` runs the game's create proc: case-insensitive name
+  uniqueness and the per-player guild cap are enforced server-side; the
+  named player becomes leader.
+- UI: **Guilds** tab (Players group) — list → roster with ★ make-leader /
+  kick, inline rename + description, create form, disband (confirmed).
+- HTTP: `GET /api/guilds`, `GET /api/guilds/<id>`,
+  `POST /api/guilds/create`, `POST /api/guilds/<id>/{rename,describe,role,kick,disband}`.
+
 ## Database (read-only SQL)
 
 The **Database** tab (Server group) is a query console over the game database.

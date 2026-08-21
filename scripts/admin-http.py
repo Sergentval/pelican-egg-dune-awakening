@@ -650,6 +650,7 @@ def run_publish(argv: list[str], timeout: int = 30) -> dict:
             "char-backup", "char-backup-list", "doctor", "bases", "base-water", "base-fuel",
             "base-containers", "base-permissions", "base-permission-candidates",
             "base-guard-status", "coriolis-seed",
+            "guilds", "guild-members", "guild-invites",
         )
     )
     entry = {
@@ -1453,6 +1454,36 @@ class Handler(BaseHTTPRequestHandler):
                               "error": data.get("error", ""),
                               "context": data.get("context", ""),
                               "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # Guilds: all guilds (id, name, faction, member count, description).
+        if path == "/api/guilds":
+            entry = run_publish(["guilds"], timeout=15)
+            if entry.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "guild tables not present on this build"})
+                return
+            self._write(200, {"ok": bool(entry.get("ok")), "available": True,
+                              "guilds": _csv_rows(entry.get("stdout") or ""),
+                              "stderr": entry.get("stderr", "")[:300]})
+            return
+
+        # One guild's roster + pending invites. GET /api/guilds/<id>
+        if path.startswith("/api/guilds/") and path.count("/") == 3:
+            gid = path[len("/api/guilds/"):]
+            if not gid.isdigit():
+                self._write(400, {"error": "guild id must be numeric"})
+                return
+            members = run_publish(["guild-members", gid], timeout=15)
+            if members.get("exit_code") == 3:
+                self._write(200, {"ok": True, "available": False,
+                                  "reason": "guild tables not present on this build"})
+                return
+            invites = run_publish(["guild-invites", gid], timeout=15)
+            self._write(200, {"ok": bool(members.get("ok")), "available": True,
+                              "members": _csv_rows(members.get("stdout") or ""),
+                              "invites": _csv_rows(invites.get("stdout") or "") if invites.get("ok") else [],
+                              "stderr": members.get("stderr", "")[:300]})
             return
 
         # Deep Desert Wick Maps: active Coriolis seed + the matching
@@ -2528,6 +2559,82 @@ class Handler(BaseHTTPRequestHandler):
             entry = run_publish(["base-transfer-custodian", bid], timeout=20)
             self._write(200, entry)
             return
+
+        # Create a guild with <player> as leader (game proc: enforces name
+        # uniqueness + per-player cap, notifies -> LIVE).
+        # POST /api/guilds/create  body {"player", "name", "description"?}
+        if path == "/api/guilds/create":
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            b = body if isinstance(body, dict) else {}
+            player = str(b.get("player", "")).strip()
+            name = str(b.get("name", "")).strip()
+            if not player or not name:
+                self._write(400, {"error": "player and name are required"})
+                return
+            args = ["guild-create", player, name]
+            desc = str(b.get("description", "")).strip()
+            if desc:
+                args.append(desc)
+            entry = run_publish(args, timeout=20)
+            self._write(200, entry)
+            return
+
+        # ---- Guild mutations (auth + CSRF). All but rename go through the
+        # ---- game's own procs (self-locking + pg_notify -> apply LIVE);
+        # ---- rename is a lock-guarded UPDATE, in-game after next restart.
+        # POST /api/guilds/<id>/rename    body {"name"}
+        # POST /api/guilds/<id>/describe  body {"description"}
+        # POST /api/guilds/<id>/role      body {"player_id", "role": 50|100}
+        # POST /api/guilds/<id>/kick      body {"player_id"}
+        # POST /api/guilds/<id>/disband   body {}
+        if path.startswith("/api/guilds/"):
+            action = path.rsplit("/", 1)[-1]
+            if action in ("rename", "describe", "role", "kick", "disband"):
+                if not self._auth_ok():
+                    self._write(401, {"error": "auth required"})
+                    return
+                if not self._csrf_ok():
+                    self._write(403, {"error": "csrf token missing or invalid"})
+                    return
+                gid = path[len("/api/guilds/"):-(len(action) + 1)]
+                if not gid.isdigit():
+                    self._write(400, {"error": "guild id must be numeric"})
+                    return
+                b = body if isinstance(body, dict) else {}
+                if action == "rename":
+                    name = str(b.get("name", "")).strip()
+                    if not name:
+                        self._write(400, {"error": "name must not be empty"})
+                        return
+                    entry = run_publish(["guild-rename", gid, name], timeout=20)
+                elif action == "describe":
+                    desc = str(b.get("description", ""))
+                    entry = run_publish(["guild-describe", gid, desc], timeout=20)
+                elif action == "role":
+                    pid = str(b.get("player_id", ""))
+                    role = str(b.get("role", ""))
+                    if not pid.isdigit():
+                        self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                        return
+                    if role not in ("50", "100"):
+                        self._write(400, {"error": "role must be 50 (member) or 100 (leader)"})
+                        return
+                    entry = run_publish(["guild-set-role", gid, pid, role], timeout=20)
+                elif action == "kick":
+                    pid = str(b.get("player_id", ""))
+                    if not pid.isdigit():
+                        self._write(400, {"error": "player_id must be a numeric player_controller_id"})
+                        return
+                    entry = run_publish(["guild-kick", gid, pid], timeout=20)
+                else:  # disband
+                    entry = run_publish(["guild-disband", gid], timeout=20)
+                self._write(200, entry)
+                return
 
         # ---- player-events + battlepass mutations (auth + CSRF; audited
         # ---- via admin_history.note — they mutate admin-side SQLite, and

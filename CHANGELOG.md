@@ -16,6 +16,22 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-21 — Guild management (dune-admin port)
+
+- New **Guilds** tab (Players group) + `guild-*` subcommands, ported from
+  Icehunter/dune-admin #117 (MIT). Reads: all guilds with faction + member
+  count, per-guild roster (canonical controller ids, roles, online status)
+  and pending invites. Writes go through the game's own guild procs — they
+  self-acquire the guild advisory lock and `pg_notify('guild_notify_channel')`
+  so the running maps apply changes **live**: set description, transfer
+  leadership (100 = the single leader slot; promoting demotes the sitting
+  leader to 50), kick (refuses the leader loudly where the game proc would
+  silently skip), disband, and admin-side guild creation (name uniqueness +
+  per-player cap enforced by the game). Rename is the one lock-guarded
+  UPDATE — no game proc or notify verb exists, so it shows in-game after the
+  next restart. Every write is verified by re-read. Beyond dune-admin's
+  surface: kick, disband and create are new.
+
 ## 2026-08-21 — Database tab + base owner resolution survives the DD wipe
 
 - **Bug fix — Deep Desert bases showed "unclaimed".** The Bases owner column
