@@ -37,6 +37,7 @@ import os
 import re
 import secrets
 import shlex
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -2642,8 +2643,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(account, int) or isinstance(account, bool) or account <= 0:
                 self._write(400, {"error": "account_id must be a positive integer"})
                 return
-            result = admin_battlepass.grant_account(
-                BASE_DIR, admin_events.make_publish(BASE_DIR), account)
+            try:
+                result = admin_battlepass.grant_account(
+                    BASE_DIR, admin_events.make_publish(BASE_DIR), account)
+            except sqlite3.OperationalError:
+                # The engine's BEGIN IMMEDIATE lock outlasted the 10s
+                # busy-wait (a long daemon grant pass) — fail closed with a
+                # clean retry hint instead of a dropped connection.
+                self._write(503, {"ok": False,
+                                  "error": "grant engine is busy delivering — try again in a moment"})
+                return
             admin_history.note(BASE_DIR, "battlepass-grant",
                                f"account {account}: {json.dumps(result)}",
                                ok=not result["failed"])
