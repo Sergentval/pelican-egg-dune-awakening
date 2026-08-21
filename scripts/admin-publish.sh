@@ -4555,16 +4555,19 @@ EOF3
     # leader to 50), 50 = member.
     guilds)
         # All guilds: id, name, faction, member count, description. Read-only.
-        dune_require_tables dune.guilds dune.guild_members || exit 3
+        dune_require_tables dune.guilds dune.guild_members dune.factions || exit 3
         dune_psql_q -q --csv \
             -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" <<'GL_SQL'
 SELECT g.guild_id,
        g.guild_name,
        g.guild_faction AS faction_id,
-       CASE g.guild_faction WHEN 1 THEN 'Atreides' WHEN 2 THEN 'Harkonnen' ELSE 'Neutral' END AS faction,
+       -- Data-driven: dune.factions is the authority (1=Atreides, 2=Harkonnen,
+       -- 3=None, 4=Smuggler on current builds) — never hardcode the ids.
+       COALESCE(f.name, 'faction-' || g.guild_faction) AS faction,
        COALESCE(m.members, 0) AS members,
        COALESCE(g.guild_description, '') AS description
 FROM dune.guilds g
+LEFT JOIN dune.factions f ON f.id = g.guild_faction
 LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS members FROM dune.guild_members gm WHERE gm.guild_id = g.guild_id
 ) m ON TRUE
@@ -4808,12 +4811,18 @@ SQL
         if [ "$fls_id" = "*" ]; then
             echo "[admin-publish] ERROR guild-create: needs a single player, not '*'" >&2; exit 2
         fi
-        dune_require_tables dune.guilds dune.guild_members || exit 3
+        dune_require_tables dune.guilds dune.guild_members dune.factions || exit 3
         ctrl=$(dune_controller_actor_id "$fls_id")
         [ -n "$ctrl" ] || { echo "[admin-publish] ERROR guild-create: no player-controller actor for $fls_id" >&2; exit 1; }
+        # Neutral faction id resolved from dune.factions ('None'; 3 on current
+        # builds) — guilds.guild_faction carries an FK to that table, so a
+        # made-up id (e.g. 0) is refused outright (live-e2e-caught).
         out=$(dune_psql_q --set=pid="$ctrl" --set=n="$name_trimmed" --set=d="$desc" -tAF'|' -v ON_ERROR_STOP=1 <<'SQL'
 SELECT out_guild_id, out_success, out_fail_reason
-FROM dune.create_guild(:'pid'::bigint, 0::smallint, :'n', :'d', 1)
+FROM dune.create_guild(
+    :'pid'::bigint,
+    COALESCE((SELECT id FROM dune.factions WHERE name = 'None' LIMIT 1), 3)::smallint,
+    :'n', :'d', 1)
 SQL
 ) || { echo "[admin-publish] ERROR guild-create: proc failed" >&2; exit 1; }
         IFS='|' read -r new_gid success fail_reason <<EOF2
