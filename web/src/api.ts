@@ -1111,6 +1111,117 @@ export const worldRollbackArm = (phrase: string, target?: string) =>
     "POST", "/api/world-reset/rollback",
     target ? { phrase, target } : { phrase });
 
+// ---- Player events + battlepass (dune-admin port) ------------------------
+
+export interface PlayerEvent {
+  id: number;
+  name: string;
+  type: "zone_race" | "milestone";
+  enabled: number;
+  version: number;
+  config_json: string;
+  reward_json: string;
+  announce_template: string;
+  poll_seconds: number;
+  jitter_seconds: number;
+  claims: Record<string, number>;
+}
+
+export interface PlayerEventClaim {
+  event_id: number;
+  account_id: number;
+  status: string;
+  attempts: number;
+  last_error: string;
+  claimed_at: number;
+}
+
+export const fetchPlayerEvents = () =>
+  api<{ ok: boolean; enabled: boolean; events: PlayerEvent[] }>(
+    "GET", "/api/player-events");
+
+export const fetchPlayerEventClaims = (id: number) =>
+  api<{ ok: boolean; claims: PlayerEventClaim[] }>(
+    "GET", `/api/player-events/${id}/claims`);
+
+export const playerEventsConfig = (enabled: boolean) =>
+  api<{ ok: boolean; error?: string }>(
+    "POST", "/api/player-events/config", { enabled });
+
+export interface PlayerEventInput {
+  name: string;
+  type: string;
+  config: string;
+  reward: string;
+  announce_template: string;
+  poll_seconds: number;
+  jitter_seconds: number;
+}
+
+export const createPlayerEvent = (input: PlayerEventInput) =>
+  api<{ ok: boolean; id?: number; error?: string }>(
+    "POST", "/api/player-events", input);
+
+export const playerEventAction = (id: number, action: "enable" | "delete" | "reset",
+                                  body: Record<string, unknown> = {}) =>
+  api<{ ok: boolean; error?: string }>(
+    "POST", `/api/player-events/${id}/${action}`, body);
+
+export interface BattlepassConfig {
+  enabled: boolean;
+  award_past: boolean;
+  auto_grant: boolean;
+  poll_seconds: number;
+}
+
+export interface BattlepassSummary {
+  ok: boolean;
+  config: BattlepassConfig;
+  tiers_enabled: number;
+  intel_total: number;
+  claims: Record<string, number>;
+  ledger: Record<string, number>;
+}
+
+export interface BattlepassTier {
+  id: number;
+  tier_key: string;
+  category: string;
+  label: string;
+  signal: string;
+  signal_key: string;
+  threshold: number;
+  intel: number;
+  reward_items: string;
+  enabled: number;
+}
+
+export const fetchBattlepass = () =>
+  api<BattlepassSummary>("GET", "/api/battlepass");
+
+export const fetchBattlepassTiers = () =>
+  api<{ ok: boolean; tiers: BattlepassTier[] }>("GET", "/api/battlepass/tiers");
+
+export const battlepassConfig = (cfg: Partial<BattlepassConfig>) =>
+  api<{ ok: boolean; config?: BattlepassConfig; error?: string }>(
+    "POST", "/api/battlepass/config", cfg);
+
+export const battlepassTierUpdate = (id: number, fields: Record<string, unknown>) =>
+  api<{ ok: boolean; error?: string }>(
+    "POST", `/api/battlepass/tiers/${id}`, fields);
+
+export const battlepassReseed = () =>
+  api<{ ok: boolean; tiers?: number; error?: string }>(
+    "POST", "/api/battlepass/reseed", {});
+
+export const battlepassGrant = (accountId: number) =>
+  api<{ ok: boolean; granted?: number; failed?: number; detail?: string; error?: string }>(
+    "POST", "/api/battlepass/grant", { account_id: accountId });
+
+export const battlepassReset = (mode: "demote" | "purge", accountId = 0) =>
+  api<{ ok: boolean; changed?: number; error?: string }>(
+    "POST", "/api/battlepass/reset", { mode, account_id: accountId });
+
 // ---- Connection doctor --------------------------------------------------
 
 export interface DoctorCheck {

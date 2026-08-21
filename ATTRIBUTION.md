@@ -152,6 +152,20 @@ basic_get drain via rabbitmqctl eval) and its safety posture (off by
 default, per-command opt-in, per-player cooldowns, bounded queue, drop on
 disable), reimplemented as the chat-* subcommands + scripts/admin_chatcmd.py.
 
+Player events + battlepass (2026-08, C7) port, with thanks,
+Icehunter/dune-admin's events and battlepass engines (MIT): the
+zone-race/milestone event model with its claim ledger, the battlepass
+baseline/earned state machine with per-tier watch markers (their #297
+fix), the money-safe grant ordering with online-retry-later (#259/#280),
+the demote/purge reset semantics with the documented purge-alone re-earn
+storm, the 188-tier default catalog (extracted by compiling their own
+generator), the intel clamp (#208) and the duplicate-state fail-closed
+offline gate (#290). Reimplemented as scripts/admin_events.py /
+admin_battlepass.py / admin_rewards.py over our publish layer, with a
+structured resume cursor in place of their parsed error strings, an
+in-game broadcast in place of Discord, and their phantom reward key
+(faction_scrip) refused loudly instead of silently dropped.
+
 World reset (2026-08, C6) port, with thanks,
 coastal-ms/DST-DuneServerTool's worldreset-2 / WorldRestart.ps1
 (Apache-2.0): the reversible same-battlegroup restart shape — verified

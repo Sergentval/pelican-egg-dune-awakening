@@ -760,6 +760,56 @@ reshaped for this single-container stack; see ATTRIBUTION.md.
   `POST /api/world-reset/rollback` `{phrase, target?}`. UI: 🌍 card in the
   Scheduler tab, chained to the existing restart-now flow.
 
+## Player events + battlepass
+
+Ported from Icehunter/dune-admin's events + battlepass engines (MIT),
+reimplemented against this stack; see ATTRIBUTION.md. Both engines are
+pure observers of the game database — they never touch INI/cvars; their
+only effect is granting rewards to players and an in-game broadcast.
+OFF by default (`data/admin/events-engine.json`, `data/admin/battlepass.json`);
+one daemon (`start-player-events.sh`, log `logs/player-events.log`) drives
+both, and a disabled engine's tick is a no-op.
+
+**Player events** (🎯 sub-tab in Events & Diagnostics): admin-defined
+watchers, two types. `zone_race` pays the first listed participant (in
+list order, one per tick) who is online inside a sphere — everyone on the
+list is eventually paid once; `milestone` pays every online player who
+reaches a level or holds an achievement tag. Rewards are a shared spec
+`{"currency":N,"items":[{template,qty,quality}…],"xp":[{track,amount}…]}`
+delivered in that order; each player is paid ONCE per event (claim
+ledger), partial failures resume at a structured cursor without re-paying,
+and targets that drop out of evaluation retry offline-capably (24h ×3,
+then manual). A daemon restart silently seals already-satisfied
+milestones so nothing is re-announced; `award_past` in the milestone
+config decides whether backfilled players are actually paid.
+
+**Battlepass** (🎖 sub-tab): a 188-tier catalog (1,619 intel + 86 tiers
+with schematic items, extracted from dune-admin's own generator) over
+character level, journey/quest completion and exploration tags. A tier
+only EARNS when the engine has watched that player's tier go
+unsatisfied → satisfied; progress that predates tracking is `baseline`
+and never paid (flip `award_past` BEFORE a player's first scan to change
+that — afterwards only a purge resets the decision). Intel grants go
+through `award-intel` (clamped to the 2,779 spendable cap, requires the
+player OFFLINE — the game caches tech knowledge in memory; the engine
+retries every 5 minutes without burning attempts while they stay online).
+Delivery order is money-safe: intel → claim → ledger seal → items
+best-effort. Resets: **demote** (earned → baseline, nothing re-earns) or
+**purge** (claims + watch markers together — everything re-baselines,
+nobody is re-paid). Reseed replaces the catalog with the defaults;
+claims survive by tier key.
+
+New grant subcommands (used by the engines, also available directly):
+
+```text
+admin award-intel <player> <amount>       # pawn tech-knowledge, clamped ≤2779, OFFLINE only (exit 4 = online)
+admin award-track-xp <player> <track> <n> # specialization XP (Combat|Crafting|Gathering|Exploration|Sabotage), ≤44182
+```
+
+HTTP: `GET/POST /api/player-events[...]`, `GET/POST /api/battlepass[...]`
+(create/enable/reset/delete events; battlepass config/tiers/grant/reset/
+reseed). All mutations audited.
+
 ## Player chat commands (!ping / !kit)
 
 Players trigger actions from in-game chat. OFF by default — flip `enabled`

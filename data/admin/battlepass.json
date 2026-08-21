@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "award_past": false,
+  "auto_grant": false,
+  "poll_seconds": 60
+}
