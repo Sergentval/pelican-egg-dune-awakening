@@ -16,7 +16,7 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
-## 2026-08-25 — Deep Desert grid calibrated from the game itself (#116)
+## 2026-08-25 — Map bounds calibrated from the game itself (#116)
 
 - **Deep Desert sector labels were off by one row.** The projection bounds were
   an uncalibrated round-number guess inherited from Icehunter/dune-admin
@@ -77,24 +77,32 @@ here on the log is maintained with each merge.
   SPA's `JSON.parse` rejected the whole payload — one bad row blanked the Live
   Map with no error shown. `int(float("inf"))` also raised an uncaught
   `OverflowError`.
-- Not changed, deliberately: Arrakeen and Harko Village bounds — and to be
-  precise about why, because an earlier draft of this entry got it wrong. An
-  authoritative box **does** exist for them, in the same server logs:
-  `SH_Arrakeen Min=(X=-32765 Y=-21256) Max=(X=27235 Y=18744)` and
-  `SH_HarkoVillage Min=(X=-99855 Y=-78118) Max=(X=100145 Y=121882)`. Against
-  those, Arrakeen's shipped maxX is off by 10 235 with less than half the real
-  Y range, and Harko is off by an order of magnitude on both axes. Swapping
-  them in is simply out of scope for #116: doing it properly also means
-  handling the letterboxed art (content fills the top ~58% / ~62% of a square
-  canvas that the projection stretches over entirely) and checking the result
-  on a live server. Neither map draws a sector grid, so nothing depends on them
-  today. The provenance comment no longer claims they were validated.
-- Also worth recording for whoever picks this up: **Hagga Basin's** hand-fitted
-  box disagrees with the game's own `Survival_1` box
-  (`-457200..355600` on both axes) by ~2-3%, and is not square while the
-  landscape and the 512x512 image both are. Left alone here — it is a daily-use
-  map and changing it carries its own regression risk — but it is the same
-  class of finding as the Deep Desert one.
+- **Hagga Basin recalibrated from the same source.** Its box was a hand fit
+  eyeballed over months by clicking landmarks (`-437871..350539 /
+  -462011..376267`) — up to 24 000 uu out and, tellingly, not square while both
+  the landscape box and the 512x512 image are. Replaced with the server's own
+  `Survival_1` box, `-457200..355600` on both axes; th.gl's tile bounds for the
+  map agree to 0.05% of span. **Live dots on Hagga shift by ~2-3% versus the
+  previous build — that shift is the correction, not a regression.**
+- **Arrakeen and Harko Village: the bounds were never the blocker, the images
+  are.** The same log yields authoritative boxes for them too
+  (`SH_Arrakeen Min=(X=-32765 Y=-21256) Max=(X=27235 Y=18744)`,
+  `SH_HarkoVillage Min=(X=-99855 Y=-78118) Max=(X=100145 Y=121882)`), and the
+  shipped guesses are wrong against both — Arrakeen's maxX by 10 235 with less
+  than half the real Y range, Harko by an order of magnitude. But the shipped
+  *images* are truncated crops, not renders of any box: `arrakeen.webp` fills
+  its full width and only the top 57.8% of its height, with buildings sliced
+  mid-shape at the cut, and `harko.webp` is a 319x320 block in the top-left of
+  a 512x512 canvas. Neither content rect matches its world box's aspect
+  (Arrakeen's art is 1.73 against a 1.50 box) or th.gl's tile layout, so there
+  is no rectangle to project onto; dropping the real numbers in would move every
+  dot to a *different* wrong place while looking authoritative. Upstream no
+  longer ships these assets either. So they keep their old bounds and now carry
+  an `uncalibrated` note that the Live Map shows as a banner — use those two
+  maps to see *who* is on them, not *where*. Supplying a full-extent top-down
+  render of either map is all that stands between this and finishing the job.
+- Neither Arrakeen nor Harko draws a sector grid, so #116 itself does not depend
+  on them.
 
 ## 2026-08-21 — Guild management (dune-admin port)
 

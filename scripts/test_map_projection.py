@@ -55,9 +55,15 @@ OLD_DD = {"key": "OldDeepDesert", "label": "old", "image": "deepdesert.webp",
           "minX": -1300000, "maxX": 1200000, "minY": -1300000, "maxY": 1200000,
           "flipY": True}
 
-# The number the game itself reports. Any change to these four must come with
-# a new source, not a new fit.
+# The numbers the game itself reports, from LogDuneWorldPartitioner in the UE5
+# dedicated server's own boot log. Any change to these must come with a new
+# source, not a new fit.
 DD_BOX = {"minX": -1270000, "maxX": 1168400, "minY": -1270000, "maxY": 1168400}
+HAGGA_BOX = {"minX": -457200, "maxX": 355600, "minY": -457200, "maxY": 355600}
+
+# Maps whose shipped image is a truncated crop, so no box can project onto it
+# correctly. They must keep declaring that rather than looking authoritative.
+UNCALIBRATED = ("Arrakeen", "HarkoVillage")
 
 HARNESS = r'''
 import { MAPS, worldToPct, pctToWorld, sectorForPct, sectorForWorld } from "./mapProjection.js";
@@ -171,6 +177,41 @@ class TestDeepDesertCalibration(unittest.TestCase):
                 margin = min(frac % 1.0, 1.0 - frac % 1.0)
                 self.assertGreater(margin, 0.01,
                                    f"{label}: {axis} sits on a grid line ({margin:.4f} sector)")
+
+
+class TestOtherMapCalibration(unittest.TestCase):
+    """#116 follow-through: the same server log calibrates every map, and the
+    two we cannot fix must say so instead of looking authoritative."""
+
+    def test_hagga_bounds_are_the_game_authoritative_box(self):
+        maps = HARNESS_SINGLETON.one({"fn": "maps"})
+        hagga = next(m for m in maps if m["key"] == "HaggaBasin")
+        for k, v in HAGGA_BOX.items():
+            self.assertEqual(hagga[k], v, f"HaggaBasin {k} changed — new source, or a new fit?")
+        self.assertEqual(hagga["maxX"] - hagga["minX"], hagga["maxY"] - hagga["minY"],
+                         "the Hagga Basin landscape is square, like its 512x512 image")
+
+    def test_hagga_is_no_longer_the_old_hand_fit(self):
+        """Proof this is not vacuous: the superseded eyeballed box was not square."""
+        maps = HARNESS_SINGLETON.one({"fn": "maps"})
+        hagga = next(m for m in maps if m["key"] == "HaggaBasin")
+        self.assertNotEqual(hagga["minX"], -437871, "reverted to the pre-#116 hand fit")
+
+    def test_truncated_image_maps_declare_themselves_uncalibrated(self):
+        maps = HARNESS_SINGLETON.one({"fn": "maps"})
+        for key in UNCALIBRATED:
+            m = next(x for x in maps if x["key"] == key)
+            self.assertTrue(
+                m.get("uncalibrated"),
+                f"{key} ships a truncated map image; dropping the flag would let the "
+                f"panel present an approximate dot as an exact one")
+
+    def test_calibrated_maps_carry_no_warning(self):
+        maps = HARNESS_SINGLETON.one({"fn": "maps"})
+        for key in ("HaggaBasin", "DeepDesert"):
+            m = next(x for x in maps if x["key"] == key)
+            self.assertIsNone(m.get("uncalibrated", None),
+                              f"{key} is calibrated from the game's own box")
 
 
 class TestGridOrientation(unittest.TestCase):

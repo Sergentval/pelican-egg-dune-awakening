@@ -237,6 +237,12 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
           save cadence, so a dot can lag the player's real location by tens of seconds (it jumps when the next save lands).
           Not a live feed.
         </p>
+        {cfg.uncalibrated && (
+          <p className="px-3 pb-2 text-[11px] text-orange-400/90">
+            ⚠ {cfg.label} is <span className="font-medium">not calibrated</span> — {cfg.uncalibrated}.
+            Use it to see who is on this map, not where exactly.
+          </p>
+        )}
         {markersErr && (
           <p className="px-3 pb-2 text-xs text-red-400">
             player positions unavailable on {cfg.label}: {markersErr} — the map is showing no dots

@@ -17,16 +17,25 @@ export interface MapCfg {
   maxY: number;
   flipX?: boolean;
   flipY?: boolean;
+  /** Set when the shipped image is NOT a faithful full render of the bounds
+   *  below, so a dot's position on it cannot be trusted. The UI says so rather
+   *  than letting an operator read a precise-looking position off a wrong map. */
+  uncalibrated?: string;
 }
 
 // Bounds + images lifted from dune-admin (MIT). Provenance differs per map —
 // see each entry; do NOT assume they are all equally trustworthy.
 export const MAPS: MapCfg[] = [
-  // Empirically fitted over months of live use by clicking landmarks. Good
-  // enough for dots (no sector grid exposes the residual ~2-3% drift), but
-  // note it is not square while the real landscape is: the game's own
-  // partition box for Survival_1 is -457200..355600 on BOTH axes.
-  { key: "HaggaBasin", label: "Hagga Basin", image: "hagga-basin.webp", minX: -437871, maxX: 350539, minY: -462011, maxY: 376267, flipY: true },
+  // Hagga Basin — GAME-AUTHORITATIVE, same source as Deep Desert below:
+  //   Survival_1: Min=(X=-457200.000 Y=-457200.006) Max=(X=355600.000 Y=355600.006)
+  // Replaces a hand-fit that had been eyeballed over months by clicking
+  // landmarks (-437871..350539 / -462011..376267). That fit was up to 24 000 uu
+  // out and, tellingly, was not square while both the landscape box and the
+  // 512x512 image are. th.gl's tile bounds for this map are
+  // [[-457599,-457599],[355199,355199]] — 0.05% of span from the server's own
+  // number, so image extent and world box agree. Expect live dots to shift by
+  // ~2-3% versus the old build; that shift is the correction.
+  { key: "HaggaBasin", label: "Hagga Basin", image: "hagga-basin.webp", minX: -457200, maxX: 355600, minY: -457200, maxY: 355600, flipY: true },
 
   // Deep Desert — GAME-AUTHORITATIVE, not fitted. The UE5 dedicated server
   // prints its own world box at every boot, and it is identical across all
@@ -72,19 +81,33 @@ export const MAPS: MapCfg[] = [
   //
   // versus the inherited guesses below: Arrakeen's maxX is off by 10 235 and
   // its Y range is less than half the real one; Harko is off by an order of
-  // magnitude on both axes. Note also that all four map images are square
-  // (512x512) and the game's boxes for Survival_1, DeepDesert_1 and
-  // SH_HarkoVillage are square too, while these two entries are not.
+  // magnitude on both axes. Note also that the game's boxes for Survival_1,
+  // DeepDesert_1 and SH_HarkoVillage are square, while these two entries are
+  // not — a non-square entry in this table is itself a smell.
   //
-  // So the source EXISTS — swapping it in is simply out of scope for #116,
-  // which is about the Deep Desert sector grid. Doing it properly also means
-  // handling the letterboxed art (real content occupies the top ~58% / ~62%
-  // of the canvas while the projection stretches over the whole of it, which
-  // is why Arrakeen lands its CHOAM exchange actors in the black padding) and
-  // eyeballing the result on a live server. Neither map draws a sector grid,
-  // so nothing depends on them being right today. Tracked, not hidden.
-  { key: "Arrakeen", label: "Arrakeen", image: "arrakeen.webp", minX: -32000, maxX: 17000, minY: -10000, maxY: 9500, flipY: true },
-  { key: "HarkoVillage", label: "Harko Village", image: "harko.webp", minX: -5000, maxX: 14500, minY: -5500, maxY: 32000, flipY: true },
+  // BUT the bounds are not the blocker for these two — THE IMAGES ARE. Both
+  // shipped assets are truncated crops, not full renders of any box:
+  //   arrakeen.webp: content fills x[0,511] but only y[0,295] of 512 (57.8%),
+  //     pure black below, and buildings are sliced mid-shape at the cut —
+  //     the bottom of the map is simply missing, not empty desert.
+  //   harko.webp:    content is a 319x320 block anchored at the canvas's
+  //     top-left; the remaining 38% on each axis is pure black.
+  // Neither content rect matches its world box's aspect (Arrakeen art is 1.73,
+  // its box 1.50) nor th.gl's tile layout for these maps, so there is no
+  // rectangle to map the world box onto. Swapping the numbers in would move
+  // every dot to a *different* wrong place while looking authoritative, which
+  // is worse than the honest state. Upstream no longer ships these assets, so
+  // there is nothing to re-pull.
+  //
+  // Left projecting as before and flagged `uncalibrated` so the UI says a dot
+  // here cannot be trusted. To finish the job someone needs a full-extent
+  // top-down render of each map; then the boxes above drop straight in and the
+  // flag comes off. Neither map draws a sector grid, so #116 does not depend
+  // on this. Tracked, not hidden.
+  { key: "Arrakeen", label: "Arrakeen", image: "arrakeen.webp", minX: -32000, maxX: 17000, minY: -10000, maxY: 9500, flipY: true,
+    uncalibrated: "the shipped map image is cut off below 58% of its height, so dot positions on it are approximate" },
+  { key: "HarkoVillage", label: "Harko Village", image: "harko.webp", minX: -5000, maxX: 14500, minY: -5500, maxY: 32000, flipY: true,
+    uncalibrated: "the shipped map image covers only the top-left 62% of its canvas, so dot positions on it are approximate" },
 ];
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
