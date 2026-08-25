@@ -53,6 +53,18 @@ class TestParseMarkers(unittest.TestCase):
         self.assertEqual(r["x"], 0.0)
         self.assertEqual(r["y"], 2.0)
 
+    def test_non_finite_coords_are_neutralised(self):
+        """float() accepts nan/inf, json.dumps then emits bare NaN/Infinity and
+        JSON.parse rejects the whole payload — one bad row blanked the map."""
+        r = parse_markers(HEADER + "\n1,X,Online,1,F,nan,inf,-inf")[0]
+        self.assertEqual((r["x"], r["y"], r["z"]), (0.0, 0.0, 0.0))
+
+    def test_infinite_partition_does_not_raise(self):
+        # int(float("inf")) raises OverflowError, which is not a ValueError.
+        r = parse_markers(HEADER + "\n1,X,Online,inf,F,1,2,3")[0]
+        self.assertEqual(r["partition"], 0)
+        self.assertEqual(r["x"], 1.0)
+
     def test_blank_coords_skipped(self):
         # null transform.location -> blank x/y -> skip (no phantom origin marker)
         text = HEADER + "\n5,Ghost,Online,1,ABC,,,\n6,Real,Online,1,DEF,10,20,0"

@@ -5,13 +5,12 @@
 // the same %-coordinate space the live player dots use, so no terrain
 // image is needed. POI data + icons ported from coastal-ms/DST-DuneServerTool
 // (Apache-2.0). Sits inside MapTab's scaled/panned inner div.
+//
+// The row order and the %-to-sector math live in ./mapProjection so they can
+// be pinned by scripts/test_map_projection.py (issue #116).
 
 import type { WickLayout, WickPoi } from "./api";
-
-// I..A top to bottom, 1..9 left to right, each sector split 4x4 (subx 1-4,
-// suby 0-3) — matches how the source data is tagged (DST WickMaps.tsx).
-const ROWS = ["I", "H", "G", "F", "E", "D", "C", "B", "A"];
-const N = 9;
+import { DD_N as N, DD_ROWS as ROWS } from "./mapProjection";
 
 const ICON: Record<string, string> = {
   wreck: "/wickmaps/wreck.svg",
@@ -23,27 +22,27 @@ const ICON: Record<string, string> = {
   "large-spice-field": "/wickmaps/large-spice-field.svg",
 };
 
-// Which 9x9 sector a point at (left%, top%) falls in — e.g. "D4" — or null if
-// it's outside the grid. Same row order the grid draws (I..A top→bottom, cols
-// 1..9 left→right), so a live player dot and this label always agree. Used by
-// the Live Map's calibration readout (issue #116).
-export function sectorForPct(left: number, top: number): string | null {
-  if (left < 0 || left > 100 || top < 0 || top > 100) return null;
-  const col = Math.min(N, Math.max(1, Math.floor((left / 100) * N) + 1));
-  const ri = Math.min(N - 1, Math.max(0, Math.floor((top / 100) * N)));
-  return `${ROWS[ri]}${col}`;
+// Row letter + column number of a sector label like "D4", or null if it is not
+// one. Shared by the POI plotter and the large-spice highlighter so a malformed
+// entry is skipped by both rather than drawn at the map's corner.
+function sectorCell(sector: string): { ri: number; col: number } | null {
+  if (typeof sector !== "string") return null;
+  const ri = ROWS.indexOf(sector[0]);
+  const col = Number(sector.slice(1));
+  // Number("") is 0, so an entry like "F" must be rejected on the range check.
+  if (ri < 0 || !Number.isFinite(col) || col < 1 || col > N) return null;
+  return { ri, col };
 }
 
 // POI centre in % of the map image, mirroring DST's pixel math.
 function poiPct(p: WickPoi): { left: number; top: number } | null {
-  const row = p.sector[0];
-  const col = Number(p.sector.slice(1));
-  const ri = ROWS.indexOf(row);
-  if (ri < 0 || !Number.isFinite(col) || col < 1 || col > N) return null;
+  const cell = sectorCell(p.sector);
+  if (!cell) return null;
+  if (!Number.isFinite(p.subx) || !Number.isFinite(p.suby)) return null;
   const sx = Math.min(4, Math.max(1, p.subx));
   const sy = Math.min(3, Math.max(0, p.suby));
-  const left = ((col - 1) + (sx - 0.5) / 4) / N * 100;
-  const top = (ri + (sy + 0.5) / 4) / N * 100;
+  const left = ((cell.col - 1) + (sx - 0.5) / 4) / N * 100;
+  const top = (cell.ri + (sy + 0.5) / 4) / N * 100;
   return { left, top };
 }
 
@@ -60,13 +59,11 @@ export function DeepDesertGrid({ layout, spiceSectors, zoom }: {
     <div className="absolute inset-0 pointer-events-none">
       {/* highlight large-spice sectors */}
       {spiceSectors.map((s) => {
-        const row = s[0];
-        const col = Number(s.slice(1));
-        const ri = ROWS.indexOf(row);
-        if (ri < 0 || !Number.isFinite(col)) return null;
+        const cell = sectorCell(s);
+        if (!cell) return null;
         return (
           <div key={`sp-${s}`} className="absolute bg-amber-400/10 border border-amber-400/25"
-            style={{ left: `${((col - 1) / N) * 100}%`, top: `${(ri / N) * 100}%`,
+            style={{ left: `${((cell.col - 1) / N) * 100}%`, top: `${(cell.ri / N) * 100}%`,
                      width: `${100 / N}%`, height: `${100 / N}%` }} />
         );
       })}

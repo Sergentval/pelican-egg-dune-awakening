@@ -46,9 +46,13 @@ reuses positions + teleport + needs only a batch endpoint + a locations store + 
 - `web/src/tabs/PlayersTab/modals/MapCoordPickerModal.tsx` - click-map-to-pick coords.
 - **Map assets** `web/public/{hagga-basin.webp, hagga-basin.png, deepdesert.webp,
   arrakeen.webp, harko.webp, map-icons.webp}` + `map-data/*-spawns.json`.
-- **World-bound constants** (world units -> image), already empirically derived:
+- **World-bound constants** (world units -> image). Provenance differs per map —
+  `DeepDesert` is the game's own declared box, the other three are fits:
   - `HaggaBasin`: minX -437871, maxX 350539, minY -462011, maxY 376267, flipY
-  - `DeepDesert`: minX -1300000, maxX 1200000, minY -1300000, maxY 1200000
+  - `DeepDesert`: minX -1270000, maxX 1168400, minY -1270000, maxY 1168400, flipY
+    (**superseded** dune-admin's uncalibrated `-1300000..1200000` guess in
+    #116 — this pair is the UE5 server's own `LogDuneWorldPartitioner` box,
+    see `web/src/mapProjection.ts` and `scripts/test_map_projection.py`)
   - `Arrakeen`: minX -32000, maxX 17000, minY -10000, maxY 9500, flipY
   - `HarkoVillage`: minX -5000, maxX 14500, minY -5500, maxY 32000
   (our live Hagga sample `101221,279328` lands inside the Hagga box - validates.)

@@ -16,6 +16,86 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-08-25 — Deep Desert grid calibrated from the game itself (#116)
+
+- **Deep Desert sector labels were off by one row.** The projection bounds were
+  an uncalibrated round-number guess inherited from Icehunter/dune-admin
+  (`-1300000..1200000`, and upstream is still broken — their #213 / #310).
+  Replaced with the number the game reports about itself: the UE5 dedicated
+  server prints its own world box at every boot under `LogDuneWorldPartitioner`
+  — `Min=(X=-1270000 Y=-1270000) Max=(X=1168400 Y=1168400)`, identical across
+  all four DD dimensions and every build we have logs for. Span 2 438 400 uu =
+  24.384 km square = 8128 landscape quads at 300 uu/quad, exactly 3x
+  Survival_1's 8128 quads at 100 uu/quad and sharing its -50 800 centre.
+  Corroborated by `cdn.th.gl/dune-awakening/config/tiles.json`, which declares
+  `deepdesert_1` at `[[-1270399,-1270399],[1167999,1167999]]` (0.016% of span
+  away) and publishes the very image we ship — `web/public/deepdesert.webp` is
+  byte-identical to its z=0 tile. Verified against the two live observations
+  in the issue: `(516429, -1009962)` now reads **I7** (was H7) and
+  `(1127612, 1077779)` reads **A9**, both as their reporter read them in game.
+  One assumption remains explicit rather than buried: that the player-facing
+  9x9 sector grid spans exactly this landscape box. The first observation sits
+  only ~0.04 of a sector (~109 m) from the I/H line, so that is what a third
+  ground-truth point near a row boundary would put to the test.
+- **New `web/src/mapProjection.ts`** — the world<->image projection, the MAPS
+  table and the sector math extracted out of `MapTab.tsx`/`DeepDesertGrid.tsx`
+  into one React-free module, so it can be pinned by a test.
+- **New `scripts/test_map_projection.py`** (16 cases) — compiles that module
+  with the repo's own `tsc` and runs it under node, asserting the two ground
+  truths, the grid orientation (I = north, A = the southern arrival row),
+  round-trip inversion and the guards below. Joins the existing offline suite
+  (`for t in scripts/test_*.py`) with no new toolchain; skips cleanly where
+  `web/node_modules` or node is absent. It fails on the old bounds by
+  construction, so the calibration cannot silently drift again.
+- Live-map fixes found while auditing the same path:
+  - Player dots no longer survive a map switch or a failed fetch. They were
+    re-projected through the new map's bounds, so the Deep Desert calibration
+    card could report DD sectors for Hagga coordinates — the exact readout the
+    issue asks people to trust. Superseded responses are now discarded too.
+  - The calibration card marks a row **clamped** when the coordinate fell
+    outside the declared bounds. `worldToPct` pins strays to the edge, so an
+    out-of-range player used to be indistinguishable from a genuine A9.
+  - Teleport refuses a target who is not on the map being viewed. The
+    `TeleportTo` payload carries no map field, so TPing a Hagga player to a
+    Deep Desert location dropped them at those coords *inside Hagga*.
+  - Click-to-pick refuses clicks that land off the image or before it decodes,
+    instead of clamping them into a corner coordinate (an `<img>` with no
+    intrinsic size reports height 0; the divide-by-zero silently produced
+    `maxY`). Map images now declare their real 512x512 size.
+  - Sector labelling at an exact grid line: `((1/3)*100)/100*9` is
+    `2.999999999999999` and `((2/3)*100)/100*9` is `5.999999999999998` in
+    IEEE754, which labelled the 3rd and 6th lines one cell west/north of where
+    the SVG draws them. (`(1/3)*9` alone is exactly 3 — it is the round-trip
+    through percent that loses the bit.)
+  - Malformed POI / large-spice entries and non-finite coordinates are skipped
+    rather than painted at the map's north-west corner.
+- `admin_wickmaps.active_dd_seed` no longer discards Coriolis seed **0**:
+  `exact or fallback` treated a legitimate 0 as absent, so 1 week in 12 drew
+  the wrong one of the 12 fixed Deep Desert layouts.
+- `admin_map.parse_markers` neutralises non-finite coordinates. `float()`
+  accepts `nan`/`inf`, `json.dumps` then emits bare `NaN`/`Infinity`, and the
+  SPA's `JSON.parse` rejected the whole payload — one bad row blanked the Live
+  Map with no error shown. `int(float("inf"))` also raised an uncaught
+  `OverflowError`.
+- Not changed, deliberately: Arrakeen and Harko Village bounds — and to be
+  precise about why, because an earlier draft of this entry got it wrong. An
+  authoritative box **does** exist for them, in the same server logs:
+  `SH_Arrakeen Min=(X=-32765 Y=-21256) Max=(X=27235 Y=18744)` and
+  `SH_HarkoVillage Min=(X=-99855 Y=-78118) Max=(X=100145 Y=121882)`. Against
+  those, Arrakeen's shipped maxX is off by 10 235 with less than half the real
+  Y range, and Harko is off by an order of magnitude on both axes. Swapping
+  them in is simply out of scope for #116: doing it properly also means
+  handling the letterboxed art (content fills the top ~58% / ~62% of a square
+  canvas that the projection stretches over entirely) and checking the result
+  on a live server. Neither map draws a sector grid, so nothing depends on them
+  today. The provenance comment no longer claims they were validated.
+- Also worth recording for whoever picks this up: **Hagga Basin's** hand-fitted
+  box disagrees with the game's own `Survival_1` box
+  (`-457200..355600` on both axes) by ~2-3%, and is not square while the
+  landscape and the 512x512 image both are. Left alone here — it is a daily-use
+  map and changing it carries its own regression risk — but it is the same
+  class of finding as the Deep Desert one.
+
 ## 2026-08-21 — Guild management (dune-admin port)
 
 - New **Guilds** tab (Players group) + `guild-*` subcommands, ported from
