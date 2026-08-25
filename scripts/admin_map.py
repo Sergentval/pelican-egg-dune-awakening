@@ -7,6 +7,7 @@ for parsing the CSV that the map-markers subcommand emits. No DB / network.
 """
 import csv
 import io
+import math
 
 # Maps the live map supports. These are the canonical dune.actors.map values
 # AND the keys the SPA has background images + projection bounds for.
@@ -19,16 +20,25 @@ def validate_map_key(key) -> bool:
 
 
 def _f(row: dict, key: str) -> float:
+    """A coordinate cell as a float, 0.0 on anything unusable.
+
+    float() happily accepts "nan"/"inf", and json.dumps then emits bare
+    NaN/Infinity tokens, which JSON.parse rejects — one bad row would blank the
+    whole Live Map with no error shown. Non-finite values are dropped to 0.0.
+    """
     try:
-        return float(row.get(key, "") or 0)
+        v = float(row.get(key, "") or 0)
     except (TypeError, ValueError):
         return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 def _i(row: dict, key: str) -> int:
+    # OverflowError is not academic here: int(float("inf")) raises it, and it is
+    # not a ValueError, so an unguarded "inf" cell would abort the whole parse.
     try:
         return int(float(row.get(key, "") or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

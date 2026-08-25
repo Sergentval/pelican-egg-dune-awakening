@@ -28,58 +28,12 @@ import {
 import { pushToConsole, type ConsoleEntry } from "./components";
 import { useTarget } from "./target";
 import { useAutoRefresh } from "./live";
-import { DeepDesertGrid, sectorForPct } from "./DeepDesertGrid";
+import { DeepDesertGrid } from "./DeepDesertGrid";
 import { DeepDesertSeedControl } from "./DeepDesertSeedControl";
-
-interface MapCfg {
-  key: string;
-  label: string;
-  image: string;
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-  flipX?: boolean;
-  flipY?: boolean;
-}
-
-// Bounds + images lifted from dune-admin (MIT), validated against live coords.
-const MAPS: MapCfg[] = [
-  { key: "HaggaBasin", label: "Hagga Basin", image: "hagga-basin.webp", minX: -437871, maxX: 350539, minY: -462011, maxY: 376267, flipY: true },
-  // flipY on every map: this game's world Y grows SOUTHWARD (established by
-  // months of live HaggaBasin usage), and all map images are north-up.
-  // DeepDesert missing it put a player at the southern arrival zone up at
-  // the top of the map (issue #116); HarkoVillage had the same latent flaw.
-  { key: "DeepDesert", label: "Deep Desert", image: "deepdesert.webp", minX: -1300000, maxX: 1200000, minY: -1300000, maxY: 1200000, flipY: true },
-  { key: "Arrakeen", label: "Arrakeen", image: "arrakeen.webp", minX: -32000, maxX: 17000, minY: -10000, maxY: 9500, flipY: true },
-  { key: "HarkoVillage", label: "Harko Village", image: "harko.webp", minX: -5000, maxX: 14500, minY: -5500, maxY: 32000, flipY: true },
-];
+import { MAPS, pctToWorld, sectorForPct, worldToPct } from "./mapProjection";
 
 const BASE_W = 760; // base image render width (px) before zoom
 const POLL_MS = 4000;
-
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-
-// World coords -> percentage offsets within the map image (left%, top%).
-function worldToPct(x: number, y: number, cfg: MapCfg): { left: number; top: number } {
-  const normX = (x - cfg.minX) / (cfg.maxX - cfg.minX);
-  const normY = (y - cfg.minY) / (cfg.maxY - cfg.minY);
-  const fracX = clamp01(cfg.flipX ? 1 - normX : normX);
-  const fracYup = clamp01(cfg.flipY ? 1 - normY : normY);
-  return { left: fracX * 100, top: (1 - fracYup) * 100 };
-}
-
-// On-screen click -> world coords, using the transformed image bounding rect.
-function pctToWorld(clientX: number, clientY: number, rect: DOMRect, cfg: MapCfg): { x: number; y: number } {
-  const fracX = clamp01((clientX - rect.left) / rect.width);
-  const fracYup = 1 - clamp01((clientY - rect.top) / rect.height);
-  const rawX = cfg.flipX ? 1 - fracX : fracX;
-  const rawY = cfg.flipY ? 1 - fracYup : fracYup;
-  return {
-    x: Math.round(rawX * (cfg.maxX - cfg.minX) + cfg.minX),
-    y: Math.round(rawY * (cfg.maxY - cfg.minY) + cfg.minY),
-  };
-}
 
 export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetStateAction<ConsoleEntry[]>> }) {
   const target = useTarget();
@@ -92,17 +46,33 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
   const [pending, setPending] = useState<{ x: number; y: number } | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [markersErr, setMarkersErr] = useState<string | null>(null);
   const [dd, setDd] = useState<DeepDesertLayout | null>(null);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const drag = useRef({ active: false, x: 0, y: 0, moved: false });
+  // Monotonic id of the in-flight markers request. A slow response for the map
+  // we just left must not overwrite the one for the map we are looking at.
+  const markerReq = useRef(0);
 
   const cfg = MAPS.find((m) => m.key === mapKey) ?? MAPS[0];
 
+  // Markers are projected through the CURRENT map's bounds, so showing another
+  // map's dots is not a cosmetic glitch — the Deep Desert calibration card would
+  // report DD sectors for Hagga coordinates. Hence: drop them on every map
+  // change, drop them when the fetch fails, and ignore superseded responses.
   const loadMarkers = useCallback(async () => {
+    const gen = ++markerReq.current;
     const res = await fetchMapMarkers(mapKey);
-    if (res.ok) setMarkers((res.body as { markers: MapMarker[] }).markers || []);
+    if (gen !== markerReq.current) return; // a newer request is already in flight
+    if (res.ok) {
+      setMarkers((res.body as { markers: MapMarker[] }).markers || []);
+      setMarkersErr(null);
+    } else {
+      setMarkers([]);
+      setMarkersErr((res.body as { error?: string }).error || "could not load player positions");
+    }
   }, [mapKey]);
 
   const loadLocations = useCallback(async () => {
@@ -110,7 +80,12 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
     if (res.ok) setLocations((res.body as { locations: MapLocation[] }).locations || []);
   }, []);
 
-  useEffect(() => { loadMarkers(); }, [loadMarkers]);
+  useEffect(() => {
+    markerReq.current++;   // abandon whatever was in flight for the previous map
+    setMarkers([]);
+    setMarkersErr(null);
+    loadMarkers();
+  }, [loadMarkers]);
   useAutoRefresh(loadMarkers, POLL_MS);
   useEffect(() => { loadLocations(); }, [loadLocations]);
 
@@ -172,8 +147,15 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
     const wasDrag = drag.current.moved;
     drag.current.active = false;
     if (!wasDrag && pickMode && innerRef.current) {
-      const rect = innerRef.current.getBoundingClientRect();
-      setPending(pctToWorld(e.clientX, e.clientY, rect, cfg));
+      // pctToWorld returns null when the image has no layout yet or the click
+      // landed off it — better to say nothing happened than to invent a corner.
+      const picked = pctToWorld(e.clientX, e.clientY, innerRef.current.getBoundingClientRect(), cfg);
+      if (!picked) {
+        setErr("click on the map image itself (wait for it to load if it is still blank)");
+        return;
+      }
+      setErr(null);
+      setPending(picked);
       setPendingName("");
     }
   }
@@ -193,8 +175,19 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
     }
   }
 
+  // TeleportTo carries only PlayerId/X/Y/Z — no map. Sending Deep Desert coords
+  // for a player standing in Hagga Basin drops them ~780 000 units outside that
+  // map's bounds, so refuse unless the target is one of THIS map's markers.
+  const targetOnThisMap = !!target.playerId && markers.some((m) => m.fls === target.playerId);
+
   async function tpTo(loc: MapLocation) {
     if (!target.playerId) { setErr("pick a target player first (click a dot, or use the Players tab)"); return; }
+    if (!targetOnThisMap) {
+      setErr(markersErr
+        ? `player positions for ${cfg.label} could not be loaded (${markersErr}), so the target's map is unknown — refusing to teleport`
+        : `target ${target.playerId} is not on ${cfg.label}. Teleport sends coordinates without a map, so it would place them at ${loc.name}'s coords inside whatever map they are already on. Switch to their map first.`);
+      return;
+    }
     setErr(null);
     const res = await teleportToLocation(target.playerId, loc.name);
     const ok = res.ok && (res.body as PublishResult).ok;
@@ -244,6 +237,18 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
           save cadence, so a dot can lag the player's real location by tens of seconds (it jumps when the next save lands).
           Not a live feed.
         </p>
+        {cfg.uncalibrated && (
+          <p className="px-3 pb-2 text-[11px] text-orange-400/90">
+            ⚠ {cfg.label} is <span className="font-medium">not calibrated</span> — {cfg.uncalibrated}.
+            Use it to see who is on this map, not where exactly.
+          </p>
+        )}
+        {markersErr && (
+          <p className="px-3 pb-2 text-xs text-red-400">
+            player positions unavailable on {cfg.label}: {markersErr} — the map is showing no dots
+            rather than the previous map's.
+          </p>
+        )}
         {err && <p className="px-3 pb-2 text-xs text-red-400">{err}</p>}
       </div>
 
@@ -260,7 +265,11 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
             className="absolute top-0 left-0 origin-top-left"
             style={{ width: BASE_W, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
           >
-            <img src={`/${cfg.image}`} alt={cfg.label} draggable={false} className="block w-full select-none pointer-events-none" />
+            {/* width/height are the real intrinsic size of every map asset (512x512):
+                without them the box is 0px tall until the webp decodes, and a
+                pick-mode click in that window divides by zero. */}
+            <img src={`/${cfg.image}`} alt={cfg.label} width={512} height={512} draggable={false}
+              className="block w-full h-auto select-none pointer-events-none" />
             {mapKey === "DeepDesert" && dd?.available && (
               <DeepDesertGrid
                 layout={dd.layout}
@@ -270,10 +279,11 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
             )}
             {markers.map((m) => {
               const p = worldToPct(m.x, m.y, cfg);
+              if (!p) return null; // non-finite coord — never paint it at the origin
               return (
                 <button
                   key={m.id}
-                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition} · (${Math.round(m.x)}, ${Math.round(m.y)})${m.fls ? "" : " · no linked account (cannot target)"}`}
+                  title={`${m.name} (${m.online ? "online" : "offline"}) · partition ${m.partition} · (${Math.round(m.x)}, ${Math.round(m.y)})${p.inBounds ? "" : " · OUTSIDE this map's bounds — pinned to the edge"}${m.fls ? "" : " · no linked account (cannot target)"}`}
                   onPointerDown={(e) => e.stopPropagation()}
                   onPointerUp={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); if (m.fls) target.setPlayerId(m.fls); }}
@@ -281,7 +291,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
                   style={{ left: `${p.left}%`, top: `${p.top}%` }}
                 >
                   <span
-                    className={"block rounded-full border border-black/60 " + (m.online ? "bg-emerald-400" : "bg-slate-500")}
+                    className={"block rounded-full " + (p.inBounds ? "border border-black/60 " : "border-2 border-red-500 ") + (m.online ? "bg-emerald-400" : "bg-slate-500")}
                     style={{ width: 10 / zoom, height: 10 / zoom }}
                   />
                 </button>
@@ -289,6 +299,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
             })}
             {mapLocations.map((l) => {
               const p = worldToPct(l.x, l.y, cfg);
+              if (!p) return null;
               return (
                 <div
                   key={l.name}
@@ -303,7 +314,7 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
             {pending && (
               <div
                 className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none leading-none text-spice-300"
-                style={{ ...(() => { const p = worldToPct(pending.x, pending.y, cfg); return { left: `${p.left}%`, top: `${p.top}%` }; })(), fontSize: 16 / zoom }}
+                style={{ ...(() => { const p = worldToPct(pending.x, pending.y, cfg); return p ? { left: `${p.left}%`, top: `${p.top}%` } : { display: "none" }; })(), fontSize: 16 / zoom }}
               >
                 ✛
               </div>
@@ -360,7 +371,10 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
               <p className="text-[10px] text-slate-600 leading-tight">
                 Raw coords are ground truth; the “grid” sector is what the current
                 projection shows. If it disagrees with your in-game sector, post
-                the coords + your real sector.
+                the coords + your real sector. A row marked
+                <span className="text-red-400"> clamped</span> fell outside the
+                declared bounds and was pinned to the edge — its sector is not a
+                real reading, but the raw coords still are.
               </p>
               <table className="w-full">
                 <thead>
@@ -373,14 +387,19 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
                 <tbody className="font-mono">
                   {markers.map((m) => {
                     const p = worldToPct(m.x, m.y, cfg);
-                    const sec = sectorForPct(p.left, p.top);
+                    // worldToPct clamps to the image, so sectorForPct can never
+                    // return null here — an out-of-bounds player would read as an
+                    // ordinary edge sector. p.inBounds is what tells them apart.
+                    const sec = p ? sectorForPct(p.left, p.top) : null;
                     return (
                       <tr key={`cal-${m.id}`} className="border-t border-slate-800/70">
                         <td className="py-0.5 pr-2 truncate max-w-[8rem]" title={m.name}>
                           <span className={m.online ? "text-emerald-400" : "text-slate-500"}>●</span> {m.name}
                         </td>
                         <td className="py-0.5 pr-2 text-slate-300">{Math.round(m.x)}, {Math.round(m.y)}</td>
-                        <td className="py-0.5 text-right text-spice-300">{sec ?? "off-grid"}</td>
+                        <td className={"py-0.5 text-right " + (p && p.inBounds ? "text-spice-300" : "text-red-400")}>
+                          {sec === null ? "bad coords" : p && p.inBounds ? sec : `${sec} clamped`}
+                        </td>
                       </tr>
                     );
                   })}
@@ -424,7 +443,16 @@ export function MapTab({ setConsoleEntries }: { setConsoleEntries: Dispatch<SetS
                     <div className="text-sm truncate">{l.name}</div>
                     <div className="text-[10px] text-slate-600 font-mono">{Math.round(l.x)}, {Math.round(l.y)}</div>
                   </div>
-                  <button className="btn-primary text-xs" onClick={() => tpTo(l)} title="Teleport the target player here">TP</button>
+                  <button
+                    className="btn-primary text-xs"
+                    onClick={() => tpTo(l)}
+                    disabled={!targetOnThisMap}
+                    title={targetOnThisMap
+                      ? "Teleport the target player here"
+                      : !target.playerId
+                        ? "Pick a target player first — click a dot, or use the Players tab"
+                        : `Target is not on ${cfg.label}; teleport carries no map, so it would use these coords inside their current map`}
+                  >TP</button>
                   <button className="btn-ghost text-xs text-red-300" onClick={() => delLoc(l.name)} title="Remove location">✕</button>
                 </div>
               ))}

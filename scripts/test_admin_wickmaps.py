@@ -31,6 +31,13 @@ class SeedSelectionTests(unittest.TestCase):
         self.assertEqual(
             wm.active_dd_seed([{"map": "DeepDesert", "seed": "0"}]), 0)
 
+    def test_exact_seed_zero_wins_over_prefixed(self):
+        """Seed 0 is falsy: `exact or fallback` silently drew the wrong one of
+        the 12 fixed layouts for a whole week, 1 seed in 12."""
+        rows = [{"map": "DeepDesert_1", "seed": "7"},
+                {"map": "DeepDesert", "seed": "0"}]
+        self.assertEqual(wm.active_dd_seed(rows), 0)
+
     def test_malformed_rows_skipped(self):
         rows = [{"map": "DeepDesert", "seed": None},
                 {"map": "DeepDesert", "seed": "x"},

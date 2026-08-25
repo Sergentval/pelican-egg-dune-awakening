@@ -44,8 +44,10 @@ def active_dd_seed(rows: list[dict]) -> int | None:
                 return seed
         return None
 
-    return (seed_of(lambda n: n == "DeepDesert")
-            or seed_of(lambda n: n.startswith("DeepDesert")))
+    # `or` would discard a legitimate seed 0 (falsy), silently drawing whichever
+    # layout the DeepDesert* fallback found instead — 1 week in 12.
+    exact = seed_of(lambda n: n == "DeepDesert")
+    return exact if exact is not None else seed_of(lambda n: n.startswith("DeepDesert"))
 
 
 def load_layout(base: str, seed: int) -> dict | None:
