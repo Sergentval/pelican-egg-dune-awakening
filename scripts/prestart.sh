@@ -427,6 +427,15 @@ VALUES
   -- it reappears in the template.
   (29, 'CB_Overland_S_08', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Overland S08'),
   (30, 'CB_Dungeon_ThePit', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'The Pit'),
+  -- 31-35: the story maps of the September 2026 update, ids exactly as
+  -- world-template.yaml's worldPartitions lists them. Without a row the
+  -- Director cannot route to them: the client sits on "Connecting to
+  -- Arrakeen Spaceport" (CB_Story_OrbitalMonitor) and the story stalls.
+  (31, 'CB_Story_DestroyedZanovar', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Destroyed Zanovar'),
+  (32, 'CB_Story_OrbitalMonitor', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Arrakeen Spaceport'),
+  (33, 'CB_Arrakis_Story_Paranoid_PrayerRoom', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Prayer Room'),
+  (34, 'CB_Arrakis_Story_Glutton_DiningRoom', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Dining Room'),
+  (35, 'CB_Arrakis_Generic_Sietch_Room', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Sietch Room'),
   -- SH_FallenLight warm anchor. Funcom ships this map (GameTweaks
   -- PlayerHardCap=80) but CubeCoders' AMP module never seeded it. We
   -- always insert the row — costs nothing if the operator doesn't
@@ -436,6 +445,25 @@ VALUES
   (130, 'SH_FallenLight', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Fallen Light')
 ON CONFLICT (partition_id) DO NOTHING;
 SQL
+
+# ON CONFLICT DO NOTHING is silent: if another map already holds one of these
+# ids (a Funcom DB upgrade can insert CB_SurvivalChallenge_Station_15 as 31),
+# the map we meant to seed simply has no row and can never start. Say so.
+# The (id, map) pairs are read back from the seed above (its first INSERT
+# block only; the dimension seeds below are separate), so they cannot drift.
+SEED_PAIRS="$(awk '/^INSERT INTO dune.world_partition \(partition_id, map/{on=1} on{print} on && /^ON CONFLICT \(partition_id\)/{exit}' "${BASH_SOURCE[0]}" \
+  | grep -oE "^  \([0-9]+, '[A-Za-z0-9_]+'" | sed -E "s/^  \(([0-9]+), '([^']+)'/(\1,'\2')/" | paste -sd, -)"
+if [ -n "$SEED_PAIRS" ]; then
+  env -i HOME=/tmp LC_ALL=C $PG_RUN_ENV \
+    "$PG_BIN/psql" -h 127.0.0.1 -p "$DUNE_PG_PORT" -U postgres -d dune -At -c "
+      SELECT e.map || ' (template id ' || e.id || ')' || COALESCE(', id held by ' || w.map, '')
+      FROM (VALUES $SEED_PAIRS) AS e(id, map)
+      LEFT JOIN dune.world_partition w ON w.partition_id = e.id
+      WHERE NOT EXISTS (SELECT 1 FROM dune.world_partition x WHERE x.map = e.map AND x.dimension_index = 0)" 2>/dev/null \
+  | while IFS= read -r missing; do
+      [ -n "$missing" ] && warn "world_partition: no row for $missing — this map cannot start until it has one"
+    done
+fi
 
 # --------------------------------------------------------------------------
 # 6b. Seed dimensional partitions for multi-Sietch travel destinations.
