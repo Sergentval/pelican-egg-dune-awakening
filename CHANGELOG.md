@@ -16,6 +16,25 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-09-25 — The update's new story maps can start (Arrakeen Spaceport no longer hangs)
+
+**Reinstall** to pick it up. The missing rows are added on the next boot.
+
+- **"Connecting to Arrakeen Spaceport" never ended.** The September update added five story maps:
+
+  | Partition | Map |
+  |---|---|
+  | 31 | `CB_Story_DestroyedZanovar` |
+  | 32 | `CB_Story_OrbitalMonitor`, the Arrakeen Spaceport |
+  | 33 | `CB_Arrakis_Story_Paranoid_PrayerRoom` |
+  | 34 | `CB_Arrakis_Story_Glutton_DiningRoom` |
+  | 35 | `CB_Arrakis_Generic_Sietch_Room` |
+
+  A map cannot start without its `dune.world_partition` row, and `prestart.sh` seeds those rows from a hand-kept list that stopped at 30. Players could not progress the story past the Spaceport. The cause was found by a CubeCoders forum user (jonokeys) and passed on by @iamc0ke in #136.
+- **Ids are Funcom's, not ours.** They are exactly the ids in `world-template.yaml`'s `worldPartitions`, which is also where mock-k8s reads each map's partition.
+- **A silent conflict is now loud.** The seed is `ON CONFLICT DO NOTHING`. If a Funcom DB upgrade already put another map on one of these ids (`CB_SurvivalChallenge_Station_15` has been seen on 31), the map we meant to seed got no row and nothing said so. After seeding, `prestart.sh` now warns for every seeded map that has no row, and names the map holding its id: `world_partition: no row for <map> (template id N), id held by <other>`.
+- **Verified on our test server.** All five rows were created on boot. A travel request for `CB_Story_OrbitalMonitor` started it on partition 32, and the Director saw it `ready:true` 85 s later.
+
 ## 2026-09-24 — The Deep Desert reshapes when the Coriolis cycle ends, not at the next restart
 
 Issue #119. **Reinstall** to pick it up.
