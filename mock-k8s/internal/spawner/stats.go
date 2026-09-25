@@ -53,6 +53,7 @@ type InstanceStats struct {
 	ReapedTotal    int64 `json:"reapedTotal"`
 	RespawnedTotal int64 `json:"respawnedTotal"`
 	RestoredAtBoot int64 `json:"restoredAtBoot"`
+	RecycledTotal  int64 `json:"recycledTotal"`
 }
 
 type PersistStats struct {
@@ -91,7 +92,7 @@ func (s *Spawner) Snapshot() Snapshot {
 			LastSweep:       s.lastSweep,
 		},
 		Pool:      PoolStats{Size: total, Used: used, Free: free},
-		Instances: InstanceStats{Tracked: tracked, ReapedTotal: s.reapedTotal, RespawnedTotal: s.respawnedTotal, RestoredAtBoot: s.restoredAtBoot},
+		Instances: InstanceStats{Tracked: tracked, ReapedTotal: s.reapedTotal, RespawnedTotal: s.respawnedTotal, RestoredAtBoot: s.restoredAtBoot, RecycledTotal: s.recycledTotal},
 		Persist:   PersistStats{Errors: s.persistErrors, LastError: s.lastPersistError},
 	}
 	for _, obj := range objs {

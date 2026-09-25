@@ -179,8 +179,9 @@ func (s *Spawner) reconcileUpLocked(obj serversetscale.Object, respectBackoff bo
 
 	s.mu.Lock()
 	current := len(s.instances[key])
+	draining := s.draining[key]
 	s.mu.Unlock()
-	if desired <= current {
+	if desired <= current || draining > 0 {
 		return 0
 	}
 	if respectBackoff && s.inBackoff(key) {
