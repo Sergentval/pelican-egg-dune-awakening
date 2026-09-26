@@ -36,8 +36,12 @@ import (
 
 const (
 	// terminateGrace is how long a UE5 instance gets to exit on SIGTERM
-	// during scale-down before mock-k8s escalates to SIGKILL.
-	terminateGrace = 15 * time.Second
+	// during scale-down or recycle before mock-k8s escalates to SIGKILL. It
+	// matches the terminationGracePeriodSeconds Funcom's own world-template
+	// gives every server set: UE5 runs a PreShutdown phase on SIGTERM, and
+	// until proc.Terminate waited for the whole process group the old 15s
+	// never actually applied to UE5 (only to its sh wrapper).
+	terminateGrace = 120 * time.Second
 
 	// pidWaitTimeout bounds how long capturePID keeps polling for the pidfile
 	// once start-ue5.sh has EXITED. While the script is still running the wait
@@ -117,6 +121,13 @@ type Spawner struct {
 
 	// backoff holds per-map crash-loop state, guarded by s.mu.
 	backoff map[string]backoffState
+
+	// draining counts, per map key, the instances scaleDown or Recycle has
+	// untracked but whose UE5 process has not exited yet. reconcileUpLocked spawns nothing
+	// for a draining key: the replacement would share the partition with the
+	// dying server. Guarded by s.mu.
+	draining      map[string]int
+	recycledTotal int64
 }
 
 type instance struct {
@@ -163,6 +174,7 @@ func New(store *serversetscale.Store, pool *pool.Pool, scriptPath, baseDir strin
 		now:        time.Now,
 		startedAt:  time.Now(),
 		backoff:    make(map[string]backoffState),
+		draining:   make(map[string]int),
 		pidWait:    pidWaitTimeout,
 		pidHardCap: pidHardCapTimeout,
 	}
@@ -315,6 +327,10 @@ func (s *Spawner) scaleDown(key string, desired int) {
 	}
 	removed := append([]instance(nil), list[desired:]...)
 	s.instances[key] = append([]instance(nil), list[:desired]...)
+	// Hold the map until each removed UE5 has exited: a Director scale-up
+	// right after this must not put a new server on the partition the old
+	// one, still in PreShutdown, has not left.
+	s.draining[key] += len(removed)
 	s.mu.Unlock()
 
 	// Record the reduced ledger immediately; teardown persists again once
@@ -326,12 +342,25 @@ func (s *Spawner) scaleDown(key string, desired int) {
 		go func(inst instance) {
 			defer s.bg.Done()
 			s.teardown(key, inst)
+			s.mu.Lock()
+			s.finishDrainingLocked(key)
+			s.mu.Unlock()
 		}(inst)
 	}
 }
 
-// teardown terminates one instance's UE5 process and releases its slot.
-func (s *Spawner) teardown(key string, inst instance) {
+// finishDrainingLocked records that one untracked instance of key has
+// finished shutting down. Caller holds s.mu.
+func (s *Spawner) finishDrainingLocked(key string) {
+	if s.draining[key]--; s.draining[key] <= 0 {
+		delete(s.draining, key)
+	}
+}
+
+// teardown terminates one instance's UE5 process and releases its slot. It
+// returns false only when the process could not be terminated and may still
+// be running (the slot then stays reserved).
+func (s *Spawner) teardown(key string, inst instance) bool {
 	// Wait for the spawn to have recorded its pid (or to have definitively
 	// failed) before deciding there's nothing to kill. A scale-down that
 	// lands in the spawn window would otherwise see pid==0 and orphan an
@@ -364,7 +393,7 @@ func (s *Spawner) teardown(key string, inst instance) {
 			// the slot, or a later spawn could collide on it.
 			slog.Error("spawner: terminate failed; keeping slot reserved",
 				"key", key, "suffix", inst.Suffix, "pid", pid, "index", inst.Allocation.Index, "err", err)
-			return
+			return false
 		}
 		slog.Info("spawner: terminated UE5 on scale-down", "key", key, "suffix", inst.Suffix, "pid", pid)
 		_ = os.Remove(pidPath)
@@ -372,6 +401,7 @@ func (s *Spawner) teardown(key string, inst instance) {
 	// Release the slot only now that the port is actually free.
 	s.pool.Release(inst.Allocation.Index)
 	s.persist()
+	return true
 }
 
 func (s *Spawner) spawnOne(obj serversetscale.Object, mapName string, partitionID, indexInSet int) {

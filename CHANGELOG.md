@@ -16,6 +16,93 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-09-25 — The update's new story maps can start (Arrakeen Spaceport no longer hangs)
+
+**Reinstall** to pick it up. The missing rows are added on the next boot.
+
+- **"Connecting to Arrakeen Spaceport" never ended.** The September update added five story maps:
+
+  | Partition | Map |
+  |---|---|
+  | 31 | `CB_Story_DestroyedZanovar` |
+  | 32 | `CB_Story_OrbitalMonitor`, the Arrakeen Spaceport |
+  | 33 | `CB_Arrakis_Story_Paranoid_PrayerRoom` |
+  | 34 | `CB_Arrakis_Story_Glutton_DiningRoom` |
+  | 35 | `CB_Arrakis_Generic_Sietch_Room` |
+
+  A map cannot start without its `dune.world_partition` row, and `prestart.sh` seeds those rows from a hand-kept list that stopped at 30. Players could not progress the story past the Spaceport. The cause was found by a CubeCoders forum user (jonokeys) and passed on by @iamc0ke in #136.
+- **Ids are Funcom's, not ours.** They are exactly the ids in `world-template.yaml`'s `worldPartitions`, which is also where mock-k8s reads each map's partition.
+- **A silent conflict is now loud.** The seed is `ON CONFLICT DO NOTHING`. If a Funcom DB upgrade already put another map on one of these ids (`CB_SurvivalChallenge_Station_15` has been seen on 31), the map we meant to seed got no row and nothing said so. After seeding, `prestart.sh` now warns for every seeded map that has no row, and names the map holding its id: `world_partition: no row for <map> (template id N), id held by <other>`.
+- **Verified on our test server.** All five rows were created on boot. A travel request for `CB_Story_OrbitalMonitor` started it on partition 32, and the Director saw it `ready:true` 85 s later.
+
+## 2026-09-24 — The Deep Desert reshapes when the Coriolis cycle ends, not at the next restart
+
+Issue #119. **Reinstall** to pick it up.
+
+- **The storm timer hit zero and nothing happened until a restart.** The game
+  applies a new Coriolis cycle only when a server **boots**. The seed and cycle
+  dates are read at startup, and the map wipe runs in the database function
+  `coriolis_update_seed`, which each server calls for its own map. Our test
+  server's log of the 2026-06-02 cycle shows it: the storm ran all night,
+  05:00 UTC passed with the Deep Desert up and nothing logged, and only the
+  07:32 boot printed
+
+  ```
+  LogCoriolis: Display: Current Coriolis World Seed: 3
+  LogCoriolis: Display: This Coriolis Cycle start date UTC: 2026.06.02-05.00.00
+  ```
+
+  On Funcom's side, the battlegroup operator restarts servers on a schedule
+  (`restartSchedule`). mock-k8s replaces that operator, so nothing restarted
+  the Deep Desert.
+- **mock-k8s now restarts only the Deep Desert, every dimension of it, two
+  minutes after the boundary.** The new `internal/coriolis` watcher reads the boundary from each
+  instance's own boot line (`Next Coriolis Cycle start date UTC: …`), so it
+  follows whatever cycle the game computes rather than a hard-coded "Tuesday
+  05:00". It then recycles that instance: SIGTERM, which saves its state, and
+  a fresh boot that applies the new cycle.
+  - Every dimension is covered. Dimension 0 is a mock-k8s instance and is
+    recycled in place. Dimensions 1..N (`DUNE_DD_DIMENSIONS`, default 3) are
+    started outside mock-k8s by `spawn-dimension.sh`, so they are restarted
+    through the same `admin-publish dimension-down` / `dimension-up` verbs the
+    sietch controls use. A parked or downed dimension has no pidfile and is
+    never touched.
+  - Hagga, Arrakeen and the dungeons stay up.
+  - It does not need the Pelican API variables the ⏰ scheduled restart does.
+- **What it will never do.**
+  - Start the replacement while the old server is still shutting down. The
+    map is held "draining" until the process has exited, because two servers
+    on one partition is the IGW index collision of the 1.5 crash loop.
+  - Restart an instance that is still booting. Its log may still end with the
+    previous boot's line.
+  - Restart twice for the same boundary.
+  - Restart several Deep Desert instances at once. The next one waits for the
+    previous one to be back (bounded at 15 min).
+  - Keep retrying a server that refuses to stop: it stays tracked, nothing
+    starts beside it, and the next try comes 30 min later.
+- **Stopping a server now waits for the server, not its launcher.** Found
+  while testing this live: every UE5 pidfile holds the
+  `sh DuneSandboxServer.sh` wrapper, which dies on SIGTERM at once, while the
+  UE5 binary beside it enters PreShutdown and can stay there. A Deep Desert
+  did for over ten minutes, still in the farm on partition 8.
+  - `proc.Terminate` waited on the wrapper only. It returned at once, freed the
+    port slot, never sent the SIGKILL, and left that server running untracked:
+    the next Deep Desert start would have collided with it.
+  - `admin-publish dimension-down` had the same wait, and so did the DD
+    autoscaler and the sietch controls that call it.
+  - Both now wait for the whole process group and SIGKILL it once the grace is
+    spent. mock-k8s's grace goes from 15 s to 120 s, the
+    `terminationGracePeriodSeconds` in Funcom's own world template; before
+    this, the 15 s never actually applied to UE5.
+  - A Director scale-down now also holds the map as draining until the old
+    process is gone, so a quick scale-down/scale-up cannot put two servers on
+    one partition.
+- **Settings.**
+  - `MOCK_K8S_CORIOLIS_INTERVAL`: poll interval, default `1m`; `off`
+    disables the watcher.
+  - `MOCK_K8S_CORIOLIS_DELAY`: delay after the boundary, default `2m`.
+  - `/status` gains `instances.recycledTotal`.
+
 ## 2026-09-21 — Instances a player asked for are given back when nobody is on them
 
 - **The watcher could only ever fill the budget.** Shipped that morning, it

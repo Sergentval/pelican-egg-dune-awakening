@@ -4123,9 +4123,18 @@ SQL
             dpid="$(tr -dc '0-9' < "$pidf" 2>/dev/null)"
             if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
                 [ -r "/proc/$dpid/cmdline" ] && DPORT=$(tr '\0' '\n' < "/proc/$dpid/cmdline" 2>/dev/null | sed -n 's/^-Port=\([0-9]\{1,\}\)$/\1/p' | head -1)
+                # Wait on the whole process GROUP, not the pid: the pidfile holds the
+                # `sh DuneSandboxServer.sh` wrapper, which dies on SIGTERM at once while
+                # UE5 beside it can sit in PreShutdown (still on its partition) for
+                # minutes. Waiting on the wrapper skipped the SIGKILL and let the
+                # respawn share the partition with the old server.
+                grp_alive() { kill -0 -- "-$dpid" 2>/dev/null || kill -0 "$dpid" 2>/dev/null; }
                 kill -TERM -- "-$dpid" 2>/dev/null || kill -TERM "$dpid" 2>/dev/null || true
-                for _ in $(seq 1 10); do kill -0 "$dpid" 2>/dev/null || break; sleep 1; done
-                kill -0 "$dpid" 2>/dev/null && { kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true; }
+                for _ in $(seq 1 10); do grp_alive || break; sleep 1; done
+                if grp_alive; then
+                    kill -KILL -- "-$dpid" 2>/dev/null || kill -KILL "$dpid" 2>/dev/null || true
+                    for _ in $(seq 1 5); do grp_alive || break; sleep 1; done
+                fi
             fi
             rm -f "$pidf"
         fi

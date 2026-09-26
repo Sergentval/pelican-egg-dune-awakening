@@ -28,3 +28,37 @@ func TestParseReconcileInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDurationEnv(t *testing.T) {
+	const def = 2 * time.Minute
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", def},
+		{"  ", def},
+		{"off", 0},
+		{"OFF", 0},
+		{"disabled", 0},
+		{"0", 0},
+		{"-5s", 0},
+		{"90s", 90 * time.Second},
+		{" 5m ", 5 * time.Minute},
+		{"soon", def},
+	} {
+		if got := parseDurationEnv("X", tc.raw, def); got != tc.want {
+			t.Errorf("parseDurationEnv(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestParseCoriolisDelay_NeverZero(t *testing.T) {
+	for _, raw := range []string{"", "off", "0", "-5s", "soon"} {
+		if got := parseCoriolisDelay(raw); got != 2*time.Minute {
+			t.Errorf("parseCoriolisDelay(%q) = %v, want the 2m default", raw, got)
+		}
+	}
+	if got := parseCoriolisDelay("5m"); got != 5*time.Minute {
+		t.Errorf("parseCoriolisDelay(5m) = %v", got)
+	}
+}

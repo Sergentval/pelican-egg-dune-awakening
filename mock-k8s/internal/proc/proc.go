@@ -41,15 +41,22 @@ func Alive(pid int) bool {
 	}
 }
 
-// Terminate stops the process identified by pid: SIGTERM first, then, if it
-// is still alive after grace, SIGKILL. It signals the process group too
-// (pgid == pid, courtesy of setsid in launch_bg) so any UE5 child processes
-// are swept up. Returns nil once the process is gone; returns an error only
-// if it somehow survives the SIGKILL escalation.
+// Terminate stops the process identified by pid and its whole process group
+// (pgid == pid, courtesy of setsid in launch_bg): SIGTERM first, then, if
+// anything in the group is still running after grace, SIGKILL to the group.
+// Returns nil once the leader AND every group member are gone; returns an
+// error only if something survives the SIGKILL escalation.
+//
+// Waiting for the group, not just the leader, is the point. The pidfile holds
+// the `sh DuneSandboxServer.sh` wrapper, which dies on SIGTERM at once, while
+// the UE5 binary beside it enters PreShutdown and may stay there: a Deep
+// Desert did for over ten minutes, still in the farm on its partition. Waiting
+// on the leader alone returned immediately, freed the port slot, never sent
+// the SIGKILL, and left that server running untracked.
 //
 // Safe to call on an already-dead pid or on pid <= 0 (both are no-ops).
 func Terminate(pid int, grace time.Duration) error {
-	if !Alive(pid) {
+	if gone(pid) {
 		return nil
 	}
 	sendSignal(pid, syscall.SIGTERM)
@@ -77,18 +84,61 @@ func sendSignal(pid int, sig syscall.Signal) {
 	}
 }
 
-// waitExit polls Alive until the process is gone or the deadline passes.
+// waitExit polls until the process and its group are gone or the deadline
+// passes.
 func waitExit(pid int, d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
-		if !Alive(pid) {
+		if gone(pid) {
 			return true
 		}
 		if time.Now().After(deadline) {
-			return !Alive(pid)
+			return gone(pid)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// gone reports whether pid and every running member of its process group
+// have exited.
+func gone(pid int) bool {
+	return !Alive(pid) && !groupRunning(pid)
+}
+
+// groupRunning reports whether any non-zombie process has pgid as its process
+// group. It reads /proc rather than probing kill(-pgid, 0), which also answers
+// for zombies: an orphan waiting on a slow reaper is dead for our purposes.
+// pgid <= 1 is never a UE5 group and always reports false.
+func groupRunning(pgid int) bool {
+	if pgid <= 1 {
+		return false
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	want := strconv.Itoa(pgid)
+	for _, e := range entries {
+		name := e.Name()
+		if name == "" || name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + name + "/stat")
+		if err != nil {
+			continue // exited while we looked
+		}
+		s := string(b)
+		rparen := strings.LastIndexByte(s, ')')
+		if rparen < 0 {
+			continue
+		}
+		// After the comm field: [0]=state (field 3), [2]=pgrp (field 5).
+		f := strings.Fields(s[rparen+1:])
+		if len(f) > 2 && f[2] == want && f[0] != "Z" && f[0] != "X" {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadPidFile reads a pid written by scripts/lib.sh's write_pid: a single

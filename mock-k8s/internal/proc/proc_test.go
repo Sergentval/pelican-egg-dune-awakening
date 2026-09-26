@@ -49,6 +49,32 @@ func TestMain(m *testing.M) {
 		time.Sleep(time.Hour)
 		os.Exit(0)
 
+	case "group-leader-dies":
+		// The production topology: start-ue5.sh's `sh DuneSandboxServer.sh`
+		// wrapper is the pidfile's pid and dies on SIGTERM at once, while its
+		// UE5 child (same process group) takes its time — a real Deep Desert
+		// sat in PreShutdown for over ten minutes. The grandchild here ignores
+		// SIGTERM, so only a group SIGKILL stops it.
+		gcReady := os.Getenv("PROC_TEST_GC_READY")
+		gc := exec.Command(os.Args[0])
+		gc.Env = append(os.Environ(), "PROC_TEST_MODE=ignore-term", "PROC_TEST_READY="+gcReady)
+		if err := gc.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "group-leader-dies: start grandchild: %v\n", err)
+			os.Exit(1)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(gcReady); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if ready := os.Getenv("PROC_TEST_READY"); ready != "" {
+			_ = os.WriteFile(ready, []byte(strconv.Itoa(gc.Process.Pid)), 0o644)
+		}
+		time.Sleep(time.Hour)
+		os.Exit(0)
+
 	case "group-leader":
 		// pgid == our pid (parent set Setpgid:true). We and our grandchild
 		// both ignore SIGTERM, so Terminate must escalate to SIGKILL; the
@@ -119,6 +145,10 @@ func startChild(t *testing.T, mode string) int {
 // exhaust its grace and escalate — and the grandchild is reachable only via
 // kill(-pid). Returns both pids; the caller asserts both are gone.
 func startGroupLeaderChild(t *testing.T) (childPID, grandchildPID int) {
+	return startGroup(t, "group-leader")
+}
+
+func startGroup(t *testing.T, mode string) (childPID, grandchildPID int) {
 	t.Helper()
 	dir := t.TempDir()
 	childReady := filepath.Join(dir, "child-ready") // content = grandchild pid
@@ -126,7 +156,7 @@ func startGroupLeaderChild(t *testing.T) (childPID, grandchildPID int) {
 
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
-		"PROC_TEST_MODE=group-leader",
+		"PROC_TEST_MODE="+mode,
 		"PROC_TEST_READY="+childReady,
 		"PROC_TEST_GC_READY="+gcReady,
 	)
@@ -328,5 +358,37 @@ func TestReadPidFile(t *testing.T) {
 	}
 	if got := ReadPidFile(garbage); got != 0 {
 		t.Errorf("ReadPidFile(garbage) = %d, want 0", got)
+	}
+}
+
+// running reports whether pid exists and is not a zombie. An orphan whose
+// reaper is slow stays a zombie for a while, and a zombie is not a server.
+func running(pid int) bool {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	f := strings.Fields(s[i+1:])
+	return len(f) > 0 && f[0] != "Z" && f[0] != "X"
+}
+
+// The pidfile's pid dying is not the server dying. Terminate must wait for
+// the whole process group, and SIGKILL it once the grace is spent. Before
+// this, it returned the moment the wrapper exited: the port slot was freed
+// while UE5 still held its partition, and an orphaned Deep Desert kept
+// running on partition 8 untracked.
+func TestTerminate_WaitsForGroupAfterLeaderDies(t *testing.T) {
+	childPID, gcPID := startGroup(t, "group-leader-dies")
+	start := time.Now()
+	if err := Terminate(childPID, 300*time.Millisecond); err != nil {
+		t.Fatalf("Terminate(%d): %v", childPID, err)
+	}
+	if running(gcPID) {
+		t.Fatalf("Terminate returned while the group member %d (the UE5 stand-in) is still running", gcPID)
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Errorf("Terminate took %v; it must wait out the grace for the lingering member before SIGKILL", elapsed)
 	}
 }
