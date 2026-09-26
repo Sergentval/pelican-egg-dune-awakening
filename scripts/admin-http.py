@@ -66,6 +66,7 @@ import admin_battlepass  # noqa: E402  # type: ignore[import-not-found]  (sys.pa
 import admin_wickmaps  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Deep Desert seed→POI layout; no DB/network)
 import admin_park  # noqa: E402  # type: ignore[import-not-found]  (sys.path; pure parked-sietch id set — fail-safe file read, no DB/network)
 import admin_history  # noqa: E402  # type: ignore[import-not-found]  (sys.path; persisted command audit — SQLite under server/state/, no DB/network)
+import admin_ban  # noqa: E402  # type: ignore[import-not-found]  (sys.path; player denylist the FLS stub enforces — fail-open JSON store, no DB/network)
 import admin_pelican  # noqa: E402  # type: ignore[import-not-found]  (sys.path; Pelican client-API access, shared with the scheduler)
 import admin_tls  # noqa: E402  # type: ignore[import-not-found]  (sys.path; direct TLS termination + hot reload)
 
@@ -1412,6 +1413,11 @@ class Handler(BaseHTTPRequestHandler):
         # Saved teleport locations (operator-defined named coords).
         if path == "/api/map/locations":
             self._write(200, {"ok": True, "locations": admin_locations.load_locations(BASE_DIR)})
+            return
+
+        # Player bans (#118): the active denylist the FLS stub enforces.
+        if path == "/api/bans":
+            self._write(200, {"ok": True, "bans": admin_ban.list_bans(os.path.join(BASE_DIR, "server", "state"))})
             return
 
         # Unattended scheduler: config + status + run history.
@@ -3819,6 +3825,36 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry = run_publish(["tpsafe", player, str(loc["x"]), str(loc["y"]), str(loc["z"])], timeout=15)
             self._write(200, entry)
+            return
+
+        # Player bans (#118), auth+csrf. The FLS stub refuses a banned player at
+        # every login and travel; a player online at ban time is also kicked.
+        #   POST /api/bans              {fls_id, name?, reason?, duration_secs?|null, kick?}
+        #   POST /api/bans/<fls_id>/lift
+        if path == "/api/bans" or (path.startswith("/api/bans/") and path.endswith("/lift")):
+            if not self._auth_ok():
+                self._write(401, {"error": "auth required"})
+                return
+            if not self._csrf_ok():
+                self._write(403, {"error": "csrf token missing or invalid"})
+                return
+            if path == "/api/bans":
+                status, payload, kick = admin_ban.handle_ban_request(BASE_DIR, body)
+                if status == 200:
+                    b = payload["ban"]
+                    admin_history.record(BASE_DIR, admin_ban.audit_entry(
+                        ["ban", b["fls_id"], b["expires_at"] or "permanent", b["reason"]], True,
+                        f"banned {b['fls_id']} ({b['name'] or '?'})"))
+                    if kick:
+                        # Best effort: KickPlayer is a no-op for a player who is not online.
+                        payload["kick"] = run_publish(["kick", kick], timeout=15).get("ok", False)
+            else:
+                fls_id = unquote(path[len("/api/bans/"):-len("/lift")])
+                status, payload = admin_ban.handle_lift_request(BASE_DIR, fls_id)
+                if status == 200 and payload.get("lifted"):
+                    admin_history.record(BASE_DIR, admin_ban.audit_entry(
+                        ["unban", fls_id.strip().upper()], True, f"lifted ban on {fls_id.strip().upper()}"))
+            self._write(status, payload)
             return
 
         # Unattended scheduler config update (auth+csrf). Body: {restart:{...}, backup:{...}}.

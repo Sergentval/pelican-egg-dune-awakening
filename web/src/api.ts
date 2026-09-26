@@ -298,6 +298,23 @@ export const guildCreate = (player: string, name: string, description?: string) 
   api<PublishResult>("POST", "/api/guilds/create",
     description ? { player, name, description } : { player, name });
 
+// ---- Player bans (#118) ----------------------------------------------------
+// Enforced by the FLS stub at every login and travel: a banned player is
+// refused before reaching the world. expires_at null = permanent.
+export interface Ban {
+  fls_id: string;
+  name: string;
+  reason: string;
+  banned_at: string;
+  expires_at: string | null;
+  by: string;
+}
+export const listBans = () => api<{ ok: boolean; bans: Ban[] }>("GET", "/api/bans");
+export const banPlayer = (b: { fls_id: string; name: string; reason: string; duration_secs: number | null; kick: boolean }) =>
+  api<{ ok: boolean; ban?: Ban; kick?: boolean; error?: string }>("POST", "/api/bans", b);
+export const liftBan = (flsId: string) =>
+  api<{ ok: boolean; lifted?: boolean; error?: string }>("POST", `/api/bans/${encodeURIComponent(flsId)}/lift`, {});
+
 // ---- Database tab (read-only SQL) ----------------------------------------
 // The backend enforces read-only (SELECT / WITH / EXPLAIN / SHOW only) and
 // caps the result at 200 rows. Gives operators a first-class way to inspect

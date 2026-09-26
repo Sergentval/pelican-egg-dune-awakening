@@ -78,7 +78,8 @@ launch_bg fls-stub "$LOGS/fls-stub.log" -- \
   /usr/bin/python3 -u "$SCRIPTS/fls-stub.py" \
   --plaintext \
   --bind 127.0.0.1 \
-  --port "$STUB_PORT"
+  --port "$STUB_PORT" \
+  --state-dir "$STATE"
 
 # --------------------------------------------------------------------------
 # 4. Readiness probe — block downstream UE5 starts until we are accepting.

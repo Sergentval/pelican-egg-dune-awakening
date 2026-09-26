@@ -32,10 +32,15 @@ import argparse
 import http.server
 import json
 import logging
+import os
 import socket
 import ssl
 import sys
 from urllib.parse import urlsplit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import admin_ban  # noqa: E402
+import fls_capture  # noqa: E402
 
 REAL_FLS_HOSTNAME = "sb-retail.fls.funcom.com"
 REAL_FLS_PORT = 443
@@ -57,19 +62,32 @@ STUBBED_PATHS = {
 }
 
 
-def _stub_payload(path: str) -> dict:
-    """Return the canned success payload for a stubbed path. Field shapes
-    are dispatched by endpoint name — each FLS endpoint expects different
+# Calls whose bodies the capture mode logs (redacted): the identity check,
+# the authorization gate, and the calls around them that carry player ids.
+# Capture is on while $STATE/fls-stub/capture exists — touch it, join once,
+# remove it. Issue #118 needs to know which identifier the gate receives.
+CAPTURE_PATHS = {
+    "/api/Auth_VerifyFlsServerToken",
+    "/api/Battlegroups_IsPlayerAuthorized",
+    "/api/AccessControl_CheckPlayerAuthorizationList",
+    "/api/BattlegroupDeclarePlayerLogin",
+}
+
+
+def _stub_payload(path: str, authorized: bool = True) -> dict:
+    """Return the canned payload for a stubbed path. Field shapes are
+    dispatched by endpoint name — each FLS endpoint expects different
     fields, and the C# bindings hard-fail on missing fields rather than
-    treating them as falsy."""
+    treating them as falsy. `authorized` only matters for the
+    authorization gate: False is how a banned player is refused (#118)."""
     if path == "/api/Battlegroups_IsPlayerAuthorized":
         return {
             "data": {
                 "FunctionResult": {
-                    "IsPlayerAuthorized": True,
-                    "IsAuthorized": True,
-                    "Authorized": True,
-                    "Result": "Authorized",
+                    "IsPlayerAuthorized": authorized,
+                    "IsAuthorized": authorized,
+                    "Authorized": authorized,
+                    "Result": "Authorized" if authorized else "Unauthorized",
                     "ErrorCode": 0,
                     "ErrorMessage": "",
                 }
@@ -154,10 +172,27 @@ def resolve_real_fls_ip() -> str:
 
 class FlsStubHandler(http.server.BaseHTTPRequestHandler):
     real_fls_ip = "150.171.110.117"  # overwritten in main()
+    state_dir = ""  # $STATE; overwritten in main()
+
+    def _capturing(self, path: str) -> bool:
+        return (path in CAPTURE_PATHS and bool(self.state_dir)
+                and os.path.exists(os.path.join(self.state_dir, "fls-stub", "capture")))
+
+    def _capture(self, direction: str, path: str, body: bytes, status: int = 0) -> None:
+        logging.info("CAPTURE %s %s%s %s", direction, fls_capture.safe_path(path),
+                     f" status={status}" if status else "",
+                     json.dumps(fls_capture.sanitize_body(body), sort_keys=True))
 
     # Logging: route through our logger so it goes to stdout with our format.
+    # The access line would carry the request path, whose ?code= is the
+    # server's own JWT (ServiceAuthKey inside): log the request line without
+    # its query string. Reporters paste this log into public issues.
     def log_message(self, format: str, *args) -> None:  # noqa: N802, A002
         logging.info("%s - %s", self.client_address[0], format % args)
+
+    def log_request(self, code="-", size="-") -> None:  # noqa: D401
+        line = f"{self.command} {fls_capture.safe_path(self.path)} {self.request_version}"
+        self.log_message('"%s" %s %s', line, str(code), str(size))
 
     def do_GET(self) -> None:  # noqa: N802
         self._handle()
@@ -175,6 +210,8 @@ class FlsStubHandler(http.server.BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         body_len = int(self.headers.get("Content-Length", "0") or "0")
         body = self.rfile.read(body_len) if body_len else b""
+        if self._capturing(path):
+            self._capture("request", path, body)
 
         if path in STUBBED_PATHS:
             self._serve_stub(path, body)
@@ -189,7 +226,16 @@ class FlsStubHandler(http.server.BaseHTTPRequestHandler):
             "yes" if "code=" in self.path else "no",
             len(body),
         )
-        payload = _stub_payload(path)
+        authorized = True
+        if path == "/api/Battlegroups_IsPlayerAuthorized" and self.state_dir:
+            authorized, ban = admin_ban.authorization_verdict(self.state_dir, body)
+            if not authorized:
+                logging.warning(
+                    "BAN refusing player %s (%s) reason=%r expires=%s",
+                    ban["fls_id"], ban.get("name") or "?", ban.get("reason", ""),
+                    ban.get("expires_at") or "never",
+                )
+        payload = _stub_payload(path, authorized)
         encoded = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -274,10 +320,12 @@ class FlsStubHandler(http.server.BaseHTTPRequestHandler):
                 upstream_headers.append((key, val))
 
             body_bytes = _dechunk(raw_body) if is_chunked else raw_body
+            if self._capturing(urlsplit(self.path).path):
+                self._capture("response", self.path, body_bytes, status)
             logging.info(
                 "PROXY %s %s -> %d (%d bytes%s)",
                 self.command,
-                self.path[:80],
+                fls_capture.safe_path(self.path),
                 status,
                 len(body_bytes),
                 " dechunked" if is_chunked else "",
@@ -345,6 +393,7 @@ def main() -> int:
     parser.add_argument("--key", help="TLS key PEM path (omit for plaintext)")
     parser.add_argument("--bind", default="127.0.0.1", help="bind address")
     parser.add_argument("--port", type=int, default=8443, help="bind port")
+    parser.add_argument("--state-dir", default="", help="$STATE; enables the capture flag file")
     parser.add_argument(
         "--plaintext",
         action="store_true",
@@ -364,6 +413,7 @@ def main() -> int:
 
     real_ip = resolve_real_fls_ip()
     FlsStubHandler.real_fls_ip = real_ip
+    FlsStubHandler.state_dir = args.state_dir
     logging.info("Real FLS IP resolved to %s", real_ip)
 
     if args.plaintext:
