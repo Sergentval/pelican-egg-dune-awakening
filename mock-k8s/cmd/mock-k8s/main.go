@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -306,11 +307,9 @@ func run() error {
 	// something: it caps how many maps demand may start.
 	if worldName != "" {
 		scaler := &demandScaler{store: sssStore, spawner: spw, world: worldName}
-		w := traveldemand.New(directorLogPath(baseDir), scaler, cfg.MaxConcurrentInstances)
-		go w.Run(ctx.Done(), parseTravelWatchInterval(os.Getenv("MOCK_K8S_TRAVEL_WATCH_INTERVAL")))
 
-		// And give the slot back. Without this the watcher can only ever fill
-		// the budget: a map it starts stays up forever, and once
+		// Give the slot back. Without this the watcher can only ever fill the
+		// budget: a map it starts stays up forever, and once
 		// MaxConcurrentInstances is reached every later travel request is
 		// refused until the next restart. AutomaticStopDuration has been in
 		// ondemand.ini all along, parsed and applied by nobody.
@@ -320,6 +319,17 @@ func run() error {
 			// the player's saved location on it (the Forty Fears credits loop).
 			WithStoryEnd(traveldemand.NewStoryEnd(instanceLogs{spw: spw, baseDir: baseDir}))
 		go r.Run(ctx.Done(), parseReapInterval(os.Getenv("MOCK_K8S_REAP_INTERVAL")))
+
+		// At the cap, make room from an instance nobody is on before refusing,
+		// and when there is none, say so on the server: the Director would
+		// otherwise hold the player on "Connecting to ..." until the request
+		// expires, with no word why (#136).
+		var announce traveldemand.Announcer
+		if parseCapBroadcast(os.Getenv("MOCK_K8S_CAP_BROADCAST")) {
+			announce = traveldemand.NewCapAnnouncer(cfg.MaxConcurrentInstances, adminBroadcast(baseDir))
+		}
+		w := traveldemand.New(directorLogPath(baseDir), scaler, cfg.MaxConcurrentInstances).WithCapacity(r, announce)
+		go w.Run(ctx.Done(), parseTravelWatchInterval(os.Getenv("MOCK_K8S_TRAVEL_WATCH_INTERVAL")))
 	}
 	if err := server.Run(ctx, srv); err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -427,6 +437,31 @@ func (l instanceLogs) InstanceLogs(mapName string) []string {
 	return out
 }
 
+// parseCapBroadcast reads MOCK_K8S_CAP_BROADCAST: on unless "off", "0",
+// "false" or "disabled".
+func parseCapBroadcast(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "off", "0", "false", "disabled":
+		return false
+	}
+	return true
+}
+
+// adminBroadcast sends one server-wide message through admin-publish, the
+// same path as the panel's broadcast button.
+func adminBroadcast(baseDir string) func(title, body string) error {
+	return func(title, body string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "bash", filepath.Join(baseDir, "scripts", "admin-publish.sh"),
+			"broadcast", title, body, "20").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+}
+
 // demandScaler is the traveldemand.Scaler over our store and spawner.
 type demandScaler struct {
 	store   *serversetscale.Store
@@ -435,6 +470,15 @@ type demandScaler struct {
 }
 
 func (d *demandScaler) LiveInstances() int { return d.spawner.Snapshot().Instances.Tracked }
+
+func (d *demandScaler) IsUp(mapName string) bool {
+	for _, m := range d.store.ScaledUpMapNames("default") {
+		if m == mapName {
+			return true
+		}
+	}
+	return false
+}
 
 // ScaledUpMaps and ScaleToZero are the reaper's half of the same adapter: the
 // watcher raises a map, the reaper lowers it, and both go through the store so
