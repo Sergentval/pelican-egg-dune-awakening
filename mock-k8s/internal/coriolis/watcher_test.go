@@ -292,15 +292,15 @@ func TestTailer_WaitsForCompleteLine(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "x.log")
 	appendLog(t, p, "[2026.06.01-20.28.33:590][  0][809]LogCoriolis: Display: Next Coriolis Cycle start date UTC: 2026.06.0")
-	tl := &tail{path: p}
-	if _, err := tl.scan(); err != nil {
+	tl := newTail(p)
+	if err := tl.scan(); err != nil {
 		t.Fatal(err)
 	}
 	if !tl.next.IsZero() {
 		t.Fatalf("parsed a half-written line: %v", tl.next)
 	}
 	appendLog(t, p, "2-05.00.00\n")
-	if _, err := tl.scan(); err != nil {
+	if err := tl.scan(); err != nil {
 		t.Fatal(err)
 	}
 	if want := time.Date(2026, 6, 2, 5, 0, 0, 0, time.UTC); !tl.next.Equal(want) {
