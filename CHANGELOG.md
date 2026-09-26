@@ -16,6 +16,26 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-09-26 — Ban players from the panel: refused before they reach the world
+
+Issue #118. **Reinstall** to pick it up.
+
+- **The game has no ban command. The egg now has one anyway.** Every UE5 server asks the FLS stub `Battlegroups_IsPlayerAuthorized` on each login and each travel, **before** the database login, with the player's FLS id in the body. The stub now answers "not authorized" for a banned player. UE5 then refuses the connection (`Player unauthorized to join server.`): no character is loaded, and it holds on every map.
+- **Panel: Players → Bans.**
+  - Pick any player (online or offline) by character name or FLS id.
+  - Choose a duration (1 hour, 1 day, 7 days, 30 days, or permanent) and a reason.
+  - Optionally kick them at once if they are online.
+  - The list shows who is banned, why, since when and until when, with **Forgive**.
+  - Bans, kicks and lifts are recorded in the command history.
+  - API:
+    - `GET /api/bans`
+    - `POST /api/bans {fls_id, name?, reason?, duration_secs?|null, kick?}`
+    - `POST /api/bans/<fls_id>/lift`
+- **Fail-open.** Bans live in `server/state/admin/bans.json`. A missing or corrupt file, a bad entry, or a request the stub cannot read all mean "not banned": a broken file can never lock the server out.
+- **Verified live** on our test server. A banned account got the refusal on its next login; after Forgive, it joined again.
+- 🔒 **Security: the server's FLS token no longer lands in `fls-stub.log`.** Every FLS call carries the server's own JWT (`ServiceAuthKey` inside) in `?code=`, and the stub's access log and `PROXY` line wrote the full path, tens of thousands of times per log. Both now drop the query string. **Existing `fls-stub.log` files still contain the old lines: delete or trim them, and never paste an old one into an issue.**
+- The stub also gained a redacted capture mode for debugging. While `server/state/fls-stub/capture` exists, it logs the identity and authorization bodies with secrets masked.
+
 ## 2026-09-25 — The update's new story maps can start (Arrakeen Spaceport no longer hangs)
 
 **Reinstall** to pick it up. The missing rows are added on the next boot.
