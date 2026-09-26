@@ -14,11 +14,12 @@ import { type Dispatch, type SetStateAction, useState } from "react";
 import type { ConsoleEntry } from "./components";
 import { InventoryTab, MovementTab, PlayersTab, SkillsTab } from "./tabs";
 import { PlayerEditorTab } from "./PlayerEditorTab";
+import { BansTab } from "./BansTab";
 import { Icon } from "./icons";
 
 type SetEntries = Dispatch<SetStateAction<ConsoleEntry[]>>;
 
-type Sub = "roster" | "character" | "skills" | "inventory" | "teleport";
+type Sub = "roster" | "character" | "skills" | "inventory" | "teleport" | "bans";
 
 const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
   { id: "roster", label: "Roster", icon: "players", hint: "Who's online; kick, clean inventory, reset progression" },
@@ -26,6 +27,7 @@ const SUBS: { id: Sub; label: string; icon: string; hint: string }[] = [
   { id: "skills", label: "Skills", icon: "skills", hint: "Grant skills, spend skill points, award XP" },
   { id: "inventory", label: "Inventory", icon: "inventory", hint: "View and delete a player's items" },
   { id: "teleport", label: "Teleport", icon: "movement", hint: "Move a player to a saved location or coordinates" },
+  { id: "bans", label: "Bans", icon: "shield", hint: "Ban a player (refused at every login and travel) or lift a ban" },
 ];
 
 export function PlayersWorkspace({ setConsoleEntries }: { setConsoleEntries: SetEntries }) {
@@ -62,6 +64,7 @@ export function PlayersWorkspace({ setConsoleEntries }: { setConsoleEntries: Set
       {sub === "skills" && <SkillsTab setConsoleEntries={setConsoleEntries} />}
       {sub === "inventory" && <InventoryTab setConsoleEntries={setConsoleEntries} />}
       {sub === "teleport" && <MovementTab setConsoleEntries={setConsoleEntries} />}
+      {sub === "bans" && <BansTab />}
     </div>
   );
 }
