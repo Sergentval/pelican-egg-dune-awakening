@@ -2,6 +2,7 @@ package traveldemand
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,10 @@ type Occupancy interface {
 
 // Reaper stops on-demand maps that have sat empty for AutomaticStopDuration.
 type Reaper struct {
+	// mu serializes Tick (the reaper loop) and FreeSlot (called from the
+	// travel watcher's goroutine): both read and write emptySince.
+	mu sync.Mutex
+
 	scaler     ReapScaler
 	occupancy  Occupancy
 	idleAfter  time.Duration
@@ -84,6 +89,8 @@ func (r *Reaper) Tick() {
 	if r.idleAfter <= 0 {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	counts, err := r.occupancy.PlayerCounts()
 	if err != nil {
 		// Hold. A failed query read as "zero everywhere" would reap every
@@ -141,6 +148,49 @@ func (r *Reaper) Tick() {
 		slog.Info("traveldemand: stopping a map nobody is on, freeing an instance slot",
 			"map", mapName, "idle", idle.Round(time.Second))
 	}
+}
+
+// freeSlotMinEmpty is how long an instance must have been empty before the
+// watcher may stop it to make room. A player who dropped mid-mission comes
+// back within the grace period; a map that emptied a moment ago is theirs.
+const freeSlotMinEmpty = time.Minute
+
+// FreeSlot stops the on-demand map that has been empty the longest (at least
+// freeSlotMinEmpty) to make room for exclude, and returns it; "" when there is
+// none. Never touches an always-warm map or exclude. An unreadable player
+// count is an error and stops nothing: unknown is not empty.
+func (r *Reaper) FreeSlot(exclude string) (string, error) {
+	counts, err := r.occupancy.PlayerCounts()
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	best, bestSince := "", time.Time{}
+	for _, m := range r.scaler.ScaledUpMaps() {
+		if m == exclude || r.alwaysWarm[m] || counts[m] > 0 {
+			continue
+		}
+		since, seen := r.emptySince[m]
+		if !seen || now.Sub(since) < freeSlotMinEmpty {
+			continue
+		}
+		if best == "" || since.Before(bestSince) {
+			best, bestSince = m, since
+		}
+	}
+	if best == "" {
+		return "", nil
+	}
+	if err := r.scaler.ScaleToZero(best); err != nil {
+		return "", err
+	}
+	delete(r.emptySince, best)
+	if r.ends != nil {
+		r.ends.Forget(best)
+	}
+	return best, nil
 }
 
 // stopFinishedStory stops mapName if the story-end guard says its story
