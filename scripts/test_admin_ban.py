@@ -123,5 +123,53 @@ class TestAuthorizationVerdict(Base):
             self.assertTrue(ok, body)
 
 
+class TestHttpHandlers(Base):
+    """The request logic behind POST /api/bans and /api/bans/<id>/lift."""
+
+    def test_ban_request_bans_and_asks_for_kick(self):
+        status, payload, kick = ab.handle_ban_request(self.base, {
+            "fls_id": FLS.lower(), "name": "Griefer", "reason": "griefing", "duration_secs": 3600}, now=NOW)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["ban"]["fls_id"], FLS)
+        self.assertEqual(payload["ban"]["expires_at"], "2026-09-26T09:00:00Z")
+        self.assertEqual(kick, FLS)
+        self.assertIsNotNone(ab.active_ban(self.state, FLS, NOW))
+
+    def test_permanent_when_duration_missing_null_or_zero(self):
+        for d in ({}, {"duration_secs": None}, {"duration_secs": 0}):
+            status, payload, _ = ab.handle_ban_request(self.base, {"fls_id": FLS, **d}, now=NOW)
+            self.assertEqual(status, 200, d)
+            self.assertIsNone(payload["ban"]["expires_at"], d)
+
+    def test_kick_can_be_skipped(self):
+        _, _, kick = ab.handle_ban_request(self.base, {"fls_id": FLS, "kick": False}, now=NOW)
+        self.assertIsNone(kick)
+
+    def test_bad_requests_are_400_and_ban_nothing(self):
+        for body in (None, [], {}, {"fls_id": "nope"}, {"fls_id": FLS, "duration_secs": -1},
+                     {"fls_id": FLS, "duration_secs": "soon"}, {"fls_id": FLS, "duration_secs": 10**12}):
+            status, payload, kick = ab.handle_ban_request(self.base, body, now=NOW)
+            self.assertEqual(status, 400, body)
+            self.assertFalse(payload["ok"], body)
+            self.assertIsNone(kick, body)
+        self.assertEqual(ab.list_bans(self.state, NOW), [])
+
+    def test_lift(self):
+        ab.ban(self.base, FLS, name="", reason="", duration_secs=None, by="panel", now=NOW)
+        status, payload = ab.handle_lift_request(self.base, FLS.lower())
+        self.assertEqual((status, payload["lifted"]), (200, True))
+        status, payload = ab.handle_lift_request(self.base, FLS)
+        self.assertEqual((status, payload["lifted"]), (200, False))
+        status, _ = ab.handle_lift_request(self.base, "nope")
+        self.assertEqual(status, 400)
+
+    def test_audit_entry_shape(self):
+        e = ab.audit_entry(["ban", FLS, "3600"], True, "banned", now=NOW)
+        self.assertEqual(e["argv"], ["ban", FLS, "3600"])
+        self.assertTrue(e["ok"])
+        self.assertEqual(e["ts"], int(NOW.timestamp()))
+
+
 if __name__ == "__main__":
     unittest.main()

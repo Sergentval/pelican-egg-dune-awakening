@@ -162,6 +162,49 @@ def authorization_verdict(state_dir, body, now=None):
     return (b is None), b
 
 
+# Longest temporary ban the panel accepts (ten years); beyond that, ban permanently.
+MAX_DURATION_SECS = 10 * 365 * 24 * 3600
+
+
+def audit_entry(argv, ok, detail, now=None):
+    """An admin_history entry for a ban action, shaped like run_publish's."""
+    now = now or datetime.now(timezone.utc)
+    return {"ts": int(now.timestamp()), "argv": list(argv), "ok": bool(ok),
+            "exit_code": 0 if ok else 1, "stdout": detail, "stderr": ""}
+
+
+def handle_ban_request(base, body, now=None, by="panel"):
+    """POST /api/bans. Returns (http_status, payload, fls_id_to_kick_or_None).
+    body: {fls_id, name?, reason?, duration_secs? (missing/null/0 = permanent), kick? (default true)}"""
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body must be a JSON object"}, None
+    raw = body.get("duration_secs")
+    if raw is None or raw == 0:
+        duration = None
+    elif isinstance(raw, bool) or not isinstance(raw, int):
+        return 400, {"ok": False, "error": "duration_secs must be a whole number of seconds, or null for permanent"}, None
+    elif raw < 0 or raw > MAX_DURATION_SECS:
+        return 400, {"ok": False, "error": f"duration_secs must be between 1 and {MAX_DURATION_SECS}, or null for permanent"}, None
+    else:
+        duration = raw
+    try:
+        entry = ban(base, body.get("fls_id", ""), name=body.get("name", ""), reason=body.get("reason", ""),
+                    duration_secs=duration, by=by, now=now)
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}, None
+    kick = entry["fls_id"] if body.get("kick", True) is not False else None
+    return 200, {"ok": True, "ban": entry}, kick
+
+
+def handle_lift_request(base, fls_id):
+    """POST /api/bans/<fls_id>/lift. Returns (http_status, payload)."""
+    try:
+        lifted = unban(base, fls_id)
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}
+    return 200, {"ok": True, "lifted": lifted}
+
+
 def _main(argv):
     if len(argv) < 3:
         print(__doc__, file=sys.stderr)
