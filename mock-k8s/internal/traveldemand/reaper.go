@@ -48,6 +48,15 @@ type Reaper struct {
 	emptySince map[string]time.Time
 	lastReason string
 	now        func() time.Time
+
+	// ends, when set, stops finished story instances early (see storyend.go).
+	ends *StoryEnd
+}
+
+// WithStoryEnd enables the story-end guard on this reaper.
+func (r *Reaper) WithStoryEnd(s *StoryEnd) *Reaper {
+	r.ends = s
+	return r
 }
 
 // NewReaper builds a reaper. idleAfter <= 0 disables reaping entirely.
@@ -106,6 +115,9 @@ func (r *Reaper) Tick() {
 			delete(r.emptySince, mapName)
 			continue
 		}
+		if r.stopFinishedStory(mapName, counts[mapName]) {
+			continue
+		}
 		if counts[mapName] > 0 {
 			// Somebody is there. Any countdown restarts from when they leave.
 			delete(r.emptySince, mapName)
@@ -129,6 +141,28 @@ func (r *Reaper) Tick() {
 		slog.Info("traveldemand: stopping a map nobody is on, freeing an instance slot",
 			"map", mapName, "idle", idle.Round(time.Second))
 	}
+}
+
+// stopFinishedStory stops mapName if the story-end guard says its story
+// ended and was abandoned (and nobody is on it) or is looping on its player.
+// Reports whether it stopped the map.
+func (r *Reaper) stopFinishedStory(mapName string, players int) bool {
+	if r.ends == nil {
+		return false
+	}
+	v := r.ends.Check(mapName)
+	if !v.StopNow && !(v.StopIfEmpty && players == 0) {
+		return false
+	}
+	if err := r.scaler.ScaleToZero(mapName); err != nil {
+		slog.Error("traveldemand: could not stop a finished story instance", "map", mapName, "err", err)
+		return false
+	}
+	r.ends.Forget(mapName)
+	delete(r.emptySince, mapName)
+	slog.Info("traveldemand: stopping a finished story instance so its player is not sent back into it",
+		"map", mapName, "reason", v.Why, "players", players)
+	return true
 }
 
 // Run ticks until done. interval <= 0 disables the reaper.
