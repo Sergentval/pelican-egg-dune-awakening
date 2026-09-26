@@ -39,6 +39,7 @@ import sys
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import admin_ban  # noqa: E402
 import fls_capture  # noqa: E402
 
 REAL_FLS_HOSTNAME = "sb-retail.fls.funcom.com"
@@ -73,19 +74,20 @@ CAPTURE_PATHS = {
 }
 
 
-def _stub_payload(path: str) -> dict:
-    """Return the canned success payload for a stubbed path. Field shapes
-    are dispatched by endpoint name — each FLS endpoint expects different
+def _stub_payload(path: str, authorized: bool = True) -> dict:
+    """Return the canned payload for a stubbed path. Field shapes are
+    dispatched by endpoint name — each FLS endpoint expects different
     fields, and the C# bindings hard-fail on missing fields rather than
-    treating them as falsy."""
+    treating them as falsy. `authorized` only matters for the
+    authorization gate: False is how a banned player is refused (#118)."""
     if path == "/api/Battlegroups_IsPlayerAuthorized":
         return {
             "data": {
                 "FunctionResult": {
-                    "IsPlayerAuthorized": True,
-                    "IsAuthorized": True,
-                    "Authorized": True,
-                    "Result": "Authorized",
+                    "IsPlayerAuthorized": authorized,
+                    "IsAuthorized": authorized,
+                    "Authorized": authorized,
+                    "Result": "Authorized" if authorized else "Unauthorized",
                     "ErrorCode": 0,
                     "ErrorMessage": "",
                 }
@@ -224,7 +226,16 @@ class FlsStubHandler(http.server.BaseHTTPRequestHandler):
             "yes" if "code=" in self.path else "no",
             len(body),
         )
-        payload = _stub_payload(path)
+        authorized = True
+        if path == "/api/Battlegroups_IsPlayerAuthorized" and self.state_dir:
+            authorized, ban = admin_ban.authorization_verdict(self.state_dir, body)
+            if not authorized:
+                logging.warning(
+                    "BAN refusing player %s (%s) reason=%r expires=%s",
+                    ban["fls_id"], ban.get("name") or "?", ban.get("reason", ""),
+                    ban.get("expires_at") or "never",
+                )
+        payload = _stub_payload(path, authorized)
         encoded = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
