@@ -315,7 +315,10 @@ func run() error {
 		// refused until the next restart. AutomaticStopDuration has been in
 		// ondemand.ini all along, parsed and applied by nobody.
 		r := traveldemand.NewReaper(scaler, occupancy.NewReader(baseDir),
-			cfg.AutomaticStopDuration, cfg.AlwaysWarmMaps)
+			cfg.AutomaticStopDuration, cfg.AlwaysWarmMaps).
+			// And stop a finished story instance at once when its ending left
+			// the player's saved location on it (the Forty Fears credits loop).
+			WithStoryEnd(traveldemand.NewStoryEnd(instanceLogs{spw: spw, baseDir: baseDir}))
 		go r.Run(ctx.Done(), parseReapInterval(os.Getenv("MOCK_K8S_REAP_INTERVAL")))
 	}
 	if err := server.Run(ctx, srv); err != nil {
@@ -407,6 +410,21 @@ func parseDurationEnv(name, raw string, fallback time.Duration) time.Duration {
 	}
 	slog.Warn("unparseable duration setting, using default", "var", name, "value", raw, "default", fallback)
 	return fallback
+}
+
+// instanceLogs lists the UE5 log of each running instance of a map, as
+// start-ue5.sh names them: logs/ue5-<map>-<suffix>.log.
+type instanceLogs struct {
+	spw     *spawner.Spawner
+	baseDir string
+}
+
+func (l instanceLogs) InstanceLogs(mapName string) []string {
+	var out []string
+	for _, ref := range l.spw.InstancesOf(mapName) {
+		out = append(out, filepath.Join(l.baseDir, "logs", "ue5-"+mapName+"-"+ref.Suffix+".log"))
+	}
+	return out
 }
 
 // demandScaler is the traveldemand.Scaler over our store and spawner.
