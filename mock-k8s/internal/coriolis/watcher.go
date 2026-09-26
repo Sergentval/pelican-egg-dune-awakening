@@ -23,16 +23,14 @@
 package coriolis
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
-	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Sergentval/pelican-egg-dune-awakening/mock-k8s/internal/logtail"
 )
 
 const (
@@ -222,7 +220,7 @@ func (w *Watcher) maybeRecycle(now time.Time, c candidate) bool {
 func (w *Watcher) tailFor(path string) *tail {
 	t, ok := w.tails[path]
 	if !ok {
-		t = &tail{path: path}
+		t = newTail(path)
 		w.tails[path] = t
 	}
 	return t
@@ -230,73 +228,38 @@ func (w *Watcher) tailFor(path string) *tail {
 
 // tail follows one UE5 log and remembers the last Coriolis boundary it printed.
 type tail struct {
-	path    string
-	offset  int64
+	lt      *logtail.Tail
 	next    time.Time
 	lastErr string
 }
 
+func newTail(path string) *tail { return &tail{lt: logtail.New(path)} }
+
 // refresh scans new lines and logs a read error once per distinct error.
 func (t *tail) refresh() {
-	if _, err := t.scan(); err != nil {
+	if err := t.scan(); err != nil {
 		if msg := err.Error(); msg != t.lastErr {
 			t.lastErr = msg
-			slog.Warn("coriolis: cannot read instance log", "log", t.path, "err", err)
+			slog.Warn("coriolis: cannot read instance log", "log", t.lt.Path(), "err", err)
 		}
 		return
 	}
 	t.lastErr = ""
 }
 
-// scan reads the lines appended since the last scan and reports whether a new
-// boundary was seen. A file that SHRANK was trimmed in place by
-// rotate-logs.sh: it is re-read from the start, but the boundary already known
-// is kept, because the trim may have removed the only line that carried it. A
-// missing file is not an error; the instance may not have logged yet. A final
-// line without its newline is still being written and is left for next time.
-func (t *tail) scan() (bool, error) {
-	f, err := os.Open(t.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return false, err
-	}
-	if info.Size() < t.offset {
-		t.offset = 0
-	}
-	if info.Size() == t.offset {
-		return false, nil
-	}
-	if _, err := f.Seek(t.offset, io.SeekStart); err != nil {
-		return false, err
-	}
-
+// scan records the boundary of any new boot line. When rotate-logs.sh trims
+// the log, logtail re-reads it from the start but the boundary already known
+// is kept here, because the trim may have removed the only line carrying it.
+func (t *tail) scan() error {
 	marker := []byte(nextCycleMarker)
-	r := bufio.NewReaderSize(f, 64*1024)
-	updated := false
-	for {
-		line, err := r.ReadBytes('\n')
-		if errors.Is(err, io.EOF) {
-			return updated, nil // any partial line stays unread
-		}
-		if err != nil {
-			return updated, err
-		}
-		t.offset += int64(len(line))
+	return t.lt.Scan(func(line []byte) {
 		if !bytes.Contains(line, marker) {
-			continue
+			return
 		}
 		if ts, ok := parseNextCycle(string(line)); ok {
 			t.next = ts
-			updated = true
 		}
-	}
+	})
 }
 
 // parseNextCycle extracts the boundary from a "Next Coriolis Cycle start

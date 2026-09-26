@@ -36,6 +36,25 @@ Issue #118. **Reinstall** to pick it up.
 - 🔒 **Security: the server's FLS token no longer lands in `fls-stub.log`.** Every FLS call carries the server's own JWT (`ServiceAuthKey` inside) in `?code=`, and the stub's access log and `PROXY` line wrote the full path, tens of thousands of times per log. Both now drop the query string. **Existing `fls-stub.log` files still contain the old lines: delete or trim them, and never paste an old one into an issue.**
 - The stub also gained a redacted capture mode for debugging. While `server/state/fls-stub/capture` exists, it logs the identity and authorization bodies with secrets masked.
 
+## 2026-09-26 — The end of the main story no longer loops the credits
+
+**Reinstall** to pick it up. This is a workaround for a game bug in the September update.
+
+- **After the last main-story mission (Forty Fears), the final scene and the credits replayed forever.** Reported by @iamc0ke in #136.
+  - Every other dungeon and story ending on the reporter's server, 42 of them, had the server send the player on first (`Telling [...] to client travel to [...]`).
+  - This one does not. The credits roll and the **client** drops the connection, so the character's saved location stays on `CB_Story_OrbitalMonitor`.
+  - The Director then routes every reconnect back there (`Travel grant issued through grace period`), into a story that is over and refuses to start again (`Cannot start a story with no pending players`).
+- **The way out is the instance not running.** Then the Director answers `Teleport not allowed, returning to WorldPartition 32 (ServerId = )` and falls back to the Overmap. The reporter got out that way, after our 10-minute idle timer finally stopped the map.
+- **The reaper now stops such an instance at once.** A new story-end guard reads the instance's log and acts in two cases:
+  - A story completed, then its player left **without being sent on**, and nobody is on the map: stop it on the next tick (30 s) instead of after 10 minutes. The reconnect lands on the Overmap.
+  - The loop itself shows up while the player is inside: stop it even with them in it. They are disconnected once and come back on the Overmap.
+- **What it leaves alone:**
+  - Leaving mid-mission; coming back to the instance is what the grace period is for.
+  - Normal endings, where the server sends the player on.
+  - A completed instance someone is still on.
+- **Replayed against the reporter's 56 instance logs**, only the looping Orbital Monitor run is flagged. Cut at the moment of that disconnect (05:10:34), the guard already says "stop".
+- `internal/logtail` now holds the incremental log reader that the Coriolis watcher and this guard share.
+
 ## 2026-09-25 — The update's new story maps can start (Arrakeen Spaceport no longer hangs)
 
 **Reinstall** to pick it up. The missing rows are added on the next boot.
