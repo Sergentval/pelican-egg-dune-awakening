@@ -192,3 +192,57 @@ func TestReaper_ZeroDurationDisablesReaping(t *testing.T) {
 		t.Errorf("reaped with reaping disabled: %v", s.stopped)
 	}
 }
+
+// --- making room at the cap (#136) -------------------------------------------
+
+func TestReaper_FreeSlotStopsTheLongestEmptyMap(t *testing.T) {
+	s := &fakeReapScaler{up: []string{pit, bandit, "SH_HarkoVillage"}}
+	o := &fakeOccupancy{counts: map[string]int{pit: 0, bandit: 0, "SH_HarkoVillage": 2}}
+	r, c := newTestReaper(s, o, nil)
+	r.Tick() // bandit and pit empty from now
+	c.advance(90 * time.Second)
+	freed, err := r.FreeSlot("SH_Arrakeen")
+	if err != nil || freed == "" {
+		t.Fatalf("FreeSlot = %q, %v; want an empty map stopped", freed, err)
+	}
+	if freed == "SH_HarkoVillage" {
+		t.Fatal("stopped a map with players on it")
+	}
+	if len(s.stopped) != 1 || s.stopped[0] != freed {
+		t.Fatalf("stopped %v, want exactly %s", s.stopped, freed)
+	}
+}
+
+// A player who dropped mid-mission comes back within the grace period: an
+// instance that emptied a moment ago is not up for grabs.
+func TestReaper_FreeSlotSparesAJustEmptiedMap(t *testing.T) {
+	s := &fakeReapScaler{up: []string{pit}}
+	r, c := newTestReaper(s, &fakeOccupancy{counts: map[string]int{pit: 0}}, nil)
+	r.Tick()
+	c.advance(20 * time.Second)
+	if freed, _ := r.FreeSlot("SH_Arrakeen"); freed != "" || len(s.stopped) != 0 {
+		t.Fatalf("freed %q (stopped %v) 20 s after it emptied", freed, s.stopped)
+	}
+}
+
+func TestReaper_FreeSlotNeverTouchesWarmMapsOrTheRequestedOne(t *testing.T) {
+	s := &fakeReapScaler{up: []string{"Survival_1", pit}}
+	r, c := newTestReaper(s, &fakeOccupancy{counts: map[string]int{"Survival_1": 0, pit: 0}}, []string{"Survival_1"})
+	r.Tick()
+	c.advance(5 * time.Minute)
+	if freed, _ := r.FreeSlot(pit); freed != "" {
+		t.Fatalf("freed %q: the warm map and the map being asked for are both off limits", freed)
+	}
+}
+
+func TestReaper_FreeSlotHoldsOnUnknownOccupancy(t *testing.T) {
+	s := &fakeReapScaler{up: []string{pit}}
+	o := &fakeOccupancy{counts: map[string]int{pit: 0}}
+	r, c := newTestReaper(s, o, nil)
+	r.Tick()
+	c.advance(5 * time.Minute)
+	o.err = errors.New("psql down")
+	if freed, err := r.FreeSlot("SH_Arrakeen"); err == nil || freed != "" || len(s.stopped) != 0 {
+		t.Fatalf("FreeSlot = %q, %v with unknown occupancy; want an error and nothing stopped", freed, err)
+	}
+}

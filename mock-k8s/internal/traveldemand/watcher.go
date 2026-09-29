@@ -123,6 +123,9 @@ func (t *Tailer) Read() (string, error) {
 type Scaler interface {
 	// LiveInstances is the number of UE5 processes currently tracked.
 	LiveInstances() int
+	// IsUp reports whether mapName already has an instance, so a request for
+	// it needs no new slot.
+	IsUp(mapName string) bool
 	// ScaleToOne raises a map to at least one replica and reports whether this
 	// call is what started it. Idempotent: a map that already has one must not
 	// be disturbed, and returns started=false.
@@ -135,6 +138,30 @@ type Watcher struct {
 	scaler     Scaler
 	maxLive    int
 	lastReason string
+
+	// At the cap (#136): make room from an instance nobody is on, and say so
+	// on the server when there is none. Both optional.
+	freer    SlotFreer
+	announce Announcer
+}
+
+// SlotFreer stops an on-demand instance nobody is on, to make room.
+type SlotFreer interface {
+	// FreeSlot stops one such instance other than exclude and returns its
+	// map, or "" when there is none to stop. An error means the player
+	// counts could not be read: nothing was stopped.
+	FreeSlot(exclude string) (string, error)
+}
+
+// Announcer tells the players that a destination could not be started.
+type Announcer interface {
+	AtCapacity(mapName string)
+}
+
+// WithCapacity sets what the watcher does at the instance cap.
+func (w *Watcher) WithCapacity(f SlotFreer, a Announcer) *Watcher {
+	w.freer, w.announce = f, a
+	return w
 }
 
 // New builds a watcher over logPath. maxLive caps how many instances may be
@@ -160,9 +187,9 @@ func (w *Watcher) Tick() {
 	}
 	w.lastReason = ""
 	for _, mapName := range Parse(chunk) {
-		if live := w.scaler.LiveInstances(); w.maxLive > 0 && live >= w.maxLive {
-			slog.Warn("traveldemand: at the instance cap, refusing to start a map a player asked for",
-				"map", mapName, "live", live, "max", w.maxLive)
+		// A map already running needs no new slot, whatever the count: several
+		// players travelling to the same mission is the common case.
+		if !w.scaler.IsUp(mapName) && !w.haveRoomFor(mapName) {
 			continue
 		}
 		started, err := w.scaler.ScaleToOne(mapName)
@@ -180,6 +207,37 @@ func (w *Watcher) Tick() {
 		}
 		slog.Info("traveldemand: starting a map on a player's travel request", "map", mapName)
 	}
+}
+
+// haveRoomFor reports whether a new instance for mapName fits under the cap,
+// making room from an instance nobody is on if it has to. When it cannot, the
+// refusal is logged and announced: the Director would otherwise hold the
+// player on "Connecting to ..." until the request expires, with no word why.
+func (w *Watcher) haveRoomFor(mapName string) bool {
+	live := w.scaler.LiveInstances()
+	if w.maxLive <= 0 || live < w.maxLive {
+		return true
+	}
+	if w.freer != nil {
+		freed, err := w.freer.FreeSlot(mapName)
+		switch {
+		case err != nil:
+			slog.Warn("traveldemand: at the instance cap and cannot read player counts to make room",
+				"map", mapName, "err", err)
+		case freed != "":
+			slog.Info("traveldemand: at the instance cap, stopped an instance nobody was on to make room",
+				"map", mapName, "stopped", freed)
+			if live = w.scaler.LiveInstances(); live < w.maxLive {
+				return true
+			}
+		}
+	}
+	slog.Warn("traveldemand: at the instance cap, refusing to start a map a player asked for",
+		"map", mapName, "live", live, "max", w.maxLive)
+	if w.announce != nil {
+		w.announce.AtCapacity(mapName)
+	}
+	return false
 }
 
 // Run ticks until ctx is done. interval <= 0 disables the watcher.

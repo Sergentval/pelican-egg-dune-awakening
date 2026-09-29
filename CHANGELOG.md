@@ -16,6 +16,19 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-09-26 — At the instance cap, travel makes room or says why instead of hanging
+
+Issue #136. **Reinstall** to pick it up.
+
+- **At the cap, a travel request used to hang for 5 minutes with no word.** When every `MaxConcurrentInstances` slot was taken, the travel watcher refused the map and logged the refusal only in `mock-k8s.log`. The Director kept the request queued for a group with no server until it expired 300 s later, and the player sat on "Connecting to ..." with nothing to say why.
+- **Now it makes room first.** At the cap, the reaper stops the on-demand instance that has been empty the longest, and the requested map starts in its place.
+  - Always-warm maps are never touched.
+  - Neither is a map anyone is on.
+  - Neither is one that emptied less than a minute ago: a player who dropped mid-mission comes back within the grace period, so that instance is still theirs.
+  - An unreadable player count stops nothing, because unknown is not empty.
+- **When there is truly no room, it says so on the server.** The game has no per-player message, so this is a server-wide broadcast: "Server busy: a destination could not be started … cancel and try again in a few minutes". It is rate-limited to one a minute, and the same map at most every 5 minutes. `MOCK_K8S_CAP_BROADCAST=off` turns it off.
+- **A request for a map that is already running is no longer checked against the cap.** Several players heading to the same mission need no new slot. Before, such a request logged a false "refusing" at the cap.
+
 ## 2026-09-26 — Ban players from the panel: refused before they reach the world
 
 Issue #118. **Reinstall** to pick it up.

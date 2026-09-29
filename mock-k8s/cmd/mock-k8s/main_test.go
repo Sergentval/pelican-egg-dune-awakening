@@ -62,3 +62,11 @@ func TestParseCoriolisDelay_NeverZero(t *testing.T) {
 		t.Errorf("parseCoriolisDelay(5m) = %v", got)
 	}
 }
+
+func TestParseCapBroadcast(t *testing.T) {
+	for raw, want := range map[string]bool{"": true, "on": true, "1": true, "off": false, "OFF": false, "0": false, "false": false, "disabled": false} {
+		if got := parseCapBroadcast(raw); got != want {
+			t.Errorf("parseCapBroadcast(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

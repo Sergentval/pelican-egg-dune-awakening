@@ -178,7 +178,8 @@ type fakeScaler struct {
 	already bool // the map was already up: ScaleToOne changes nothing
 }
 
-func (f *fakeScaler) LiveInstances() int { return f.live }
+func (f *fakeScaler) LiveInstances() int       { return f.live }
+func (f *fakeScaler) IsUp(mapName string) bool { return f.already }
 func (f *fakeScaler) ScaleToOne(mapName string) (bool, error) {
 	f.calls = append(f.calls, mapName)
 	return !f.already, f.err
