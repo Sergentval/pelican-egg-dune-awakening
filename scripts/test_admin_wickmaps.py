@@ -119,6 +119,25 @@ class RealCatalogTests(unittest.TestCase):
                 self.assertTrue(p["type"])
 
 
+class FixedRowATests(unittest.TestCase):
+    """Row A, the southern arrival strip along the Shield Wall, is the same in
+    every layout: all eleven well-transcribed seeds agree on its 19 POIs, and
+    a player's real-time positions on a live server (issue #134) put the
+    testing stations exactly there. Seed 7's transcription had them at
+    placeholder sub-cells, half a sector off, and the panel drew them so."""
+    def test_row_a_is_identical_in_every_seed(self):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import json
+        with open(os.path.join(repo, wm.CATALOG_PATH), encoding="utf-8") as f:
+            seeds = json.load(f)["seeds"]
+        def row_a(s):
+            return sorted((p["type"], p["sector"], p["subx"], p["suby"]) for p in s["pois"] if p["sector"].startswith("A"))
+        ref = row_a(seeds["0"])
+        self.assertEqual(len(ref), 19)
+        for k, s in seeds.items():
+            self.assertEqual(row_a(s), ref, f"seed {k}: row A differs from every other layout")
+
+
 class SummaryTests(unittest.TestCase):
     def setUp(self):
         self.base = tempfile.mkdtemp(prefix="wm-sum-")
