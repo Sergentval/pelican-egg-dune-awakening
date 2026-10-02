@@ -2431,7 +2431,7 @@
     {
      "type": "wreck",
      "label": "Wreck",
-     "count": 10
+     "count": 13
     },
     {
      "type": "testing-station",
@@ -2439,23 +2439,28 @@
      "count": 10
     },
     {
-     "type": "large-spice-field",
-     "label": "Large Spice Field",
-     "count": 3
-    },
-    {
      "type": "cave",
      "label": "Cave",
      "count": 3
     },
     {
-     "type": "titanium",
-     "label": "Titanium",
-     "count": 2
+     "type": "large-spice-field",
+     "label": "Large Spice Field",
+     "count": 3
+    },
+    {
+     "type": "taxi-service",
+     "label": "Taxi",
+     "count": 3
     },
     {
      "type": "stravidium",
      "label": "Stravidium",
+     "count": 2
+    },
+    {
+     "type": "titanium",
+     "label": "Titanium",
      "count": 2
     }
    ],
@@ -2515,48 +2520,6 @@
      "type": "wreck"
     },
     {
-     "sector": "A1",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A2",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A3",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A4",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A5",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A7",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
-     "sector": "A9",
-     "subx": 2,
-     "suby": 1,
-     "type": "wreck"
-    },
-    {
      "sector": "G3",
      "subx": 2,
      "suby": 1,
@@ -2578,42 +2541,6 @@
      "sector": "C7",
      "subx": 2,
      "suby": 1,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A2",
-     "subx": 3,
-     "suby": 2,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A3",
-     "subx": 3,
-     "suby": 2,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A4",
-     "subx": 3,
-     "suby": 2,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A5",
-     "subx": 3,
-     "suby": 2,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A8",
-     "subx": 2,
-     "suby": 1,
-     "type": "testing-station"
-    },
-    {
-     "sector": "A9",
-     "subx": 3,
-     "suby": 2,
      "type": "testing-station"
     },
     {
@@ -2639,8 +2566,123 @@
      "subx": 3,
      "suby": 2,
      "type": "stravidium"
+    },
+    {
+     "sector": "A1",
+     "subx": 3,
+     "suby": 1,
+     "type": "wreck"
+    },
+    {
+     "sector": "A1",
+     "subx": 2,
+     "suby": 2,
+     "type": "wreck"
+    },
+    {
+     "sector": "A2",
+     "subx": 1,
+     "suby": 1,
+     "type": "taxi-service"
+    },
+    {
+     "sector": "A2",
+     "subx": 2,
+     "suby": 1,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A2",
+     "subx": 3,
+     "suby": 2,
+     "type": "wreck"
+    },
+    {
+     "sector": "A3",
+     "subx": 3,
+     "suby": 1,
+     "type": "wreck"
+    },
+    {
+     "sector": "A3",
+     "subx": 2,
+     "suby": 2,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A3",
+     "subx": 4,
+     "suby": 2,
+     "type": "wreck"
+    },
+    {
+     "sector": "A4",
+     "subx": 4,
+     "suby": 1,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A4",
+     "subx": 3,
+     "suby": 2,
+     "type": "wreck"
+    },
+    {
+     "sector": "A5",
+     "subx": 2,
+     "suby": 0,
+     "type": "taxi-service"
+    },
+    {
+     "sector": "A5",
+     "subx": 2,
+     "suby": 1,
+     "type": "wreck"
+    },
+    {
+     "sector": "A5",
+     "subx": 3,
+     "suby": 2,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A7",
+     "subx": 2,
+     "suby": 0,
+     "type": "wreck"
+    },
+    {
+     "sector": "A8",
+     "subx": 2,
+     "suby": 0,
+     "type": "taxi-service"
+    },
+    {
+     "sector": "A8",
+     "subx": 3,
+     "suby": 0,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A9",
+     "subx": 2,
+     "suby": 1,
+     "type": "wreck"
+    },
+    {
+     "sector": "A9",
+     "subx": 1,
+     "suby": 2,
+     "type": "testing-station"
+    },
+    {
+     "sector": "A9",
+     "subx": 3,
+     "suby": 2,
+     "type": "wreck"
     }
-   ]
+   ],
+   "note": "Row A (Shield Wall strip) replaced by the layout shared by all 11 other seeds, verified against a player's real-time positions on a live server (issue #134). Other rows are still the incomplete transcription."
   },
   "8": {
    "seed": 8,

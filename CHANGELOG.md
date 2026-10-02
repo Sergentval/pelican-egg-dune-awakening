@@ -16,6 +16,16 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-10-02 — Deep Desert map: seed 7 no longer draws the Shield Wall stations half a sector off
+
+Issue #134. **Reinstall** to pick it up. `data/admin/wickmaps.json` is shipped, not preserved.
+
+- **The player dot was right; the station icon was wrong.** The reporter stood at a testing station in A9 while the panel drew its icon about half a sector east. The Deep Desert server's own log gave his real-time position at that moment (`LogCameraValidation … PawnLoc`). It matched the dot: A9, 6–11 % across and 43–50 % down. The icon sat at 62 % and 62 %.
+- **The week of the report ran on Coriolis seed 7.** That seed's layout is the one the catalog flags `LOW (incomplete transcription)`. All its row-A POIs sat at placeholder sub-cells, and its three taxis were missing.
+- **Row A is the same in every layout.** All eleven other seeds agree on its 19 POIs. The reporter's real-time positions at six testing stations across two days put them exactly there. Seed 7's row A now uses that layout, and its legend counts are recomputed.
+- **Seed 7's other rows are untouched.** They vary from seed to seed, so there is nothing to check them against, and the panel still labels the seed `low`.
+- **A new test pins it:** row A must be identical in every seed.
+
 ## 2026-09-26 — At the instance cap, travel makes room or says why instead of hanging
 
 Issue #136. **Reinstall** to pick it up.
