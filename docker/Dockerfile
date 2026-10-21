@@ -22,7 +22,10 @@
 #
 # See ./README.md for local build + push instructions.
 
-FROM debian:bookworm-slim
+# Dated tag so a rebuild is reproducible; the weekly CI rebuild (see
+# .github/workflows/image.yml) bumps it and `apt-get upgrade` pulls the
+# Debian security fixes published since that snapshot.
+FROM debian:bookworm-20261005-slim
 
 LABEL org.opencontainers.image.source="https://github.com/Sergentval/pelican-egg-dune-awakening"
 LABEL org.opencontainers.image.description="Pelican Wings runtime for Dune: Awakening dedicated server"
@@ -36,6 +39,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # and add no real reproducibility (we don't ship deterministic builds anyway).
 # hadolint ignore=DL3008
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \

@@ -1,0 +1,63 @@
+# Builds the runtime image, gates it on Trivy, then pushes it to GHCR.
+# Weekly schedule: picks up the Debian security fixes through `apt-get upgrade`
+# even when nothing changed in the repo (third-party servers run :latest).
+# Actions are pinned by commit SHA and Trivy runs from a pinned image digest,
+# not trivy-action (supply-chain incident of 2026).
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths: ['docker/**', '.github/workflows/image.yml']
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/sergentval/pelican-dune-awakening
+  TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (local, not pushed yet)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker
+          load: true
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          tags: ${{ env.IMAGE }}:candidate
+
+      - name: Trivy gate (fixable CRITICAL blocks the push)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
+            image --exit-code 1 --ignore-unfixed --severity CRITICAL --no-progress \
+            "$IMAGE:candidate"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push latest + dated tag
+        run: |
+          tag="$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          for t in latest "$tag"; do
+            docker tag "$IMAGE:candidate" "$IMAGE:$t"
+            docker push "$IMAGE:$t"
+          done
