@@ -16,6 +16,20 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-11-04 — Security pass, part 2: install script, keys, default password
+
+**Re-import the egg JSON, then Reinstall.** The new `DUNE_EGG_REF` rule and the new install script only exist in the re-imported egg.
+
+- 🔒 **`DUNE_EGG_REF` accepts branch names only.** It goes into the codeload URL whose tarball the install script runs as root. Any string up to 120 characters was accepted, including `../` sequences that curl resolves and that could leave this repository. Now:
+  - The panel accepts letters, digits, `. _ -` and `/` between non-empty segments, never `..`.
+  - The install script checks `DUNE_EGG_REF` and `DUNE_EGG_REPO` again itself, so a stale imported egg is covered too.
+- 🔒 **Go is checksum-verified, and no longer an out-of-support release.** mock-k8s embeds Go's standard library (`net/http`, `crypto/tls`), and the pinned 1.22.7 gets no security fixes any more. The install now:
+  - picks the newest stable Go from go.dev's release index (`GO_VERSION` still pins one);
+  - checks the tarball's sha256 against that index before extracting it, and fails the install on a mismatch.
+- 🔒 **Private TLS keys are `0600`.** RabbitMQ's `key.pem` was written `0644` and the FLS stub's followed the umask, so an SFTP subuser could read them. Both are now fixed on every boot, existing installs included.
+- **A boot warning when the join password is still `Sandworm`.** It is Funcom's published template default, so anyone can join with it. The default stays, because an empty one would make every new server public; the console now says so.
+- **Left as is, on purpose:** the game broker's management port (`DUNE_MQ_GAME_MGMT_PORT`) stays on the external IP. Clients use it for token authentication, so binding it to loopback would lock players out.
+
 ## 2026-11-04 — Game update 1.5.15 and a security pass
 
 **Reinstall** to pick it up. A Reinstall also downloads Funcom's current server build (1.5.15.4 at the time of writing). No egg re-import needed.

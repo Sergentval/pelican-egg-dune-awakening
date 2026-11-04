@@ -52,6 +52,9 @@ if [ ! -s "$CERT_PEM" ] || [ ! -s "$KEY_PEM" ]; then
     >/dev/null 2>&1
   log "  cert: $CERT_PEM"
 fi
+# openssl -keyout follows the umask, so the key could be world-readable.
+# Runs every boot so existing installs are fixed too.
+chmod 0600 "$KEY_PEM"
 
 # --------------------------------------------------------------------------
 # 2. Combined CA bundle for UE5's SSL_CERT_FILE. We can't write to the
