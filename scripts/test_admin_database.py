@@ -54,6 +54,27 @@ class ReadOnlyGuard(unittest.TestCase):
         ):
             self.assertFalse(is_read_only_sql(q), f"should reject: {q!r}")
 
+    def test_accepts_one_trailing_semicolon(self):
+        for q in ("SELECT 1;", "select 1 ;  \n", "SHOW search_path;;"):
+            self.assertTrue(is_read_only_sql(q), f"should accept: {q!r}")
+
+    def test_rejects_stacked_statements(self):
+        # psql -c sends the whole string as one simple query, so a second
+        # statement runs too. A COMMIT ends the read-only transaction that
+        # admin-publish.sh opened, and what follows can write.
+        for q in (
+            "show x; commit; set session characteristics as transaction "
+            "read write; delete from dune.actors",
+            "SELECT 1; DELETE FROM dune.actors",
+            "select 1;delete from x;",
+            "with t as (select 1) select * from t; drop table x",
+            # A ';' hidden in a comment or literal is refused too: the bash
+            # layer cannot parse SQL, and the two layers must agree.
+            "select 1 -- ; delete",
+            "select ';'",
+        ):
+            self.assertFalse(is_read_only_sql(q), f"should reject: {q!r}")
+
 
 class CsvShaper(unittest.TestCase):
     def test_header_and_rows(self):

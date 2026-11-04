@@ -16,6 +16,20 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-11-04 — Game update 1.5.15 and a security pass
+
+**Reinstall** to pick it up. A Reinstall also downloads Funcom's current server build (1.5.15.4 at the time of writing). No egg re-import needed.
+
+- **Game 1.5.15 (19 Oct, hotfixes to 1.5.15.4 on 3 Nov) needs nothing new from the egg.** It adds no map, no partition and no server setting. Two existing settings now behave as their names say, and the panel's descriptions say so:
+  - `PlayerStaminaDrain` now also applies to Deflection, Bindu Sprint and climbing.
+  - A changed `BuildingPieceLimitMultiplier` now also shows in the in-game building UI.
+- 🔒 **Database tab: one statement per query.** The read-only guard only checked that a query *started* with `SELECT`/`EXPLAIN`/`SHOW`/`WITH`. `psql -c` runs every statement in the string, so `show x; commit; set session characteristics as transaction read write; delete …` closed the read-only transaction and could write to the world database. Both `admin-http.py` and `admin-publish.sh db-sql` now refuse any `;` other than trailing ones. A `;` inside a literal or a comment is refused too, because the shell layer cannot parse SQL.
+- 🔒 **mock-k8s now listens on 127.0.0.1 only.** Its API checks no token and can start and stop game servers. It listened on every interface, so a host-network deployment exposed it. Every client already dials 127.0.0.1. `K8S_MOCK_BIND=<ip>` restores another interface; a value that is not an IP falls back to loopback.
+- **Panel login:**
+  - A password with a non-ASCII character (`é`, `ü`) crashed the login handler. An operator whose real password had one could never log in. It now works.
+  - A JSON body that is not an object (`[]`, `"x"`) dropped the connection with a traceback. It now gets a 400.
+  - The CSRF header and the internal-mode shared secret are compared in constant time, on bytes.
+
 ## 2026-10-02 — Deep Desert map: seed 7 no longer draws the Shield Wall stations half a sector off
 
 Issue #134. **Reinstall** to pick it up. `data/admin/wickmaps.json` is shipped, not preserved.

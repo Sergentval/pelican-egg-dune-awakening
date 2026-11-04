@@ -127,6 +127,56 @@ class MalformedRequests(ServerCase):
         self.assertNotIn("Traceback", self.stderr.getvalue())
 
 
+class LoginBodyHandling(ServerCase):
+    """/api/login is reachable without a session, so whatever it is sent
+    must end in a status code, never in a traceback and a dropped socket.
+
+    Two inputs used to escape as exceptions: a non-ASCII password
+    (hmac.compare_digest raises TypeError on non-ASCII str, which also
+    locked out an operator whose real password had an accent) and a
+    valid-JSON body that is not an object (`[]` has no .get).
+    """
+
+    PASSWORD = "sésame-Dune-ü1"
+
+    def setUp(self) -> None:
+        from unittest import mock
+        for name, value in (("UI_ENABLED", True), ("UI_PASSWORD", self.PASSWORD),
+                            ("UI_SESSION_SECRET", "test-secret-0123456789abcdef")):
+            patcher = mock.patch.object(admin_http, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        admin_http.LOGIN_ATTEMPTS.clear()
+        self.addCleanup(admin_http.LOGIN_ATTEMPTS.clear)
+        super().setUp()
+        self.stderr = io.StringIO()
+        original = sys.stderr
+        sys.stderr = self.stderr
+        self.addCleanup(setattr, sys, "stderr", original)
+
+    def login(self, body: bytes) -> bytes:
+        request = (
+            b"POST /api/login HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+        return speak(self.port, request)
+
+    def test_wrong_non_ascii_password_is_a_401(self) -> None:
+        self.assertStatus(self.login('{"password": "é"}'.encode()), 401)
+        self.assertNotIn("Traceback", self.stderr.getvalue())
+
+    def test_right_non_ascii_password_logs_in(self) -> None:
+        body = ('{"password": "%s"}' % self.PASSWORD).encode()
+        self.assertStatus(self.login(body), 200)
+
+    def test_non_object_bodies_are_a_400(self) -> None:
+        for body in (b"[]", b'"x"', b"42", b"null"):
+            with self.subTest(body=body):
+                self.assertStatus(self.login(body), 400)
+        self.assertNotIn("Traceback", self.stderr.getvalue())
+
+
 class StalledConnections(ServerCase):
     """The issue #89 outage: one silent client wedged the whole panel."""
 

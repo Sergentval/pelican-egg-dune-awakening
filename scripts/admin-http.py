@@ -869,7 +869,16 @@ _SQL_READONLY = re.compile(r"^(select|explain|show|with)[\s(]")
 
 
 def is_read_only_sql(sql: str) -> bool:
-    """True if sql is a read-only statement (SELECT/EXPLAIN/SHOW/WITH)."""
+    """True if sql is ONE read-only statement (SELECT/EXPLAIN/SHOW/WITH).
+
+    The keyword prefix alone is not enough: psql -c runs every statement in
+    the string, so "show x; commit; set session characteristics as
+    transaction read write; delete ..." would close admin-publish.sh's
+    read-only transaction and write. Any ';' other than trailing ones is
+    refused, even inside a comment or a literal: admin-publish.sh applies the
+    same blunt rule because it cannot parse SQL, and the two layers agree."""
+    if ";" in sql.rstrip("; \t\r\n"):
+        return False
     s = _SQL_BLOCK_COMMENT.sub(" ", sql)
     s = _SQL_LINE_COMMENT.sub(" ", s)
     s = s.strip().lower()
@@ -1233,7 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
         # Internal mode: optional shared-secret Bearer
         if not SHARED_AUTH:
             return True
-        return token == SHARED_AUTH
+        return bool(token) and hmac.compare_digest(token.encode(), SHARED_AUTH.encode())
 
     def _csrf_ok(self) -> bool:
         """Validate CSRF for cookie-based callers. Returns True if:
@@ -1258,7 +1267,9 @@ class Handler(BaseHTTPRequestHandler):
             # session past the CSRF gate.
             return False
         supplied = self.headers.get("X-CSRF-Token", "").strip()
-        return bool(supplied) and hmac.compare_digest(supplied, expected)
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str,
+        # and http.server decodes headers as latin-1.
+        return bool(supplied) and hmac.compare_digest(supplied.encode(), expected.encode())
 
     def _client_ip(self) -> str:
         """Source IP for rate-limit bucketing — see resolve_client_ip()."""
@@ -2196,7 +2207,7 @@ class Handler(BaseHTTPRequestHandler):
             self._write(400, {"error": "sql required"})
             return
         if not is_read_only_sql(sql):
-            self._write(400, {"error": "only SELECT, EXPLAIN, SHOW, and WITH statements are allowed"})
+            self._write(400, {"error": "only one SELECT, EXPLAIN, SHOW or WITH statement is allowed (no ';' inside the query)"})
             return
         # dune-admin truncates the result set at 200 rows for the UI.
         self._db_reply(run_publish(["db-sql", sql], timeout=20), truncate=200)
@@ -2355,8 +2366,14 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             self._write(400, {"error": "invalid JSON body", "detail": str(exc)})
+            return
+        # Every route reads its body with body.get(); a valid-JSON list or
+        # string (`[]`, `"x"`) used to raise AttributeError there, before the
+        # login's failure delay, and drop the connection with a traceback.
+        if not isinstance(body, dict):
+            self._write(400, {"error": "JSON body must be an object"})
             return
 
         # Phase 5: apply server-setting changes. Body: {"settings": {id: value}}.
@@ -4001,7 +4018,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             supplied = str(body.get("password", ""))
-            if not hmac.compare_digest(supplied, UI_PASSWORD):
+            # Bytes, not str: compare_digest raises TypeError on non-ASCII
+            # str, so a password with "é" crashed the handler (before the
+            # failure delay) and an operator with such a password could
+            # never log in.
+            if not hmac.compare_digest(supplied.encode(), UI_PASSWORD.encode()):
                 # Small fixed delay to slow down brute-force guessing.
                 time.sleep(0.3)
                 log(
