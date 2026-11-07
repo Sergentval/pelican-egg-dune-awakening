@@ -1049,6 +1049,23 @@ SQL
         # then fails with "cannot execute X in a read-only transaction". The
         # SET applies to the subsequent -c in the same connection. -q
         # suppresses the SET command tag so only the query's CSV is emitted.
+        #
+        # The SET only holds if the query is ONE statement: -c sends the
+        # whole string as a single simple query, so a COMMIT inside it would
+        # end the read-only transaction and the statements after it could
+        # write. Refuse any ';' except trailing ones (we cannot parse SQL
+        # here, so a ';' in a literal or a comment is refused too).
+        sql="${sql%"${sql##*[![:space:];]}"}"
+        if [ -z "$sql" ]; then
+            echo "db-sql: empty query" >&2
+            exit 2
+        fi
+        case "$sql" in
+            *';'*)
+                echo "db-sql: one statement only (no ';' inside the query)" >&2
+                exit 2
+                ;;
+        esac
         dune_psql -q --csv \
             -c "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY" \
             -c "$sql"

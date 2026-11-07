@@ -201,7 +201,18 @@ if [ ! -f "$CERTDIR/cert.pem" ] || [ ! -f "$CERTDIR/key.pem" ]; then
     -subj "/CN=$DUNE_EXTERNAL_IP" \
     -addext "subjectAltName=IP:$DUNE_EXTERNAL_IP,IP:$DUNE_BIND_IP,IP:127.0.0.1,DNS:localhost" 2>/dev/null
   cp "$CERTDIR/cert.pem" "$CERTDIR/cacert.pem"
-  chmod 0644 "$CERTDIR"/*.pem
+fi
+# Outside the generate branch on purpose: installs from before 2026-11 wrote
+# key.pem 0644 (a blanket chmod on *.pem), and this fixes them on next boot.
+# Every service runs as the one `container` user, so 0600 costs nothing.
+chmod 0644 "$CERTDIR/cert.pem" "$CERTDIR/cacert.pem"
+chmod 0600 "$CERTDIR/key.pem"
+
+# Funcom's template password is public knowledge. Clearing it is a valid
+# choice (a public server, issue #107), so only the published default warns.
+if [ "${DUNE_SERVER_PASSWORD:-}" = "Sandworm" ]; then
+  warn "Server Join Password is still Funcom's default 'Sandworm': anyone who knows it can join."
+  warn "Change DUNE_SERVER_PASSWORD in the panel (Startup tab) to keep this server private."
 fi
 
 # --------------------------------------------------------------------------

@@ -10,6 +10,7 @@
 // reading env:
 //
 //	K8S_MOCK_PORT             (default 6443)
+//	K8S_MOCK_BIND             (default 127.0.0.1; the API has no auth, keep it local)
 //	K8S_POOL_SIZE             (default 25)
 //	K8S_POOL_GAME_PORT_BASE   (default 7900)
 //	K8S_POOL_IGW_PORT_BASE    (default 7950)
@@ -30,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -274,7 +276,7 @@ func run() error {
 
 	handler := server.LogMiddleware(mux, 4096)
 
-	addr := "0.0.0.0:" + strconv.Itoa(listenPort)
+	addr := listenAddr(os.Getenv("K8S_MOCK_BIND"), listenPort)
 	srv, err := server.New(addr, certPEM, keyPEM, handler)
 	if err != nil {
 		return fmt.Errorf("new server: %w", err)
@@ -560,6 +562,22 @@ func parseReconcileInterval(v string) time.Duration {
 }
 
 // envInt reads an int env var, returning fallback when unset/invalid.
+// listenAddr picks the API's listen address. The mock API checks no bearer
+// token, and it can start and stop game servers (ServerSetScale), so it must
+// not be reachable from outside the container. Every client — the Director
+// (KUBERNETES_SERVICE_HOST=127.0.0.1), admin_instances.py, the discovery
+// document — dials 127.0.0.1, so loopback is the default. An operator who
+// really needs another interface sets K8S_MOCK_BIND to an IP; anything that
+// does not parse as an IP falls back to loopback rather than to all
+// interfaces.
+func listenAddr(bind string, port int) string {
+	host := "127.0.0.1"
+	if ip := net.ParseIP(strings.TrimSpace(bind)); ip != nil {
+		host = ip.String()
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
 func envInt(name string, fallback int) int {
 	v := os.Getenv(name)
 	if v == "" {

@@ -70,3 +70,26 @@ func TestParseCapBroadcast(t *testing.T) {
 		}
 	}
 }
+
+// The mock API has no auth and can start or stop game servers, so a missing
+// or malformed bind must never widen to all interfaces.
+func TestListenAddrDefaultsToLoopback(t *testing.T) {
+	cases := []struct {
+		bind string
+		want string
+	}{
+		{"", "127.0.0.1:6443"},
+		{"   ", "127.0.0.1:6443"},
+		{"not-an-ip", "127.0.0.1:6443"},
+		{"0.0.0.0:80", "127.0.0.1:6443"},
+		{"127.0.0.1", "127.0.0.1:6443"},
+		{"0.0.0.0", "0.0.0.0:6443"},
+		{" 10.0.0.5 ", "10.0.0.5:6443"},
+		{"::1", "[::1]:6443"},
+	}
+	for _, c := range cases {
+		if got := listenAddr(c.bind, 6443); got != c.want {
+			t.Errorf("listenAddr(%q) = %q, want %q", c.bind, got, c.want)
+		}
+	}
+}
