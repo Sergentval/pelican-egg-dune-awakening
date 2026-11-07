@@ -16,6 +16,17 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-11-07 — Admin tools: journey presets, Solaris and the player summary work again
+
+**Reinstall** to pick it up. The game's database schema changed under four admin commands. Each now matches the current schema, checked live on our test server (game 1.5.15.4).
+
+- **`progression-unlock` / `progression-lock` failed** with "column js.account_id does not exist". `dune.journey_story_node` is keyed by `character_id` now.
+  - The command resolves the characters the way the game's own procs do: `accounts.user` → `player_state.account_id` → `player_state.id`.
+  - It also sends each node once (`DISTINCT`). Otherwise a node held by two characters of one account would make the proc's `INSERT … ON CONFLICT` touch the same row twice.
+- **The player summary showed no journey completion and 0 Solaris.** It used the same `account_id` join. It also compared `currency_id` with `0`, while the column is now the enum `dune.virtualwallettype` (`Solaris`, `HouseCredit`).
+- **`give-currency` failed**: `dune.get_solaris_id()` no longer exists. It now passes `'Solaris'::dune.virtualwallettype` to `adjust_player_virtual_currency_balance`.
+- **Not fixed, by design:** `spice-set` and `spice-caps` drive spice-field procs and the `spicefield_types` table that this game version removed. They already refuse with "table missing" (exit 3) instead of failing halfway.
+
 ## 2026-11-07 — The Halloween wreck can start ("Connecting to Wreck of the Hieronymus" no longer hangs)
 
 **Reinstall** to pick it up. The partition row is added on the next boot.

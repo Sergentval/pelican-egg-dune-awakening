@@ -2864,13 +2864,15 @@ SQL
             echo "[admin-publish] ERROR give-currency: no player-controller actor for $fls_id" >&2
             exit 1
         fi
+        # Currency ids are the enum dune.virtualwallettype (Solaris, HouseCredit)
+        # since 1.5.x; dune.get_solaris_id() and the integer id 0 are gone.
         # Proc call + read-back in one stdin batch so :'var' interpolates.
         # Both statements print under -tA (proc return, then balance); the
         # read-back is authoritative, so keep the last line.
         new_balance=$(dune_psql_q --set=ctrl="$ctrl" --set=amt="$amount" -tA 2>/dev/null <<'SQL' | tail -n1 | tr -d '\r\n'
-SELECT dune.adjust_player_virtual_currency_balance(:'ctrl'::bigint, dune.get_solaris_id(), :'amt'::bigint);
+SELECT dune.adjust_player_virtual_currency_balance(:'ctrl'::bigint, 'Solaris'::dune.virtualwallettype, :'amt'::bigint);
 SELECT balance FROM dune.player_virtual_currency_balances
-WHERE player_controller_id = :'ctrl'::bigint AND currency_id = dune.get_solaris_id();
+WHERE player_controller_id = :'ctrl'::bigint AND currency_id = 'Solaris'::dune.virtualwallettype;
 SQL
 )
         if [ -z "$new_balance" ]; then
@@ -3616,7 +3618,7 @@ SQL
         if [ "$fls_id" = "*" ]; then
             echo "[admin-publish] ERROR $mode: needs a single player, not '*'" >&2; exit 2
         fi
-        dune_require_tables dune.journey_story_node dune.encrypted_accounts || exit 3
+        dune_require_tables dune.journey_story_node dune.accounts dune.player_state || exit 3
         assert_player_offline "$fls_id" || exit $?
         # preset id -> root-node pg array (pure compute; validates the preset id).
         out=$(DUNE_BASE_DIR="$BASE" python3 "$BASE/scripts/admin-inventory.py" progression-preset --id "$preset" 2>&1) || {
@@ -3633,6 +3635,11 @@ EOF2
         else
             proc="reset_journey_story_nodes_for_player"; verb="locked"
         fi
+        # journey_story_node is keyed by character_id since the game's schema
+        # migration (it had account_id before). Resolve the characters exactly
+        # as the procs do: accounts.user -> player_state.account_id -> id.
+        # DISTINCT: a node held by two characters must reach the proc once, or
+        # its INSERT ... ON CONFLICT would touch the same row twice.
         # Gather root+descendants for THIS account, call the proc with the full
         # id array, and return how many ids were affected (last line). The proc
         # node count. Single statement (atomic under ON_ERROR_STOP): the derived
@@ -3644,13 +3651,14 @@ EOF2
         affected=$(dune_psql_q -q -v ON_ERROR_STOP=1 --set=fls="$fls_id" --set=roots="$roots" -tA 2>&1 <<SQL
 SELECT g.n, dune.${proc}(:'fls', g.ids)
 FROM (
-    SELECT COALESCE(array_agg(js.story_node_id), '{}'::text[]) AS ids,
-           count(*)::int AS n
+    SELECT COALESCE(array_agg(DISTINCT js.story_node_id), '{}'::text[]) AS ids,
+           count(DISTINCT js.story_node_id)::int AS n
     FROM dune.journey_story_node js
-    JOIN dune.encrypted_accounts a ON a.id = js.account_id
     JOIN (SELECT unnest(:'roots'::text[]) AS root) rootset
       ON (js.story_node_id = rootset.root OR js.story_node_id LIKE rootset.root || '.%')
-    WHERE a."user" = :'fls'
+    WHERE js.character_id IN (
+        SELECT ps.id FROM dune.accounts a JOIN dune.player_state ps ON ps.account_id = a.id
+        WHERE a."user" = :'fls')
 ) g;
 SQL
 ) || rc=$?
@@ -3685,7 +3693,7 @@ SQL
         scal=$(dune_psql_q --csv --set=ctrl="$ctrl" --set=pawn="$pawn" <<'SQL'
 SELECT
   (SELECT COALESCE(balance, 0) FROM dune.player_virtual_currency_balances
-     WHERE player_controller_id = :'ctrl'::bigint AND currency_id = 0)                        AS solaris,
+     WHERE player_controller_id = :'ctrl'::bigint AND currency_id = 'Solaris'::dune.virtualwallettype) AS solaris,
   COALESCE((SELECT (fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint
      FROM dune.fgl_entities fe JOIN dune.actor_fgl_entities afe ON afe.entity_id = fe.entity_id
      WHERE afe.slot_name = 'DuneCharacter' AND afe.actor_id = :'pawn'::bigint), 0)            AS char_xp,
@@ -3713,12 +3721,15 @@ EOF3
             if [ -n "$pids" ] && dune_require_tables dune.journey_story_node >/dev/null 2>&1; then
                 jrows=$(dune_psql_q --csv --set=fls="$fls_id" --set=pids="$pids" --set=roots="$roots" <<'SQL'
 WITH pr AS (SELECT * FROM unnest(:'pids'::text[], :'roots'::text[]) AS u(preset_id, root)),
-acct AS (SELECT id FROM dune.encrypted_accounts WHERE "user" = :'fls'),
+chars AS (
+  SELECT ps.id FROM dune.accounts a JOIN dune.player_state ps ON ps.account_id = a.id
+  WHERE a."user" = :'fls'
+),
 node AS (
   SELECT pr.preset_id, (js.complete_condition_state = 'true'::jsonb) AS done
   FROM pr
   JOIN dune.journey_story_node js
-    ON js.account_id = (SELECT id FROM acct)
+    ON js.character_id IN (SELECT id FROM chars)
    AND (js.story_node_id = pr.root OR js.story_node_id LIKE pr.root || '.%')
 )
 SELECT preset_id, count(*) FILTER (WHERE done) AS complete, count(*) AS total
