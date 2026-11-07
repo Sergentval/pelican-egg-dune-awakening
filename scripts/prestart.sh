@@ -447,6 +447,12 @@ VALUES
   (33, 'CB_Arrakis_Story_Paranoid_PrayerRoom', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Prayer Room'),
   (34, 'CB_Arrakis_Story_Glutton_DiningRoom', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Dining Room'),
   (35, 'CB_Arrakis_Generic_Sietch_Room', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Sietch Room'),
+  -- 90: event maps that world-template.yaml does not list at all, so they
+  -- have no Funcom id. The id is reserved by this egg and must match
+  -- scripts/patch_event_maps.py, which adds the template entry. The
+  -- November 2026 Halloween wreck ("Wreck of the Hieronymus") hung on
+  -- "Connecting" without both.
+  (90, 'CB_Halloween_Event_Shipwreck_01', '{"box":{"max_x":1,"max_y":1,"min_x":0,"min_y":0},"type":"box2d_array"}'::jsonb, 0, false, 'Wreck of the Hieronymus'),
   -- SH_FallenLight warm anchor. Funcom ships this map (GameTweaks
   -- PlayerHardCap=80) but CubeCoders' AMP module never seeded it. We
   -- always insert the row — costs nothing if the operator doesn't
