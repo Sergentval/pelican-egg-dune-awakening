@@ -85,6 +85,14 @@ run_boot_stage scripts/apply-config.sh "$BASE"
 # before start-mock-k8s.sh because mock-k8s reads the YAML once at boot.
 run_boot_stage scripts/patch-world-template.sh "$BASE"
 
+# Register event maps the game ships but Funcom's template leaves out (the
+# Halloween 2026 wreck): without a template entry the Director binds no travel
+# queue for them and the client hangs on "Connecting". Same reason to run
+# before mock-k8s. Never blocks the boot: on an unrecognised template it
+# leaves the file alone and only those maps stay unreachable.
+python3 "$BASE/scripts/patch_event_maps.py" "$BASE/server/scripts/setup/templates/world-template.yaml" \
+  || warn "patch_event_maps failed: event maps (Halloween wreck) stay unreachable this boot"
+
 run_boot_stage scripts/start-pg.sh "$BASE"
 run_boot_stage scripts/migrate-db.sh "$BASE"
 # Re-apply the BaseBackup wipe-guard AFTER migrations (they can replace the

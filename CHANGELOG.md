@@ -16,6 +16,22 @@ here on the log is maintained with each merge.
   egg JSON** into the panel, then Reinstall. An imported egg is a copy; the
   panel never picks up new variables on its own.
 
+## 2026-11-07 — The Halloween wreck can start ("Connecting to Wreck of the Hieronymus" no longer hangs)
+
+**Reinstall** to pick it up. The partition row is added on the next boot.
+
+- **"Connecting to Wreck of the Hieronymus" never ended.** Reported by a player, Das Flo, after the 2026-11-03 game update (build 26332623, 1.5.15.4).
+  - The Halloween 2026 event wreck is the map `CB_Halloween_Event_Shipwreck_01`. The game ships it, but Funcom's `world-template.yaml` does not list it.
+  - The Director binds one RabbitMQ travel queue per template map, keyed `req.<map>`. The Overmap published the travel request with a key no queue listened on, RabbitMQ dropped it, and the Director never saw it. The client then waits forever.
+  - Seen on our test server: a temporary queue bound to `req.#` caught the request and gave the map's name.
+- **New boot step, `scripts/patch_event_maps.py`.** It runs after `patch-world-template.sh` and before mock-k8s reads the template.
+  - It adds a `worldPartitions` entry and a copy of `CB_Story_Hephaestus`'s server set, with only `map` changed.
+  - It works on the text, so the rest of the file is unchanged.
+  - It is idempotent, and leaves any map Funcom's template already lists alone.
+  - On a template it does not recognise, it leaves the file untouched and the boot goes on.
+- **Partition 90 is reserved by this egg**, because Funcom gave the map no id. It sits above Funcom's ids (1-35) and below the dimension ranges (101+). `prestart.sh` seeds the matching `dune.world_partition` row, and a test checks that both ids agree.
+- **Verified on our test server.** After a restart, the Director loaded the map on partition 90. A travel request started the instance, which reported `ready:true` 15 s later, and the travel completed.
+
 ## 2026-11-04 — Security pass, part 2: install script, keys, default password
 
 **Re-import the egg JSON, then Reinstall.** The new `DUNE_EGG_REF` rule and the new install script only exist in the re-imported egg.
